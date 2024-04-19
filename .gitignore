@@ -30,3 +30,17 @@
 *.exe
 *.out
 *.app
+
+# Debug files
+*.pdb
+*.idb
+
+# Python pycache
+__pycache__/
+*.pyc
+*.pyo
+
+# Project structures
+.vscode/.ropeproject/objectdb
+.vscode/settings.json
+.idea/
