@@ -640,7 +640,9 @@ class BlueSteelEditor(object):
             
         # we need to rename the attribute on the control
         if cmds.objExists(self.face_ctrl):
+            self.container.unbind_attribute(f"{self.face_ctrl}.{old_name}")
             attrUtils.rename_attribute(self.face_ctrl, old_name, new_name)
+            self.container.bind_attribute(f"{self.face_ctrl}.{new_name}")
         # finally we need to update the shape in the network
         self.sync_network()
 
