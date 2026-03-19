@@ -16,9 +16,6 @@
 *.dylib
 *.dll
 
-# Fortran module files
-*.mod
-*.smod
 
 # Compiled Static libraries
 *.lai
@@ -44,3 +41,11 @@ __pycache__/
 .vscode/.ropeproject/objectdb
 .vscode/settings.json
 .idea/
+/local references/
+/.venv
+releases/maya/scripts/blue_steel/api/blednshapeBK.py
+releases/maya/scripts/blue_steel/api/mayaToNumpy_ref.py
+releases/maya/scripts/blue_steel/api/trackers_old.py
+releases/maya/scripts/blue_steel/api/blendShapeView.py
+releases/maya/unittest
+scripts/blue_steel_start_maya_2022.py

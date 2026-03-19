@@ -3,7 +3,7 @@ import sys
 import subprocess
 import inspect
 
-CREATE_SPECIAL_REFERENCES = True
+CREATE_SPECIAL_REFERENCES = False
 
 this_directory = os.path.abspath(os.path.split(__file__)[0])
 plugin_dir = os.path.dirname(this_directory)
