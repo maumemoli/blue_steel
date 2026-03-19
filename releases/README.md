@@ -20,9 +20,10 @@ Blue Steel manages facial shape systems built on blendshapes, with a UI for:
 ## Quick Start (Maya)
 
 1. Open [releases/maya](maya).
-2. Drag [releases/maya/drag_into_Maya_to_install.py](maya/drag_into_Maya_to_install.py) into Maya.
-3. Follow the installer prompts.
-4. Open the Blue Steel shelf and launch the editor.
+2. Copy the [releases/maya/BlueSteel](maya/BlueSteel) folder to your Maya `modules` directory or to a convinient location.
+3. Drag [releases/maya/drag_into_Maya_to_install.py](maya/drag_into_Maya_to_install.py) into Maya.
+4. Follow the installer prompts.
+5. Open the Blue Steel shelf and launch the editor.
 
 ## Dependency: NumPy
 
