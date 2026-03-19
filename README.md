@@ -15,3 +15,8 @@ It provides:
 - Runtime package docs: [releases/README.md](releases/README.md)
 - User and workflow wiki: [releases/WIKI.md](releases/WIKI.md)
 - Logic notes: [references/design/Logic.md](references/design/Logic.md)
+
+## License
+
+This project is licensed under the BSD 3-Clause License.
+See [LICENSE](LICENSE).
