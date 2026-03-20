@@ -4131,6 +4131,7 @@ class MainWindow(QMainWindow):
 		self.scene_editor_tracker.editorAdded.connect(self._on_editor_added)
 		self.scene_editor_tracker.editorRemoved.connect(self._on_editor_removed)
 		self.scene_editor_tracker.editorRenamed.connect(self._on_editor_renamed)
+		self.scene_editor_tracker.frameChanged.connect(self._on_scene_frame_changed, Qt.QueuedConnection)
 
 	def _clear_scene_editor_tracker(self) -> None:
 		if isinstance(self.scene_editor_tracker, BlueSteelEditorsTracker):
@@ -4356,6 +4357,19 @@ class MainWindow(QMainWindow):
 			self.set_current_editor(new_name)
 		else:
 			self._reload_editor_menu()
+
+	def _on_scene_frame_changed(self, _frame: float) -> None:
+		"""Keep slider UIs in sync while keyed values change over time."""
+		if self.current_editor is None:
+			return
+		if self._primaries_drag_active or self._linked_drag_active:
+			return
+
+		changed_rows = self._shape_model.refresh_values_from_editor()
+		for changed_name, changed_value, is_primary in changed_rows:
+			if is_primary:
+				self._sync_primary_tree_slider(changed_name, changed_value)
+		self._resort_value_sorted_lists_if_needed()
 
 	def _reload_shapes_from_editor(self) -> None:
 		if self.current_editor is None:
