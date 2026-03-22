@@ -52,8 +52,38 @@ def make_paint_cluster(*args):
             cluster.paint ()
 
 
+def iterations_from_vertex_count(vertex_count):
+    min_vert = 100
+    max_vert = 50000
+    min_iter = 1
+    max_iter = 5
+    if vertex_count <= min_vert:
+        return min_iter
+    if vertex_count >= max_vert:
+        return max_iter
+    ratio = float (vertex_count - min_vert) / float (max_vert - min_vert)
+    return int (round (min_iter + ratio * (max_iter - min_iter)))
+
+
 def smooth_flood(*args):
     """Smooth the value of a the the deformer in paint mode"""
+    components = cmds.filterExpand(sm=(31, 32, 34, 35, 70)) or []
+    # 31=vtx, 32=edge, 34=face, 35=uv, 70=vtxFace
+    if components:
+        mesh = components[0].split ('.')[0]
+    else:
+        sel = cmds.ls (sl=True , o=True , long=True) or []
+        if not sel:
+            return
+        mesh = sel[0]
+
+    
+    try:
+        vertex_count = cmds.polyEvaluate (mesh , v=True)
+    except Exception:
+        vertex_count = 100
+
+    iterations = iterations_from_vertex_count (vertex_count)
     current_context = cmds.currentCtx ()
     if not current_context == "artAttrContext":
         return
@@ -63,7 +93,8 @@ def smooth_flood(*args):
     cmds.artAttrCtx (current_context , e=True , sao="smooth")
     cmds.artAttrCtx (current_context , e=True , value=1.0)
     cmds.artAttrCtx (current_context , e=True , opacity=1.0)
-    cmds.artAttrCtx (current_context , e=True , clear=True)
+    for _ in range (iterations):
+        cmds.artAttrCtx (current_context , e=True , clear=True)
     cmds.artAttrCtx (current_context , e=True , sao=operation)
     cmds.artAttrCtx (current_context , e=True , value=value)
     cmds.artAttrCtx (current_context , e=True , opacity=opacity)
