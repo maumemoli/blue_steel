@@ -306,6 +306,17 @@ class BlueSteelEditor(object):
             if shape_value != value:
                 raise ValueError(f"Failed to set shape '{shape}' to value {value}. Current value is {shape_value}.")
 
+    @undoable
+    def delete_work_shapes(self, work_shape_names: list):
+        """
+        Delete multiple work shapes from the blendshape and remove their connections.
+        Parameters:
+            work_shape_names (list): A list of work shape names to delete
+        """
+        for work_shape_name in work_shape_names:
+            self.delete_work_shape(work_shape_name)
+
+
     def delete_work_shape(self, work_shape_name: str):
         """
         Delete a work shape from the blendshape and remove its connections.
@@ -646,8 +657,7 @@ class BlueSteelEditor(object):
         # finally we need to update the shape in the network
         self.sync_network()
 
-            
-        # we also need to rename the nodes in the network
+
     def commit_shape(self, shape_name: str, mesh: str):
         """
         Commit a single shape to the Blue Steel rig.
@@ -658,7 +668,7 @@ class BlueSteelEditor(object):
             None
         """
         if not cmds.objExists(mesh):
-            mesh = self.blendshape.get_base()
+            mesh = self.base_mesh
         shape = self.network.create_shape(shape_name)
         # check if the shape is valid
         if shape.type == "InvalidShape":
@@ -674,26 +684,66 @@ class BlueSteelEditor(object):
             self.add_combo_shape(mesh, shape)
         return shape
 
-    def add_empty_primary_shape(self, shape_name: str)->Shape:
+    def add_selected_at_current_pose(self):
         """
-        Add an empty primary shape to the rig.
+        Define the current pose from the control and commit the selected shape to the Blue Steel rig."""
+        selection = cmds.ls(selection=True, long=True) or []
+        # let's try to find a valid mesh in the selection
+        mesh = self.base_mesh
+        for sel in selection:
+            if sel == self.base_mesh:
+                continue
+            shapes = cmds.listRelatives(sel, shapes=True, fullPath=True) or []
+            for shape in shapes:
+                if cmds.nodeType(shape) == "mesh":
+                    mesh = sel
+                    break
+            if mesh:
+                break
+        pose_name = self.get_active_state_name()
+        if not pose_name:
+            raise ValueError("No active state found on the control to commit the shape to.")
+        shape = self.network.get_shape(pose_name)
+        self.commit_shape(pose_name, mesh)
+        if shape is None and mesh == self.base_mesh:
+            # we need to reset the delta of this one.
+            self.reset_delta_for_shapes([pose_name])
+        return pose_name
+
+
+    def add_new_primary_shape(self, shape_name: str)->Shape:
+        """
+        Add a new primary shape to the rig.
+        If there is a mesh selected it will be used as the source for the primary shape,
+        otherwise the base mesh will be used.
         Parameters:
             shape_name (str): The name of the shape to add
         Returns:
             Shape: The added primary shape
         """
+        selection = cmds.ls(selection=True, long=True) or []
+        # let's try to find a valid mesh in the selection
+        mesh = None
+        for sel in selection:
+            shapes = cmds.listRelatives(sel, shapes=True, fullPath=True) or []
+            for shape in shapes:
+                if cmds.nodeType(shape) == "mesh":
+                    mesh = sel
+                    break
+            if mesh:
+                break
         if self.blendshape is None:
             raise ValueError("Main blendshape not found.")
         if shape_name not in self.network._shapes:
             shape = self.network.create_shape(shape_name)
             if shape.type != "PrimaryShape":
                 raise ValueError(f"Shape Name '{shape_name}' is not a valid primary shape name.")
-            self.add_primary_shape(None, shape)
+            self.add_primary_shape(mesh, shape)
         else:
             raise ValueError(f"Shape '{shape_name}' already exists in the network.")
         return shape
     
-    def add_empty_inbetween_shape(self, shape_name: str)->Shape:
+    def add_new_inbetween_shape(self, shape_name: str)->Shape:
         """
         Add an empty inbetween shape to the Blue Steel rig. An empty inbetween shape is a shape with no delta, it will be used as a placeholder for the inbetween shapes that will be added later.
         Parameters:
@@ -1407,7 +1457,7 @@ class BlueSteelEditor(object):
             raise ValueError(f"Shape {shape_name} does not exist in the work blendshape")
         parent_dir = self.work_blendshape.get_weight_parent_directory(w)
         self.work_blendshape.set_target_dir_weight_value(parent_dir, 0.0 if state else 1.0)
-        self.work_blendshape.set_target_mute_state(w, state)
+        # self.work_blendshape.set_target_mute_state(w, state)
 
 
     def set_shape_mute_state(self, shape_name: str, state: bool):
@@ -1463,7 +1513,22 @@ class BlueSteelEditor(object):
                 if shape:
                     muted_shapes.append(shape)
         return muted_shapes
-
+    
+    @undoable
+    def reset_delta_for_shapes(self, shape_names: list[str]):
+        """
+        Reset the delta for multiple shapes in the blendshape.
+        Parameters:
+            shape_names (list[str]): The names of the shapes to reset the delta for
+        Returns:
+            None
+        """
+        self.sync_network() # just rebuilding the network to make sure it's up to date
+        for shape_name in shape_names:
+            w = self.blendshape.get_weight_by_name(shape_name)
+            if w is None:
+                raise ValueError(f"Shape {shape_name} does not exist in the blendshape")
+            self.blendshape.reset_target(weight=w, use_api=False)  
 
 
     def add_inbetween_shape(self, mesh: str, shape: Shape):
@@ -1986,6 +2051,28 @@ class BlueSteelEditor(object):
             cmds.setAttr(f"{remap_node}.value[0].value_Position", previous_position)
             cmds.setAttr(f"{remap_node}.value[1].value_Position", current_position)
             cmds.setAttr(f"{remap_node}.value[2].value_Position", next_position)
+
+    def prepare_for_publishing(self):
+        """Prepare the rig for publishing by:
+         - Unmuting all the shapes.
+         - Zero out all the shapes.
+         - Remove the main blendshape node and the face control from the container.
+         - Remove all the nodes in the node network container from the container.
+         - Set the blendshape midlayer parent to 0 to unparent it from the shape editor directory.
+         - Delete the container and all the members left in it."""
+        self.unmute_all_shapes()
+        self.zero_out()
+        # we need to parentthe blendshape node mid parent layer to the group 0 in the shape editor to unparent it from the shape editor directory
+        self.blendshape.set_mid_layer_parent(0)
+        # we need to remove all the nodes in the node network container from the container
+        self.container.remove_member(self.node_network_container.name)
+        for member in self.node_network_container.members:
+            self.node_network_container.remove_member(member)
+        # we need to remove the blendshape node from the container
+        self.container.remove_member(self.blendshape.name)
+        self.container.remove_member(self.face_ctrl)
+        cmds.delete(self.container.name)
+        # we need to pull out the 
 
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):

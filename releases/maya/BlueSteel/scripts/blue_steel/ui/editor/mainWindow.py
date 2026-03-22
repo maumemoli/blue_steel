@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Sequence, Set
 import os
+import sys
+import traceback
 
 import maya.OpenMayaUI as omui
 from maya import cmds
@@ -33,15 +35,16 @@ from ..common.icons import (
 	DOWN_ARROW_ICON,
 	DUPLICATE_ICON,
 	MMTOOLS_ICON,
-	MUTE_TOGGLE_ICON,
 	MUTED_ICON,
 	REFRESH_ICON,
-	REMOVE_FILTER_ICON,
 	RENAME_ICON,
 	SECONDARY_ICON,
 	SELECT_ICON,
 	UP_ARROW_ICON,
 	ZERO_VALUE_ICON,
+	AUTO_POSE_ICON,
+	ADD_AT_POSE_ICON,
+
 )
 from .. import mmtools
 
@@ -1776,6 +1779,7 @@ class PrimaryTreeWidget(QTreeWidget):
 
 class PrimaryTreeValueDelegate(QStyledItemDelegate):
 	"""Delegate that draws/edits primaries tree value cells like slider rows."""
+	_MIN_ROW_HEIGHT = 24
 
 	valueCommitted = Signal(str, float)
 	valueDragStarted = Signal()
@@ -1820,6 +1824,12 @@ class PrimaryTreeValueDelegate(QStyledItemDelegate):
 
 	def _slider_rect(self, option) -> QRect:
 		return option.rect.adjusted(6, 3, -6, -3)
+
+	def sizeHint(self, option, index):  # noqa: N802
+		size = super().sizeHint(option, index)
+		if self._is_leaf_value_cell(index):
+			size.setHeight(max(size.height(), self._MIN_ROW_HEIGHT))
+		return size
 
 	def paint(self, painter: QPainter, option, index):
 		if not self._is_leaf_value_cell(index):
@@ -2086,7 +2096,10 @@ class MainWindow(QMainWindow):
 		self._primary_tree_folder_open_icon = QIcon()
 		self._primary_tree_folder_closed_icon = QIcon()
 		self.tool_buttons: List[QPushButton] = []
+		self.rename_editor_action: Optional[QAction] = None
 		self.explode_container_action: Optional[QAction] = None
+		self.simplex_action: Optional[QAction] = None
+		self.prepare_for_publishing_action: Optional[QAction] = None
 		self._workshape_rename_editor: Optional[QLineEdit] = None
 		self._workshape_rename_old_name: str = ""
 		self._primary_rename_editor: Optional[QLineEdit] = None
@@ -2172,32 +2185,45 @@ class MainWindow(QMainWindow):
 		shapes_header_layout = QHBoxLayout()
 		shapes_header_layout.setContentsMargins(6, 0, 4, 0)
 		shapes_header_layout.setSpacing(2)
-		self.shapes_downstream_button = QPushButton()
+		self.shapes_auto_pose_button = QPushButton("Auto Pose")
+		self.shapes_auto_pose_button.setIcon(AUTO_POSE_ICON)
+		self.shapes_auto_pose_button.setFixedHeight(26)
+		self.shapes_auto_pose_button.setToolTip("When enabled, selecting a shape sets it to its pose")
+		self.shapes_auto_pose_button.setCheckable(True)
+		self.shapes_auto_pose_button.setChecked(False)
+		shapes_header_layout.addWidget(self.shapes_auto_pose_button)
+
+		self.shapes_downstream_button = QPushButton("Downstream")
 		self.shapes_downstream_button.setIcon(DOWN_ARROW_ICON)
-		self.shapes_downstream_button.setIconSize(QSize(24, 24))
-		self.shapes_downstream_button.setFixedSize(32, 32)
+		self.shapes_downstream_button.setIconSize(QSize(16, 16))
+		self.shapes_downstream_button.setFixedHeight(26)
 		self.shapes_downstream_button.setToolTip("List Downstream Connections")
+		self.shapes_downstream_button.setCheckable(True)
+		self.shapes_downstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_downstream_button)
 
-		self.shapes_upstream_button = QPushButton()
+		self.shapes_upstream_button = QPushButton("Upstream")
 		self.shapes_upstream_button.setIcon(UP_ARROW_ICON)
-		self.shapes_upstream_button.setIconSize(QSize(24, 24))
-		self.shapes_upstream_button.setFixedSize(32, 32)
+		self.shapes_upstream_button.setIconSize(QSize(16, 16))
+		self.shapes_upstream_button.setFixedHeight(26)
 		self.shapes_upstream_button.setToolTip("List Upstream Connections")
+		self.shapes_upstream_button.setCheckable(True)
+		self.shapes_upstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_upstream_button)
-
-		self.shapes_remove_filter_button = QPushButton()
-		self.shapes_remove_filter_button.setIcon(REMOVE_FILTER_ICON)
-		self.shapes_remove_filter_button.setIconSize(QSize(24, 24))
-		self.shapes_remove_filter_button.setFixedSize(32, 32)
-		self.shapes_remove_filter_button.setToolTip("Remove filters and show all shapes")
-		shapes_header_layout.addWidget(self.shapes_remove_filter_button)
 		shapes_header_layout.addStretch(1)
 		shapes_layout.addLayout(shapes_header_layout)
 
 		shapes_layout.addWidget(self.shapes_view, 1)
+		shapes_footer_layout = QVBoxLayout()
+		shapes_footer_layout.setContentsMargins(0, 0, 0, 0)
+		shapes_footer_layout.setSpacing(0)
+		self.remove_shapes_button = QPushButton("Remove Shapes")
+		self.remove_shapes_button.setIcon(DELETE_ICON)
+		self.tool_buttons.append(self.remove_shapes_button)
+		shapes_footer_layout.addWidget(self.remove_shapes_button)
 		self.shapes_info = QLabel("Items: 0")
-		shapes_layout.addWidget(self.shapes_info)
+		shapes_footer_layout.addWidget(self.shapes_info)
+		shapes_layout.addLayout(shapes_footer_layout)
 
 		third_column_panel = QWidget()
 		third_column_layout = QVBoxLayout(third_column_panel)
@@ -2305,6 +2331,10 @@ class MainWindow(QMainWindow):
 				width: 0px;
 				height: 0px;
 			}
+			QTreeView::item {
+				padding-top: 2px;
+				padding-bottom: 2px;
+			}
 			"""
 		)
 
@@ -2398,7 +2428,7 @@ class MainWindow(QMainWindow):
 
 		try:
 			self._stop_active_blendshape_trackers()
-			self.current_editor.add_empty_inbetween_shape(inbetween_name)
+			self.current_editor.add_new_inbetween_shape(inbetween_name)
 		except Exception as exc:
 			self._set_status(f"Error adding inbetween shape: {exc}", error=True)
 			return
@@ -2500,6 +2530,9 @@ class MainWindow(QMainWindow):
 		main_tools_layout.setSpacing(10)
 		main_tools_layout.setSizeConstraint(QLayout.SetMinimumSize)
 
+		self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, track_enabled=False)
+		main_tools_layout.addWidget(self.mmtools_button)
+
 		editor_frame_layout = frameLayout.FrameLayout("Editor")
 		self.select_editor_button = self._create_tool_button("Select Controller", SELECT_ICON)
 		self.zero_all_button = self._create_tool_button("Zero All", ZERO_VALUE_ICON)
@@ -2511,14 +2544,15 @@ class MainWindow(QMainWindow):
 		editor_frame_layout.addWidget(self.duplicate_button)
 
 		edit_shapes_frame_layout = frameLayout.FrameLayout("Shapes Edit")
-		self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, track_enabled=False)
-		self.add_primary_button = self._create_tool_button("Add Primary", ADD_ICON)
+		self.add_primary_button = self._create_tool_button("Add New Primary", ADD_ICON)
+		self.add_primary_button.setToolTip("Add selected mesh as a new primary shape.\n If there are no selected meshes, creates an empty primary shape that can be filled by copying values from an existing shape.")
+		self.add_selected_at_current_pose_button = self._create_tool_button("Add At Current Pose", ADD_AT_POSE_ICON)
+		self.add_selected_at_current_pose_button.setToolTip("Add the selected mesh at the current pose extrapolating the name from the active values in the controller.\nFor example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen\nIf no mesh is selected an empty shape will be added.")
 		self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON)
-		self.remove_shapes_button = self._create_tool_button("Remove Shapes", DELETE_ICON)
-		edit_shapes_frame_layout.addWidget(self.mmtools_button)
-		edit_shapes_frame_layout.addWidget(self.add_primary_button)
 		edit_shapes_frame_layout.addWidget(self.commit_shapes_button)
-		edit_shapes_frame_layout.addWidget(self.remove_shapes_button)
+		edit_shapes_frame_layout.addWidget(self.add_primary_button)
+		edit_shapes_frame_layout.addWidget(self.add_selected_at_current_pose_button)
+
 
 		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
 		self.unmute_all_shapes_button = self._create_tool_button("Unmute All Shapes", SECONDARY_ICON)
@@ -2557,11 +2591,11 @@ class MainWindow(QMainWindow):
 		self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
 		self.primaries_search.textChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
-		self.shapes_downstream_button.clicked.connect(self._filter_shapes_downstream)
-		self.shapes_upstream_button.clicked.connect(self._filter_shapes_upstream)
-		self.shapes_remove_filter_button.clicked.connect(self._clear_shapes_filters)
+		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
+		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
 		self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
 		self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
+		self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
 		self.shapes_view.itemDoubleClicked.connect(self._on_shapes_double_clicked)
 		self.shapes_view.itemExpanded.connect(self._on_shapes_item_expanded)
 		self.shapes_view.itemCollapsed.connect(self._on_shapes_item_collapsed)
@@ -2577,6 +2611,7 @@ class MainWindow(QMainWindow):
 		self.duplicate_button.clicked.connect(self.duplicate_at_value)
 		self.add_primary_button.clicked.connect(self._on_add_primary_clicked)
 		self.commit_shapes_button.clicked.connect(self.commit_selected)
+		self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
 		self.remove_shapes_button.clicked.connect(self.remove_selected_shapes)
 		self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
 		self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
@@ -2617,6 +2652,14 @@ class MainWindow(QMainWindow):
 		activate = self.current_editor is not None
 		for button in self.tool_buttons:
 			button.setEnabled(activate)
+		if self.rename_editor_action is not None:
+			self.rename_editor_action.setEnabled(activate)
+		if self.explode_container_action is not None:
+			self.explode_container_action.setEnabled(activate)
+		if self.simplex_action is not None:
+			self.simplex_action.setEnabled(activate)
+		if self.prepare_for_publishing_action is not None:
+			self.prepare_for_publishing_action.setEnabled(activate)
 
 	def _selected_shape_names_from_shapes_view(self) -> List[str]:
 		names: List[str] = []
@@ -2679,6 +2722,36 @@ class MainWindow(QMainWindow):
 		meshes_label = "poly mesh" if len(poly_meshes) == 1 else "poly meshes"
 		self._set_status(f"Committed {committed_count} {meshes_label} to '{self.current_editor.name}'.")
 
+	def add_selected_at_current_pose(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		
+		try:
+			if self.blendshape_tracker is not None:
+				self.blendshape_tracker.stop()
+			committed_shape_name = self.current_editor.add_selected_at_current_pose()
+		except Exception as exc:
+			self._set_status(f"Error adding shape at current pose: {exc}", error=True)
+			return
+		finally:
+			if self.blendshape_tracker is not None:
+				self.blendshape_tracker.start()
+			self._reload_shapes_from_editor()
+
+		if committed_shape_name:
+			self._set_shape_pose_by_name(committed_shape_name)
+			selected = self._select_shape_in_shapes_tree(committed_shape_name, ensure_visible=True)
+			if selected:
+				self._set_status(f"Added shape '{committed_shape_name}' at current pose, and selected it in Shapes.")
+			else:
+				self._set_status(
+					f"Added shape '{committed_shape_name}' at current pose, but could not select it in Shapes.",
+					warning=True,
+				)
+		else:
+			self._set_status("Added shape at current pose, but no active values found to determine the name.", warning=True)
+
 	def _on_add_primary_clicked(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
@@ -2696,7 +2769,7 @@ class MainWindow(QMainWindow):
 
 		try:
 			self._stop_active_blendshape_trackers()
-			self.current_editor.add_empty_primary_shape(shape_name)
+			self.current_editor.add_new_primary_shape(shape_name)
 		except Exception as exc:
 			self._set_status(f"Error adding primary shape: {exc}", error=True)
 			return
@@ -2896,10 +2969,11 @@ class MainWindow(QMainWindow):
 		export_menu.addAction(export_objs_action)
 
 		utilities_menu = menu_bar.addMenu("Utilities")
-		rename_editor_action = QAction("Rename Editor", self)
-		rename_editor_action.setToolTip("Rename the current Blue Steel Editor system.")
-		rename_editor_action.triggered.connect(self._rename_current_editor)
-		utilities_menu.addAction(rename_editor_action)
+		self.rename_editor_action = QAction("Rename Editor", self)
+		self.rename_editor_action.setToolTip("Rename the current Blue Steel Editor system.")
+		self.rename_editor_action.triggered.connect(self._rename_current_editor)
+		self.rename_editor_action.setEnabled(self.current_editor is not None)
+		utilities_menu.addAction(self.rename_editor_action)
 
 		recover_editor_action = QAction("Recover Deleted Editors", self)
 		recover_editor_action.setToolTip("Not available yet in the Model/View editor.")
@@ -2912,13 +2986,21 @@ class MainWindow(QMainWindow):
 		self.explode_container_action = QAction("", self)
 		self._toggle_exploded_container_action_state(collapsed)
 		self.explode_container_action.triggered.connect(self._toggle_node_editor_container_view)
+		self.explode_container_action.setEnabled(self.current_editor is not None)
 		utilities_menu.addAction(self.explode_container_action)
 
 		conversion_menu = menu_bar.addMenu("Converters/Clean-Up")
-		simplex_action = QAction("Convert Simplex", self)
-		simplex_action.setToolTip("Convert a Simplex facial system into Blue Steel.")
-		simplex_action.triggered.connect(self._on_simplex_converter_requested)
-		conversion_menu.addAction(simplex_action)
+		self.simplex_action = QAction("Convert Simplex", self)
+		self.simplex_action.setToolTip("Convert a Simplex facial system into Blue Steel.")
+		self.simplex_action.triggered.connect(self._on_simplex_converter_requested)
+		self.simplex_action.setEnabled(self.current_editor is not None)
+		conversion_menu.addAction(self.simplex_action)
+		conversion_menu.addSeparator()
+		self.prepare_for_publishing_action = QAction("Prepare For Publishing", self)
+		self.prepare_for_publishing_action.setToolTip("Prepare the current editor for publishing and remove editor access.")
+		self.prepare_for_publishing_action.triggered.connect(self._on_prepare_for_publishing_requested)
+		self.prepare_for_publishing_action.setEnabled(self.current_editor is not None)
+		conversion_menu.addAction(self.prepare_for_publishing_action)
 
 		help_menu = menu_bar.addMenu("Help")
 		about_action = QAction("About", self)
@@ -3068,6 +3150,27 @@ class MainWindow(QMainWindow):
 		self._reload_editor_menu()
 		self._set_status("Simplex conversion completed.")
 
+	def _on_prepare_for_publishing_requested(self) -> None:
+		if self.current_editor is None:
+			self._set_status("Please select a Blue Steel Editor before preparing for publishing.", warning=True)
+			return
+
+		reply = QMessageBox.question(
+			self,
+			"Prepare For Publishing",
+			"This action will prepare the system for publishing and you will no longer have access to the editor controls for this system.\n\nDo you want to continue?",
+			QMessageBox.Yes | QMessageBox.No,
+			QMessageBox.No,
+		)
+		if reply != QMessageBox.Yes:
+			self._set_status("Prepare for publishing cancelled.")
+			return
+		try:
+			self.current_editor.prepare_for_publishing()
+		except Exception as exc:
+			self._set_status(f"Error preparing for publishing: {exc}", error=True)
+			return
+
 	def _on_value_drag_state_changed(self, active: bool) -> None:
 		self._primaries_drag_active = active
 		if not active:
@@ -3091,12 +3194,26 @@ class MainWindow(QMainWindow):
 			return None
 		return selected_names[0]
 
-	def _filter_shapes_downstream(self) -> None:
+	def _set_directional_shapes_filter_state(self, *, downstream_checked: bool, upstream_checked: bool) -> None:
+		self.shapes_downstream_button.blockSignals(True)
+		self.shapes_upstream_button.blockSignals(True)
+		self.shapes_downstream_button.setChecked(downstream_checked)
+		self.shapes_upstream_button.setChecked(upstream_checked)
+		self.shapes_downstream_button.blockSignals(False)
+		self.shapes_upstream_button.blockSignals(False)
+
+	def _filter_shapes_downstream(self, checked: bool) -> None:
+		if not checked:
+			self._clear_shapes_filters(keep_selection=True)
+			self._set_status("Cleared downstream filter.")
+			return
 		if self.current_editor is None:
+			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("No system selected.", warning=True)
 			return
 		shape_name = self._first_selected_shape_name()
 		if not shape_name:
+			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("Select one shape first.", warning=True)
 			return
 		self._clear_shapes_filters(keep_selection=True)
@@ -3105,16 +3222,23 @@ class MainWindow(QMainWindow):
 		self.shapes_search.setText("")
 		self._shapes_proxy.set_search_text("")
 		self._shapes_proxy.set_visible_names(tuple(visible_names))
+		self._set_directional_shapes_filter_state(downstream_checked=True, upstream_checked=False)
 		self._rebuild_shapes_tree()
 		self._update_info_labels()
 		self._set_status(f"Filtered downstream shapes from '{shape_name}'.")
 
-	def _filter_shapes_upstream(self) -> None:
+	def _filter_shapes_upstream(self, checked: bool) -> None:
+		if not checked:
+			self._clear_shapes_filters(keep_selection=True)
+			self._set_status("Cleared upstream filter.")
+			return
 		if self.current_editor is None:
+			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("No system selected.", warning=True)
 			return
 		shape_name = self._first_selected_shape_name()
 		if not shape_name:
+			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("Select one shape first.", warning=True)
 			return
 		self._clear_shapes_filters(keep_selection=True)
@@ -3123,6 +3247,7 @@ class MainWindow(QMainWindow):
 		self.shapes_search.setText("")
 		self._shapes_proxy.set_search_text("")
 		self._shapes_proxy.set_visible_names(tuple(visible_names))
+		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=True)
 		self._rebuild_shapes_tree()
 		self._update_info_labels()
 		self._set_status(f"Filtered upstream shapes from '{shape_name}'.")
@@ -3139,6 +3264,7 @@ class MainWindow(QMainWindow):
 		self._active_shapes_proxy.set_search_text("")
 		self._active_shapes_proxy.set_selected_primaries(tuple())
 		self._active_shapes_proxy.set_visible_names(None)
+		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 		self._apply_shapes_name_sort()
 		self._rebuild_shapes_tree()
 		self._update_delegate_name_columns()
@@ -3176,6 +3302,14 @@ class MainWindow(QMainWindow):
 		self._update_delegate_name_columns()
 		self._update_info_labels()
 
+	def _on_shapes_selection_changed(self) -> None:
+		if self.current_editor is None or not self.shapes_auto_pose_button.isChecked():
+			return
+		shape_names = self._selected_shape_names_from_shapes_view()
+		if not shape_names:
+			return
+		self._set_shape_pose_by_name(shape_names[0])
+
 	def _on_shapes_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
 		"""Set clicked shape to its pose from the shapes tree."""
 		if item is None or bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
@@ -3194,12 +3328,26 @@ class MainWindow(QMainWindow):
 
 		menu = QMenu(self.shapes_view)
 		extract_action = menu.addAction("Extract Selected")
+		reset_deltas_action = menu.addAction("Reset Deltas")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(self.shapes_view.viewport().mapToGlobal(pos))
 		else:
 			selected_action = menu.exec_(self.shapes_view.viewport().mapToGlobal(pos))
 		if selected_action == extract_action:
 			self.extract_selected()
+		elif selected_action == reset_deltas_action:
+			try:
+				if self.blendshape_tracker is not None:
+					self.blendshape_tracker.stop()
+				self.current_editor.reset_delta_for_shapes(selected_shapes)
+			except Exception as exc:
+				self._set_status(f"Error resetting deltas: {exc}", error=True)
+				return
+			finally:
+				if self.blendshape_tracker is not None:
+					self.blendshape_tracker.start()
+			self._reload_shapes_from_editor()
+			self._set_status(f"Reset deltas for {len(selected_shapes)} shape(s).")
 
 	def _on_shapes_item_expanded(self, item: QTreeWidgetItem) -> None:
 		if item is None or not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
@@ -3659,11 +3807,10 @@ class MainWindow(QMainWindow):
 		removed_count = 0
 		try:
 			self._stop_active_blendshape_trackers()
-			for shape_name in shape_names:
-				self.current_editor.delete_work_shape(shape_name)
-				removed_count += 1
+			self.current_editor.delete_work_shapes(shape_names)
+			removed_count = len(shape_names)
 		except Exception as exc:
-			self._set_status(f"Error removing work shape '{shape_name}': {exc}", error=True)
+			self._set_status(f"Error removing work shape(s): {exc}", error=True)
 			return
 		finally:
 			self._start_active_blendshape_trackers()
@@ -4004,6 +4151,8 @@ class MainWindow(QMainWindow):
 	def _set_status(self, message: str, *, warning: bool = False, error: bool = False) -> None:
 		self.status_bar.showMessage(message)
 		if error:
+			if sys.exc_info()[0] is not None:
+				traceback.print_exc()
 			self.status_bar.setStyleSheet("color: #ff6b6b;")
 		elif warning:
 			self.status_bar.setStyleSheet("color: #e7b45a;")
@@ -4230,6 +4379,10 @@ class MainWindow(QMainWindow):
 			shape_name = item.data(0, self.PRIMARY_TREE_NAME_ROLE)
 			if shape_name:
 				selected_names.add(shape_name)
+		# Changing primary selection should remove directional (upstream/downstream) filters.
+		self._shapes_proxy.set_visible_names(None)
+		self._active_shapes_proxy.set_visible_names(None)
+		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 		self._shapes_proxy.set_selected_primaries(selected_names)
 		self._rebuild_shapes_tree()
 		self._update_delegate_name_columns()
