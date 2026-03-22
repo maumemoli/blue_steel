@@ -54,87 +54,7 @@ class Weight(str):
         target_items = " ,".join([str(item) for item in self.target_items])
         return f"Weight: (name: {super().__repr__()} id: {self.id} target_items: [{target_items}])"
 
-    # @property
-    # def attr(self)-> str or None: # type: ignore
-    #     if self.blend_shape:
-    #         return f"{self.blend_shape}.{self}"
-    #     return None
 
-    # @property
-    # def value(self)-> float or None: # type: ignore
-    #     if self.blend_shape:
-    #         return cmds.getAttr(f"{self.blend_shape}.{self}")
-    #     return None
-    
-    # @value.setter
-    # def value(self, val: float):
-    #     if self.blend_shape and not self.driver:
-    #         cmds.setAttr(f"{self.blend_shape}.{self}", val)
-
-    # @property
-    # def driver(self)-> str or None: # type: ignore
-    #     if self.blend_shape and cmds.objExists(self.blend_shape):
-    #         connections = cmds.listConnections(f"{self.blend_shape}.{self}",
-    #                                            source=True,
-    #                                            destination=False) or []
-    #         if connections:
-    #             return connections[0]
-    #     else:
-    #         return None
-    
-    # @property
-    # def parent_directory(self)-> TargetDirectory or None: # type: ignore
-    #     if self.parent_directory_index is not None and self.blend_shape:
-    #         return TargetDirectory(index=self.parent_directory_index,
-    #                                blendshape=self.blend_shape)
-    #     else:
-    #         return None
-
-    # @parent_directory.setter
-    # def parent_directory(self, directory: TargetDirectory):
-    #     if self.blend_shape:
-    #         self.parent_directory_index = directory.index
-
-    # @property
-    # def parent_directory_index(self)-> int or None: # type: ignore
-    #     if self.blend_shape:
-    #         parent_dir_indices = cmds.getAttr(f"{self.blend_shape}.parentDirectory", mi=True) or []
-    #         if self.id in parent_dir_indices:
-    #             parent_index = cmds.getAttr(f"{self.blend_shape}.parentDirectory[{self.id}]")
-    #             return parent_index
-    #     else:
-    #         return None
-    
-    # @parent_directory_index.setter
-    # def parent_directory_index(self, index: int):
-    #     if self.blend_shape:
-    #         target_dirs_indices = cmds.getAttr(f"{self.blend_shape}.targetDirectory", mi=True) or []
-    #         if index not in target_dirs_indices:
-    #             raise ValueError(f"Target directory index {index} does not exist"
-    #                              f" in blendshape '{self.blend_shape}'")
-            
-    #         old_parent = self.parent_directory
-    #         cmds.setAttr(f"{self.blend_shape}.parentDirectory[{self.id}]", index)
-            
-    #         # Remove from old parent
-    #         if old_parent:
-    #             old_parent_child_indices = old_parent.child_indices
-    #             # print("Old parent indices before removing:", old_parent_child_indices)
-    #             if self.id in old_parent_child_indices:
-    #                 old_parent_child_indices.remove(self.id)
-    #                 #print("Old parent indices after removing:", old_parent_child_indices)
-    #                 old_parent.child_indices = old_parent_child_indices
-    #                 #print("Old parent set to:", old_parent.child_indices)
-
-    #         # Add to new parent
-    #         new_parent = TargetDirectory(index=index, blendshape=self.blend_shape)
-    #         # print("New parent:", new_parent)
-    #         new_parent_child_indices = new_parent.child_indices
-    #         #print("New parent indices before adding:", new_parent_child_indices)
-    #         if self.id not in new_parent_child_indices:
-    #             new_parent_child_indices.append(self.id)
-    #             new_parent.child_indices = new_parent_child_indices
-                # print("New parent indices after adding:", new_parent.child_indices)
     
 class Blendshape(object):
     """
@@ -170,7 +90,38 @@ class Blendshape(object):
     @property
     def mid_layer_id(self):
         return cmds.getAttr(f"{self.name}.midLayerId")
+    
+    @property
+    def mid_layer_parent(self):
+        return cmds.getAttr(f"{self.name}.midLayerParent")
 
+    #-------------------------------------------------------------------
+    # Mid layer functions
+    #-------------------------------------------------------------------
+    def set_mid_layer_parent(self, mid_layer_parent_id: int):
+        """
+        Sets the mid layer ID for the blendshape node.
+        Parameters:
+            mid_layer_parent_id (int): The mid layer parent ID to set.
+        """
+        current_parent_id = self.mid_layer_parent
+        layer_id = self.mid_layer_id
+        # we need to check if the directory that hosts this mid layer id exists or not
+        current_parent_dir_name = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].directoryName")
+        current_parent_dir_indices = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].childIndices") or []
+        print(f"Current mid layer parent directory: {current_parent_dir_name} with child indices: {current_parent_dir_indices}")
+        if layer_id in current_parent_dir_indices:
+            # we need to remove it from the current parent directory first
+            current_parent_dir_indices.remove(layer_id)
+            cmds.setAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].childIndices", current_parent_dir_indices, type="Int32Array")
+        # then we can set the new mid layer id
+        new_mid_layer_parent_dir_indices = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{mid_layer_parent_id}].childIndices") or []
+        if layer_id not in new_mid_layer_parent_dir_indices:
+            new_mid_layer_parent_dir_indices.append(layer_id)
+            cmds.setAttr(f"shapeEditorManager.blendShapeDirectory[{mid_layer_parent_id}].childIndices", new_mid_layer_parent_dir_indices, type="Int32Array")
+        cmds.setAttr(f"{self.name}.midLayerParent", mid_layer_parent_id)
+
+    
 
     # ------------------------------------------------------------------
     # Creation methods
@@ -1615,7 +1566,11 @@ class Blendshape(object):
             cmds.setAttr(input_points_plug.name(), len(points), *points.tolist(), type="pointArray")
 
 
-    def set_target_components(self, weight: Weight, components:np.ndarray, target_value: int = 6000):
+    def set_target_components(self,
+                              weight: Weight,
+                              components: np.ndarray,
+                              target_value: int = 6000,
+                              use_api: bool = False):
         """
         Sets the component indices for the specified
         weight in the blendshape node.
@@ -1624,6 +1579,8 @@ class Blendshape(object):
                                         to set.
             target_value (int): The target value for which to set
                                 the component indices. Default is 6000.
+            use_api (bool): Whether to use the Maya API for setting components.
+                            Default is False (undoable cmds path).
         Example:
             >>> blendshape = Blendshape("myBlendshape")
             >>> weight = blendshape.get_weight_by_name("Smile")
@@ -1639,18 +1596,27 @@ class Blendshape(object):
             if child.name().endswith("inputComponentsTarget"):
                 input_components_plug = child
 
+        if input_components_plug is None:
+            raise RuntimeError("Could not find inputComponentsTarget plug")
+
         comp_fn = om2.MFnSingleIndexedComponent()
         comp_obj = comp_fn.create(om2.MFn.kMeshVertComponent)
         comp_fn.addElements(components)
         comp_data = om2.MFnComponentListData()
         comp_data.create()
         comp_data.add(comp_obj)
-        
-        # Set plugs with new data
-        sel_list = om2.MSelectionList()
-        sel_list.add(input_components_plug.name())
-        input_components_plug = sel_list.getPlug(0)
-        input_components_plug.setMObject(comp_data.object())
+
+        if use_api:
+            # Set plugs with new data using API (faster, not undoable).
+            sel_list = om2.MSelectionList()
+            sel_list.add(input_components_plug.name())
+            input_components_plug = sel_list.getPlug(0)
+            input_components_plug.setMObject(comp_data.object())
+            return
+
+        # Undoable path using cmds.setAttr with componentList payload.
+        component_tokens = [f"vtx[{int(index)}]" for index in np.asarray(components).flatten().tolist()]
+        cmds.setAttr(input_components_plug.name(), len(component_tokens), *component_tokens, type="componentList")
 
     def get_target_delta(self, weight: Weight, target_value: int = 6000)-> np.ndarray:
         """
@@ -1713,7 +1679,7 @@ class Blendshape(object):
             components = np.insert(components, 0, 0)
             points = np.vstack([np.array([[0.0, 0.0, 0.0]]), points])
         self.set_target_points(weight, points, target_value, use_api)
-        self.set_target_components(weight, components, target_value)
+        self.set_target_components(weight, components, target_value, use_api=use_api)
         return
 
 
@@ -1844,5 +1810,6 @@ class Blendshape(object):
                                            use_api=True)
                     self.set_target_components(weight=weight,
                                                components=components,
-                                               target_value=target_value)
+                                               target_value=target_value,
+                                               use_api=True)
             return
