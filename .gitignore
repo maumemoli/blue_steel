@@ -49,3 +49,5 @@ releases/maya/scripts/blue_steel/api/trackers_old.py
 releases/maya/scripts/blue_steel/api/blendShapeView.py
 releases/maya/unittest
 scripts/blue_steel_start_maya_2022.py
+*.afdesign
+*.afdesign~lock~

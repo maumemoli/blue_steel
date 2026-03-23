@@ -2158,6 +2158,8 @@ class MainWindow(QMainWindow):
 		self._primary_tree_items: Dict[str, QTreeWidgetItem] = {}
 		self._shape_tree_items: Dict[str, QTreeWidgetItem] = {}
 		self._syncing_shapes_tree = False
+		self._upstream_shapes_cache: Dict[str, Set[str]] = {}
+		self._downstream_shapes_cache: Dict[str, Set[str]] = {}
 		self._primary_tree_folder_open_icon = QIcon()
 		self._primary_tree_folder_closed_icon = QIcon()
 		self.tool_buttons: List[QPushButton] = []
@@ -3285,6 +3287,29 @@ class MainWindow(QMainWindow):
 			return None
 		return selected_names[0]
 
+	def _clear_related_shapes_cache(self) -> None:
+		self._upstream_shapes_cache.clear()
+		self._downstream_shapes_cache.clear()
+
+	def _get_cached_related_shape_names(self, shape_name: str, *, upstream: bool) -> Set[str]:
+		"""Return cached related shape-name set for one source shape and direction."""
+		if self.current_editor is None:
+			return set()
+
+		cache = self._upstream_shapes_cache if upstream else self._downstream_shapes_cache
+		cached_names = cache.get(shape_name)
+		if cached_names is not None:
+			return set(cached_names)
+
+		if upstream:
+			related = self.current_editor.get_related_shapes_upstream(shape_name).sort_for_display() or []
+		else:
+			related = self.current_editor.get_related_shapes_downstream(shape_name).sort_for_display() or []
+
+		names = {str(shape) for shape in related}
+		cache[shape_name] = names
+		return set(names)
+
 	def _set_directional_shapes_filter_state(self, *, downstream_checked: bool, upstream_checked: bool) -> None:
 		self.shapes_downstream_button.blockSignals(True)
 		self.shapes_upstream_button.blockSignals(True)
@@ -3307,14 +3332,13 @@ class MainWindow(QMainWindow):
 			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("Select one shape first.", warning=True)
 			return
-		self._clear_shapes_filters(keep_selection=True)
-		downstream = self.current_editor.get_related_shapes_downstream(shape_name).sort_for_display() or []
-		visible_names = {str(shape) for shape in downstream}
-		self.shapes_search.setText("")
-		self._shapes_proxy.set_search_text("")
+		self._clear_shapes_filters(keep_selection=True, rebuild_ui=False)
+		visible_names = self._get_cached_related_shape_names(shape_name, upstream=False)
 		self._shapes_proxy.set_visible_names(tuple(visible_names))
 		self._set_directional_shapes_filter_state(downstream_checked=True, upstream_checked=False)
+		self._apply_shapes_name_sort()
 		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
 		self._update_info_labels()
 		self._set_status(f"Filtered downstream shapes from '{shape_name}'.")
 
@@ -3332,18 +3356,17 @@ class MainWindow(QMainWindow):
 			self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 			self._set_status("Select one shape first.", warning=True)
 			return
-		self._clear_shapes_filters(keep_selection=True)
-		upstream = self.current_editor.get_related_shapes_upstream(shape_name).sort_for_display() or []
-		visible_names = {str(shape) for shape in upstream}
-		self.shapes_search.setText("")
-		self._shapes_proxy.set_search_text("")
+		self._clear_shapes_filters(keep_selection=True, rebuild_ui=False)
+		visible_names = self._get_cached_related_shape_names(shape_name, upstream=True)
 		self._shapes_proxy.set_visible_names(tuple(visible_names))
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=True)
+		self._apply_shapes_name_sort()
 		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
 		self._update_info_labels()
 		self._set_status(f"Filtered upstream shapes from '{shape_name}'.")
 
-	def _clear_shapes_filters(self, keep_selection: bool = False) -> None:
+	def _clear_shapes_filters(self, keep_selection: bool = False, rebuild_ui: bool = True) -> None:
 		if not keep_selection:
 			self.primaries_view.clearSelection()
 		self.shapes_search.blockSignals(True)
@@ -3356,10 +3379,11 @@ class MainWindow(QMainWindow):
 		self._active_shapes_proxy.set_selected_primaries(tuple())
 		self._active_shapes_proxy.set_visible_names(None)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
-		self._apply_shapes_name_sort()
-		self._rebuild_shapes_tree()
-		self._update_delegate_name_columns()
-		self._update_info_labels()
+		if rebuild_ui:
+			self._apply_shapes_name_sort()
+			self._rebuild_shapes_tree()
+			self._update_delegate_name_columns()
+			self._update_info_labels()
 		if not keep_selection:
 			self._set_status("Cleared all shapes filters.")
 
@@ -3426,12 +3450,12 @@ class MainWindow(QMainWindow):
 		downstream_related_names: Set[str] = set()
 		for shape_name in selected_names:
 			try:
-				upstream_shapes = self.current_editor.get_related_shapes_upstream(shape_name) or []
-				downstream_shapes = self.current_editor.get_related_shapes_downstream(shape_name) or []
+				upstream_names = self._get_cached_related_shape_names(shape_name, upstream=True)
+				downstream_names = self._get_cached_related_shape_names(shape_name, upstream=False)
 			except Exception:
 				continue
-			upstream_related_names.update(str(shape) for shape in upstream_shapes if shape)
-			downstream_related_names.update(str(shape) for shape in downstream_shapes if shape)
+			upstream_related_names.update(upstream_names)
+			downstream_related_names.update(downstream_names)
 
 		upstream_related_names.difference_update(selected_names)
 		downstream_related_names.difference_update(selected_names)
@@ -4531,6 +4555,7 @@ class MainWindow(QMainWindow):
 		self._resort_value_sorted_lists_if_needed()
 
 	def _on_shape_structure_changed(self, *_args) -> None:
+		self._clear_related_shapes_cache()
 		self._reload_shapes_from_editor()
 
 	def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
@@ -4628,6 +4653,7 @@ class MainWindow(QMainWindow):
 				self.work_blendshape_tracker.start()
 
 	def _on_shape_renamed(self, *_args) -> None:
+		self._clear_related_shapes_cache()
 		self._reload_shapes_from_editor()
 
 	def _on_blendshape_deleted(self, blendshape_name: str) -> None:
@@ -4683,6 +4709,7 @@ class MainWindow(QMainWindow):
 		self._resort_value_sorted_lists_if_needed()
 
 	def _reload_shapes_from_editor(self) -> None:
+		self._clear_related_shapes_cache()
 		if self.current_editor is None:
 			self._shape_model.rebuild_from_editor(None)
 			self._work_shape_model.rebuild_from_editor(None)

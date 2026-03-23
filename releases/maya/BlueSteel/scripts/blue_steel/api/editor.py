@@ -1508,11 +1508,11 @@ class BlueSteelEditor(object):
         return muted_shapes
     
     @undoable
-    def reset_delta_for_shapes(self, shape_names: list[str]):
+    def reset_delta_for_shapes(self, shape_names: list):
         """
         Reset the delta for multiple shapes in the blendshape.
         Parameters:
-            shape_names (list[str]): The names of the shapes to reset the delta for
+            shape_names (list): The names of the shapes to reset the delta for
         Returns:
             None
         """
