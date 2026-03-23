@@ -150,6 +150,8 @@ class ShapeItemsModel(QAbstractListModel):
 	IsHeaderRole = Qt.UserRole + 8
 	HeaderLevelRole = Qt.UserRole + 9
 	HeaderCollapsedRole = Qt.UserRole + 10
+	UpstreamRelatedRole = Qt.UserRole + 11
+	DownstreamRelatedRole = Qt.UserRole + 12
 
 	primaryValueCommitted = Signal(str, float)
 
@@ -158,6 +160,8 @@ class ShapeItemsModel(QAbstractListModel):
 		self._editor: Optional[BlueSteelEditor] = None
 		self._rows: List[dict] = []
 		self._row_by_name: Dict[str, int] = {}
+		self._upstream_related_names: Set[str] = set()
+		self._downstream_related_names: Set[str] = set()
 
 	def set_editor(self, editor: Optional[BlueSteelEditor]) -> None:
 		"""Attach editor instance used for write operations."""
@@ -180,6 +184,8 @@ class ShapeItemsModel(QAbstractListModel):
 			self.IsHeaderRole: b"isHeader",
 			self.HeaderLevelRole: b"headerLevel",
 			self.HeaderCollapsedRole: b"headerCollapsed",
+			self.UpstreamRelatedRole: b"upstreamRelated",
+			self.DownstreamRelatedRole: b"downstreamRelated",
 		}
 
 	def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
@@ -205,6 +211,12 @@ class ShapeItemsModel(QAbstractListModel):
 			return bool(row.get("is_header", False))
 		if role == self.HeaderLevelRole:
 			return int(row.get("header_level", row.get("level", 0)))
+		if role == self.UpstreamRelatedRole:
+			name = str(row.get("name", ""))
+			return name in self._upstream_related_names
+		if role == self.DownstreamRelatedRole:
+			name = str(row.get("name", ""))
+			return name in self._downstream_related_names
 		return None
 
 	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
@@ -258,6 +270,8 @@ class ShapeItemsModel(QAbstractListModel):
 		self.beginResetModel()
 		self._rows = []
 		self._row_by_name = {}
+		self._upstream_related_names.clear()
+		self._downstream_related_names.clear()
 		self._editor = editor
 
 		if editor is None:
@@ -315,6 +329,34 @@ class ShapeItemsModel(QAbstractListModel):
 			self._rows.append(row_data)
 
 		self.endResetModel()
+
+	def set_related_shape_names(self, upstream_names: Sequence[str], downstream_names: Sequence[str]) -> None:
+		"""Update related-shape highlight state and notify changed rows only."""
+		new_upstream = {str(name) for name in (upstream_names or []) if name}
+		new_downstream = {str(name) for name in (downstream_names or []) if name}
+
+		if new_upstream == self._upstream_related_names and new_downstream == self._downstream_related_names:
+			return
+
+		changed_names = (
+			self._upstream_related_names
+			.union(self._downstream_related_names)
+			.union(new_upstream)
+			.union(new_downstream)
+		)
+		self._upstream_related_names = new_upstream
+		self._downstream_related_names = new_downstream
+
+		for shape_name in changed_names:
+			row_index = self._row_by_name.get(shape_name)
+			if row_index is None:
+				continue
+			model_index = self.index(row_index, 0)
+			self.dataChanged.emit(
+				model_index,
+				model_index,
+				[self.UpstreamRelatedRole, self.DownstreamRelatedRole, Qt.DisplayRole],
+			)
 
 	def get_name(self, source_row: int) -> Optional[str]:
 		if 0 <= source_row < len(self._rows):
@@ -1204,6 +1246,8 @@ class SliderItemDelegate(QStyledItemDelegate):
 		shape_type = str(model.data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
 		is_connected_work_shape = bool(model.data(index, WorkShapeItemsModel.ConnectedRole)) if is_work_shape else False
+		is_upstream_related = bool(model.data(index, ShapeItemsModel.UpstreamRelatedRole))
+		is_downstream_related = bool(model.data(index, ShapeItemsModel.DownstreamRelatedRole))
 
 		value_rect, text_rect = self._area_rects(option, index)
 		base_color = option.palette.base().color()
@@ -1213,6 +1257,13 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 		painter.save()
 		painter.fillRect(option.rect, base_color)
+
+		parent_view = self.parent()
+		is_shapes_tree = isinstance(parent_view, ShapeTreeWidget)
+		if is_shapes_tree and not (option.state & QStyle.State_Selected):
+			if is_upstream_related or is_downstream_related:
+				related_color = QColor(196, 196, 196, 90)
+				painter.fillRect(option.rect, related_color)
 
 		if option.state & QStyle.State_Selected:
 			sel = option.palette.highlight().color()
@@ -1713,6 +1764,7 @@ class ShapeTreeWidget(QTreeWidget):
 	"""Tree view for shapes that supports slider drag forwarding and shape drags."""
 
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
+	toggleUpstreamFilterRequested = Signal()
 
 	def _selected_draggable_shape_names(self) -> List[str]:
 		shape_names: List[str] = []
@@ -1739,6 +1791,23 @@ class ShapeTreeWidget(QTreeWidget):
 			drag.exec(drop_action)
 		else:
 			drag.exec_(drop_action)
+
+	def keyPressEvent(self, event):  # noqa: N802
+		"""Press F to center the selected/current shape row in the shapes panel."""
+		if event.key() == Qt.Key_F and event.modifiers() == Qt.NoModifier:
+			target_item = self.currentItem()
+			if target_item is None:
+				selected_items = self.selectedItems()
+				target_item = selected_items[0] if selected_items else None
+			if target_item is not None:
+				self.scrollToItem(target_item, QAbstractItemView.PositionAtCenter)
+				event.accept()
+				return
+		if event.key() == Qt.Key_G and event.modifiers() == Qt.NoModifier:
+			self.toggleUpstreamFilterRequested.emit()
+			event.accept()
+			return
+		super().keyPressEvent(event)
 
 	def mouseMoveEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
@@ -2098,6 +2167,7 @@ class MainWindow(QMainWindow):
 		self.tool_buttons: List[QPushButton] = []
 		self.rename_editor_action: Optional[QAction] = None
 		self.explode_container_action: Optional[QAction] = None
+		self.fix_invisible_blendshapes_action: Optional[QAction] = None
 		self.simplex_action: Optional[QAction] = None
 		self.prepare_for_publishing_action: Optional[QAction] = None
 		self._workshape_rename_editor: Optional[QLineEdit] = None
@@ -2596,6 +2666,7 @@ class MainWindow(QMainWindow):
 		self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
 		self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
 		self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
+		self.shapes_view.toggleUpstreamFilterRequested.connect(self._on_shapes_toggle_upstream_filter_requested)
 		self.shapes_view.itemDoubleClicked.connect(self._on_shapes_double_clicked)
 		self.shapes_view.itemExpanded.connect(self._on_shapes_item_expanded)
 		self.shapes_view.itemCollapsed.connect(self._on_shapes_item_collapsed)
@@ -2656,6 +2727,8 @@ class MainWindow(QMainWindow):
 			self.rename_editor_action.setEnabled(activate)
 		if self.explode_container_action is not None:
 			self.explode_container_action.setEnabled(activate)
+		if self.fix_invisible_blendshapes_action is not None:
+			self.fix_invisible_blendshapes_action.setEnabled(activate)
 		if self.simplex_action is not None:
 			self.simplex_action.setEnabled(activate)
 		if self.prepare_for_publishing_action is not None:
@@ -2989,6 +3062,14 @@ class MainWindow(QMainWindow):
 		self.explode_container_action.setEnabled(self.current_editor is not None)
 		utilities_menu.addAction(self.explode_container_action)
 
+		self.fix_invisible_blendshapes_action = QAction("Fix Invisible Blendshapes in the Shape Editor", self)
+		self.fix_invisible_blendshapes_action.setToolTip(
+			"Fix mid-layer blendshape directory indices that can hide targets in Maya Shape Editor."
+		)
+		self.fix_invisible_blendshapes_action.triggered.connect(self._on_fix_invisible_blendshapes_requested)
+		self.fix_invisible_blendshapes_action.setEnabled(self.current_editor is not None)
+		utilities_menu.addAction(self.fix_invisible_blendshapes_action)
+
 		conversion_menu = menu_bar.addMenu("Converters/Clean-Up")
 		self.simplex_action = QAction("Convert Simplex", self)
 		self.simplex_action.setToolTip("Convert a Simplex facial system into Blue Steel.")
@@ -3100,6 +3181,20 @@ class MainWindow(QMainWindow):
 
 		self.set_current_editor(renamed)
 		self._set_status(f"Renamed editor '{current_name}' to '{renamed}'.")
+
+	def _on_fix_invisible_blendshapes_requested(self) -> None:
+		"""Fix Shape Editor visibility issues caused by misplaced mid-layer directories."""
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		try:
+			self.current_editor.fix_mid_layer_blendshapes_indices_position()
+		except Exception as exc:
+			self._set_status(f"Error fixing invisible blendshapes: {exc}", error=True)
+			return
+
+		self._set_status("Fixed invisible blendshapes in the Shape Editor.")
 
 	def _toggle_exploded_container_action_state(self, collapsed: bool) -> None:
 		if self.explode_container_action is None:
@@ -3303,12 +3398,49 @@ class MainWindow(QMainWindow):
 		self._update_info_labels()
 
 	def _on_shapes_selection_changed(self) -> None:
+		self._update_related_shape_highlights_from_selection()
 		if self.current_editor is None or not self.shapes_auto_pose_button.isChecked():
 			return
 		shape_names = self._selected_shape_names_from_shapes_view()
 		if not shape_names:
 			return
 		self._set_shape_pose_by_name(shape_names[0])
+
+	def _on_shapes_toggle_upstream_filter_requested(self) -> None:
+		"""Toggle selected-shape upstream filter from Shapes panel G shortcut."""
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		self.shapes_upstream_button.toggle()
+
+	def _update_related_shape_highlights_from_selection(self) -> None:
+		"""Highlight upstream/downstream rows related to current shapes selection."""
+		if self.current_editor is None:
+			self._shape_model.set_related_shape_names(tuple(), tuple())
+			self.shapes_view.viewport().update()
+			return
+
+		selected_names = {str(name) for name in self._selected_shape_names_from_shapes_view() if name}
+		if not selected_names:
+			self._shape_model.set_related_shape_names(tuple(), tuple())
+			self.shapes_view.viewport().update()
+			return
+
+		upstream_related_names: Set[str] = set()
+		downstream_related_names: Set[str] = set()
+		for shape_name in selected_names:
+			try:
+				upstream_shapes = self.current_editor.get_related_shapes_upstream(shape_name) or []
+				downstream_shapes = self.current_editor.get_related_shapes_downstream(shape_name) or []
+			except Exception:
+				continue
+			upstream_related_names.update(str(shape) for shape in upstream_shapes if shape)
+			downstream_related_names.update(str(shape) for shape in downstream_shapes if shape)
+
+		upstream_related_names.difference_update(selected_names)
+		downstream_related_names.difference_update(selected_names)
+		self._shape_model.set_related_shape_names(tuple(upstream_related_names), tuple(downstream_related_names))
+		self.shapes_view.viewport().update()
 
 	def _on_shapes_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
 		"""Set clicked shape to its pose from the shapes tree."""
@@ -3604,6 +3736,8 @@ class MainWindow(QMainWindow):
 					ShapeItemsModel.IsHeaderRole,
 					ShapeItemsModel.HeaderLevelRole,
 					ShapeItemsModel.HeaderCollapsedRole,
+					ShapeItemsModel.UpstreamRelatedRole,
+					ShapeItemsModel.DownstreamRelatedRole,
 				):
 					leaf.setData(0, role, self._shapes_proxy.data(proxy_index, role))
 				leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
@@ -3639,6 +3773,8 @@ class MainWindow(QMainWindow):
 					ShapeItemsModel.EditableRole,
 					ShapeItemsModel.IsHeaderRole,
 					ShapeItemsModel.HeaderLevelRole,
+					ShapeItemsModel.UpstreamRelatedRole,
+					ShapeItemsModel.DownstreamRelatedRole,
 				):
 					item.setData(0, role, self._shape_model.data(source_index, role))
 		finally:
@@ -4568,6 +4704,7 @@ class MainWindow(QMainWindow):
 			self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
+			self._update_related_shape_highlights_from_selection()
 			self._update_delegate_name_columns()
 			self._update_info_labels()
 			self._update_work_shape_button_panel()

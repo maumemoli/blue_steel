@@ -99,16 +99,9 @@ class BlueSteelEditor(object):
         if not cmds.objExists(self.shape_editor_manager):
             raise ValueError(f"shapeEditorManager node does not exist in the scene.")
         self.copied_weight_map_values = None
-        
         # setting up the network
         self.build_network()
 
-
-    # def __del__(self):
-    #     print("BlueSteelEditor __del__ called")
-    #     if self.container_view:
-    #         self.container_view.kill()
-    #         del self.container_view
 
     @property
     def uuid(self):
