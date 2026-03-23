@@ -1803,10 +1803,6 @@ class ShapeTreeWidget(QTreeWidget):
 				self.scrollToItem(target_item, QAbstractItemView.PositionAtCenter)
 				event.accept()
 				return
-		if event.key() == Qt.Key_G and event.modifiers() == Qt.NoModifier:
-			self.toggleUpstreamFilterRequested.emit()
-			event.accept()
-			return
 		super().keyPressEvent(event)
 
 	def mouseMoveEvent(self, event):  # noqa: N802
