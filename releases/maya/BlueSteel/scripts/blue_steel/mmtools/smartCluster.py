@@ -52,11 +52,12 @@ def make_paint_cluster(*args):
             cluster.paint ()
 
 
-def iterations_from_vertex_count(vertex_count):
-    min_vert = 100
-    max_vert = 50000
-    min_iter = 1
-    max_iter = 5
+def iterations_from_vertex_count(vertex_count,
+                                 min_vert=100,
+                                 max_vert=50000,
+                                 min_iter=1,
+                                 max_iter=3):
+
     if vertex_count <= min_vert:
         return min_iter
     if vertex_count >= max_vert:
