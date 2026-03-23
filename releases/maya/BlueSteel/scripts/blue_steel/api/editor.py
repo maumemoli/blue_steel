@@ -716,8 +716,10 @@ class BlueSteelEditor(object):
         """
         selection = cmds.ls(selection=True, long=True) or []
         # let's try to find a valid mesh in the selection
-        mesh = None
+        mesh = self.base_mesh
         for sel in selection:
+            if sel == self.base_mesh:
+                continue
             shapes = cmds.listRelatives(sel, shapes=True, fullPath=True) or []
             for shape in shapes:
                 if cmds.nodeType(shape) == "mesh":
@@ -732,6 +734,9 @@ class BlueSteelEditor(object):
             if shape.type != "PrimaryShape":
                 raise ValueError(f"Shape Name '{shape_name}' is not a valid primary shape name.")
             self.add_primary_shape(mesh, shape)
+            if mesh == self.base_mesh:
+                # if the mesh is the base mesh that means that we are adding a shape with no delta, we need to reset the delta of this shape to avoid any issues with the remap nodes
+                self.reset_delta_for_shapes([shape_name])
         else:
             raise ValueError(f"Shape '{shape_name}' already exists in the network.")
         return shape
@@ -2045,6 +2050,8 @@ class BlueSteelEditor(object):
             cmds.setAttr(f"{remap_node}.value[1].value_Position", current_position)
             cmds.setAttr(f"{remap_node}.value[2].value_Position", next_position)
 
+
+    @undoable
     def prepare_for_publishing(self):
         """Prepare the rig for publishing by:
          - Unmuting all the shapes.
@@ -2064,7 +2071,9 @@ class BlueSteelEditor(object):
         # we need to remove the blendshape node from the container
         self.container.remove_member(self.blendshape.name)
         self.container.remove_member(self.face_ctrl)
+        cmds.delete(self.node_network_container.name)
         cmds.delete(self.container.name)
+        
         # we need to pull out the 
 
     # debug function to compare shapes. This will be removed on release

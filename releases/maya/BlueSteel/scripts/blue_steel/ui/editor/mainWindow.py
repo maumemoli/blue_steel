@@ -3302,9 +3302,9 @@ class MainWindow(QMainWindow):
 			return set(cached_names)
 
 		if upstream:
-			related = self.current_editor.get_related_shapes_upstream(shape_name).sort_for_display() or []
+			related = self.current_editor.get_related_shapes_upstream(shape_name) or []
 		else:
-			related = self.current_editor.get_related_shapes_downstream(shape_name).sort_for_display() or []
+			related = self.current_editor.get_related_shapes_downstream(shape_name) or []
 
 		names = {str(shape) for shape in related}
 		cache[shape_name] = names
@@ -3401,6 +3401,8 @@ class MainWindow(QMainWindow):
 
 	def _on_shape_model_data_changed(self, _top_left, _bottom_right, roles) -> None:
 		"""Run expensive UI refreshes only when non-value data changed."""
+		if self._syncing_shapes_tree:
+			return
 		self._sync_shapes_tree_items_from_source_rows(_top_left, _bottom_right)
 		if roles and all(role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole) for role in roles):
 			return
@@ -3783,6 +3785,12 @@ class MainWindow(QMainWindow):
 				item = self._shape_tree_items.get(shape_name)
 				if item is None:
 					continue
+				# Item pointers can become stale while the tree is rebuilt.
+				try:
+					_ = item.treeWidget()
+				except RuntimeError:
+					self._shape_tree_items.pop(shape_name, None)
+					continue
 				for role in (
 					ShapeItemsModel.NameRole,
 					ShapeItemsModel.TypeRole,
@@ -3796,7 +3804,11 @@ class MainWindow(QMainWindow):
 					ShapeItemsModel.UpstreamRelatedRole,
 					ShapeItemsModel.DownstreamRelatedRole,
 				):
-					item.setData(0, role, self._shape_model.data(source_index, role))
+					try:
+						item.setData(0, role, self._shape_model.data(source_index, role))
+					except RuntimeError:
+						self._shape_tree_items.pop(shape_name, None)
+						break
 		finally:
 			self._syncing_shapes_tree = False
 
