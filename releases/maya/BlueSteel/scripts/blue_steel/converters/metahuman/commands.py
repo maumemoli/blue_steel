@@ -2,8 +2,12 @@
 from os import makedirs
 from os import path as ospath
 from ...api.editor import BlueSteelEditor
+from ...api import mayaUtils
 from maya import cmds
+from maya import mel
 from maya.api import OpenMaya as om2
+from maya.api import OpenMayaAnim as oma2
+import numpy as np
 import re
 import os
 
@@ -349,6 +353,41 @@ def _get_mesh_dag_path(node_name: str) -> om2.MDagPath:
     return dag
 
 
+def _get_skincluster_fn(node_name: str) -> oma2.MFnSkinCluster:
+    sel = om2.MSelectionList()
+    sel.add(node_name)
+    skin_obj = sel.getDependNode(0)
+    return oma2.MFnSkinCluster(skin_obj)
+
+
+def _build_full_vertex_component(vertex_count: int):
+    comp_fn = om2.MFnSingleIndexedComponent()
+    comp_obj = comp_fn.create(om2.MFn.kMeshVertComponent)
+    if vertex_count > 0:
+        comp_fn.addElements(range(vertex_count))
+    return comp_obj
+
+
+def _build_skin_weight_matrix(
+    skin_data: MeshSkinWeights,
+    cluster_influences: List[str],
+    vertex_count: int,
+) -> np.ndarray:
+    """
+    Build a dense [vertex_count, influence_count] weight matrix from sparse DNA weights.
+    """
+    influence_to_col = {name: idx for idx, name in enumerate(cluster_influences)}
+    weights = np.zeros((vertex_count, len(cluster_influences)), dtype=np.float64)
+
+    for vertex_id in range(vertex_count):
+        for joint_name, weight in skin_data.vertex_weights.get(vertex_id, []):
+            col = influence_to_col.get(joint_name)
+            if col is not None:
+                weights[vertex_id, col] = float(weight)
+
+    return weights
+
+
 def _safe_maya_name(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
     if not safe:
@@ -369,16 +408,27 @@ def _build_target_mesh_from_deltas(
     """
     temp_mesh = cmds.duplicate(base_mesh, name=f"{_safe_maya_name(target_name)}_tmp")[0]
 
-    mesh_fn = om2.MFnMesh(_get_mesh_dag_path(temp_mesh))
-    points = mesh_fn.getPoints(om2.MSpace.kObject)
-    point_count = len(points)
+    if not vertex_indices or not deltas:
+        return temp_mesh
 
-    for vid, (dx, dy, dz) in zip(vertex_indices, deltas):
-        if 0 <= vid < point_count:
-            p = points[vid]
-            points[vid] = om2.MPoint(p.x + dx, p.y + dy, p.z + dz)
+    points = mayaUtils.get_mesh_raw_points(temp_mesh)
+    point_count = int(points.shape[0])
 
-    mesh_fn.setPoints(points, om2.MSpace.kObject)
+    sample_count = min(len(vertex_indices), len(deltas))
+    if sample_count <= 0:
+        return temp_mesh
+
+    indices = np.asarray(vertex_indices[:sample_count], dtype=np.int64)
+    delta_array = np.asarray(deltas[:sample_count], dtype=points.dtype)
+    if delta_array.ndim != 2 or delta_array.shape[1] != 3:
+        return temp_mesh
+
+    valid = (indices >= 0) & (indices < point_count)
+    if np.any(valid):
+        # Vectorized sparse add; supports repeated vertex IDs correctly.
+        np.add.at(points, indices[valid], delta_array[valid])
+        mayaUtils.set_mesh_raw_points(temp_mesh, points)
+
     return temp_mesh
 
 
@@ -657,6 +707,7 @@ def build_mesh_from_dna(mesh_name: str, dna_path: str) -> str:
 def read_blendshape_deltas(
     dna_path: str,
     mesh_name: str = "head_lod0_mesh",
+    show_progress: bool = True,
 ) -> List[BlendShapeDelta]:
     """
     Read sparse blendshape deltas for every target on a DNA mesh.
@@ -669,19 +720,128 @@ def read_blendshape_deltas(
 
     results: List[BlendShapeDelta] = []
     target_count = int(reader.getBlendShapeTargetCount(mesh_index))
-    for target_idx in range(target_count):
-        channel_idx = reader.getBlendShapeChannelIndex(mesh_index, target_idx)
-        target_name = str(reader.getBlendShapeChannelName(channel_idx))
-        vertex_indices, deltas = _extract_blendshape_target_deltas(reader, mesh_index, target_idx)
 
-        results.append(BlendShapeDelta(
-            target_index=target_idx,
-            target_name=target_name,
-            vertex_indices=vertex_indices,
-            deltas=deltas,
-        ))
+    if show_progress:
+        g_main_progress_bar = mel.eval('$tmp = $gMainProgressBar')
+        cmds.progressBar(
+            g_main_progress_bar,
+            edit=True,
+            beginProgress=True,
+            isInterruptable=True,
+            status=f"Reading {target_count} blendshape deltas...",
+            maxValue=max(target_count, 1),
+        )
+        try:
+            for target_idx in range(target_count):
+                if cmds.progressBar(g_main_progress_bar, query=True, isCancelled=True):
+                    raise RuntimeError("Blendshape delta reading cancelled by user.")
+
+                channel_idx = reader.getBlendShapeChannelIndex(mesh_index, target_idx)
+                target_name = str(reader.getBlendShapeChannelName(channel_idx))
+                vertex_indices, deltas = _extract_blendshape_target_deltas(reader, mesh_index, target_idx)
+
+                results.append(BlendShapeDelta(
+                    target_index=target_idx,
+                    target_name=target_name,
+                    vertex_indices=vertex_indices,
+                    deltas=deltas,
+                ))
+                cmds.progressBar(
+                    g_main_progress_bar,
+                    edit=True,
+                    step=1,
+                    status=f"Reading target: {target_name}",
+                )
+        finally:
+            cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
+    else:
+        for target_idx in range(target_count):
+            channel_idx = reader.getBlendShapeChannelIndex(mesh_index, target_idx)
+            target_name = str(reader.getBlendShapeChannelName(channel_idx))
+            vertex_indices, deltas = _extract_blendshape_target_deltas(reader, mesh_index, target_idx)
+
+            results.append(BlendShapeDelta(
+                target_index=target_idx,
+                target_name=target_name,
+                vertex_indices=vertex_indices,
+                deltas=deltas,
+            ))
 
     return results
+
+
+def _load_blendshape_targets_on_mesh(
+    mesh_name: str,
+    blendshape_node: str,
+    targets: List[BlendShapeDelta],
+    delete_target_meshes: bool = True,
+) -> str:
+    """
+    Apply pre-read blendshape targets to an existing blendShape node.
+    """
+    aliases = cmds.aliasAttr(blendshape_node, query=True) or []
+    existing_aliases = set(aliases[0::2])
+    weight_indices = cmds.getAttr(f"{blendshape_node}.weight", multiIndices=True) or []
+    next_weight_index = (max(weight_indices) + 1) if weight_indices else 0
+
+    g_main_progress_bar = mel.eval('$tmp = $gMainProgressBar')
+    total_targets = len(targets)
+    cmds.progressBar(
+        g_main_progress_bar,
+        edit=True,
+        beginProgress=True,
+        isInterruptable=True,
+        status=f"Loading {total_targets} Targets on {mesh_name}...",
+        maxValue=max(total_targets, 1),
+    )
+    try:
+        for target in targets:
+            if cmds.progressBar(g_main_progress_bar, query=True, isCancelled=True):
+                raise RuntimeError("Blendshape loading cancelled by user.")
+
+            if not target.vertex_indices:
+                cmds.progressBar(
+                    g_main_progress_bar,
+                    edit=True,
+                    step=1,
+                    status=f"Skipping empty target: {target.target_name}",
+                )
+                continue
+
+            alias_name = target.target_name
+            if alias_name in existing_aliases:
+                alias_name = f"{target.target_name}_{target.target_index}"
+
+            temp_target = _build_target_mesh_from_deltas(
+                base_mesh=mesh_name,
+                target_name=alias_name,
+                vertex_indices=target.vertex_indices,
+                deltas=target.deltas,
+            )
+
+            try:
+                cmds.blendShape(
+                    blendshape_node,
+                    edit=True,
+                    target=(mesh_name, next_weight_index, temp_target, 1.0),
+                )
+                cmds.aliasAttr(alias_name, f"{blendshape_node}.w[{next_weight_index}]")
+                existing_aliases.add(alias_name)
+                next_weight_index += 1
+            finally:
+                if delete_target_meshes and cmds.objExists(temp_target):
+                    cmds.delete(temp_target)
+
+            cmds.progressBar(
+                g_main_progress_bar,
+                edit=True,
+                step=1,
+                status=f"Target Added: {alias_name}",
+            )
+    finally:
+        cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
+
+    return blendshape_node
 
 
 def load_blendshapes_on_mesh(
@@ -696,7 +856,7 @@ def load_blendshapes_on_mesh(
     if not cmds.objExists(mesh_name):
         raise ValueError(f"Mesh does not exist in Maya scene: {mesh_name}")
 
-    targets = read_blendshape_deltas(dna_path=dna_path, mesh_name=mesh_name)
+    targets = read_blendshape_deltas(dna_path=dna_path, mesh_name=mesh_name, show_progress=True)
     node_name = blendshape_node_name or f"{mesh_name}_blendShapes"
 
     if cmds.objExists(node_name):
@@ -704,40 +864,12 @@ def load_blendshapes_on_mesh(
     else:
         blendshape_node = cmds.blendShape(mesh_name, name=node_name, origin="world", foc=True)[0]
 
-    aliases = cmds.aliasAttr(blendshape_node, query=True) or []
-    existing_aliases = set(aliases[0::2])
-    weight_indices = cmds.getAttr(f"{blendshape_node}.weight", multiIndices=True) or []
-    next_weight_index = (max(weight_indices) + 1) if weight_indices else 0
-
-    for target in targets:
-        if not target.vertex_indices:
-            continue
-
-        alias_name = target.target_name
-        if alias_name in existing_aliases:
-            alias_name = f"{target.target_name}_{target.target_index}"
-
-        temp_target = _build_target_mesh_from_deltas(
-            base_mesh=mesh_name,
-            target_name=alias_name,
-            vertex_indices=target.vertex_indices,
-            deltas=target.deltas,
-        )
-
-        try:
-            cmds.blendShape(
-                blendshape_node,
-                edit=True,
-                target=(mesh_name, next_weight_index, temp_target, 1.0),
-            )
-            cmds.aliasAttr(alias_name, f"{blendshape_node}.w[{next_weight_index}]")
-            existing_aliases.add(alias_name)
-            next_weight_index += 1
-        finally:
-            if delete_target_meshes and cmds.objExists(temp_target):
-                cmds.delete(temp_target)
-
-    return blendshape_node
+    return _load_blendshape_targets_on_mesh(
+        mesh_name=mesh_name,
+        blendshape_node=blendshape_node,
+        targets=targets,
+        delete_target_meshes=delete_target_meshes,
+    )
 
 
 def read_joints_from_dna(dna_path: str) -> List[JointDefinition]:
@@ -836,6 +968,7 @@ def read_skinweights_from_dna(
     dna_path: str,
     mesh_name: str = "head_lod0_mesh",
     drop_zero_weights: bool = True,
+    show_progress: bool = True,
 ) -> MeshSkinWeights:
     """
     Read skin weights for a specific DNA mesh.
@@ -853,9 +986,42 @@ def read_skinweights_from_dna(
     result = MeshSkinWeights(mesh_name=mesh_name, vertex_count=vertex_count)
     influence_set = set()
 
-    for vertex_id in range(vertex_count):
-        joint_indices = [int(i) for i in list(reader.getSkinWeightsJointIndices(mesh_index, vertex_id))]
-        weights = [float(w) for w in list(reader.getSkinWeightsValues(mesh_index, vertex_id))]
+    get_joint_indices = reader.getSkinWeightsJointIndices
+    get_weight_values = reader.getSkinWeightsValues
+    influence_add = influence_set.add
+    vertex_weights = result.vertex_weights
+
+    flat_joint_indices = None
+    flat_weights = None
+    influences_per_vertex = 0
+
+    # Faster path on bindings that expose flattened skin data per mesh.
+    try:
+        candidate_joint_indices = [int(i) for i in list(get_joint_indices(mesh_index))]
+        candidate_weights = [float(w) for w in list(get_weight_values(mesh_index))]
+        if (
+            vertex_count > 0
+            and len(candidate_joint_indices) == len(candidate_weights)
+            and len(candidate_joint_indices) % vertex_count == 0
+        ):
+            inferred = len(candidate_joint_indices) // vertex_count
+            if inferred > 0:
+                flat_joint_indices = candidate_joint_indices
+                flat_weights = candidate_weights
+                influences_per_vertex = inferred
+    except TypeError:
+        # This binding requires (mesh_index, vertex_id) access.
+        pass
+
+    def _read_vertex_pairs(vertex_id: int) -> List[Tuple[str, float]]:
+        if flat_joint_indices is not None and flat_weights is not None:
+            start = vertex_id * influences_per_vertex
+            end = start + influences_per_vertex
+            joint_indices = flat_joint_indices[start:end]
+            weights = flat_weights[start:end]
+        else:
+            joint_indices = [int(i) for i in list(get_joint_indices(mesh_index, vertex_id))]
+            weights = [float(w) for w in list(get_weight_values(mesh_index, vertex_id))]
 
         pairs: List[Tuple[str, float]] = []
         for joint_index, weight in zip(joint_indices, weights):
@@ -866,9 +1032,39 @@ def read_skinweights_from_dna(
 
             joint_name = all_joint_names[joint_index]
             pairs.append((joint_name, weight))
-            influence_set.add(joint_name)
+            influence_add(joint_name)
+        return pairs
 
-        result.vertex_weights[vertex_id] = pairs
+    if show_progress:
+        g_main_progress_bar = mel.eval('$tmp = $gMainProgressBar')
+        cmds.progressBar(
+            g_main_progress_bar,
+            edit=True,
+            beginProgress=True,
+            isInterruptable=True,
+            status=f"Reading skinweights for {vertex_count} vertices...",
+            maxValue=max(vertex_count, 1),
+        )
+        progress_update_step = max(1, vertex_count // 200)
+        try:
+            for vertex_id in range(vertex_count):
+                if cmds.progressBar(g_main_progress_bar, query=True, isCancelled=True):
+                    raise RuntimeError("Skinweight reading cancelled by user.")
+
+                vertex_weights[vertex_id] = _read_vertex_pairs(vertex_id)
+
+                if (vertex_id % progress_update_step == 0) or (vertex_id == vertex_count - 1):
+                    cmds.progressBar(
+                        g_main_progress_bar,
+                        edit=True,
+                        progress=vertex_id + 1,
+                        status=f"Reading vertex {vertex_id + 1}/{vertex_count}",
+                    )
+        finally:
+            cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
+    else:
+        for vertex_id in range(vertex_count):
+            vertex_weights[vertex_id] = _read_vertex_pairs(vertex_id)
 
     result.influences = sorted(influence_set)
     return result
@@ -890,7 +1086,12 @@ def load_skinweights_on_mesh(
     if not cmds.objExists(mesh_name):
         raise ValueError(f"Mesh does not exist in Maya scene: {mesh_name}")
 
-    skin_data = read_skinweights_from_dna(dna_path=dna_path, mesh_name=mesh_name, drop_zero_weights=False)
+    skin_data = read_skinweights_from_dna(
+        dna_path=dna_path,
+        mesh_name=mesh_name,
+        drop_zero_weights=False,
+        show_progress=True,
+    )
     existing_skincluster = _find_skincluster_for_mesh(mesh_name)
 
     if existing_skincluster:
@@ -933,22 +1134,126 @@ def load_skinweights_on_mesh(
             f"These DNA influences are not available on skinCluster '{skin_cluster}': {unresolved[:20]}"
         )
 
-    for vertex_id in range(skin_data.vertex_count):
-        component = f"{mesh_name}.vtx[{vertex_id}]"
-        weights_for_vertex = skin_data.vertex_weights.get(vertex_id, [])
+    vertex_count = int(cmds.polyEvaluate(mesh_name, vertex=True) or 0)
+    vertex_count = min(vertex_count, skin_data.vertex_count)
 
-        if replace_existing_weights:
-            mapped = dict(weights_for_vertex)
-            transform_values = [(inf, float(mapped.get(inf, 0.0))) for inf in cluster_influences]
-        else:
-            transform_values = [(joint_name, float(weight)) for joint_name, weight in weights_for_vertex]
+    # Fast path: set all weights in one API call for replace mode.
+    if replace_existing_weights and vertex_count > 0:
+        try:
+            g_main_progress_bar = mel.eval('$tmp = $gMainProgressBar')
+            cmds.progressBar(
+                g_main_progress_bar,
+                edit=True,
+                beginProgress=True,
+                isInterruptable=True,
+                status=f"Applying skinweights on {mesh_name} (fast path)...",
+                maxValue=3,
+            )
 
-        cmds.skinPercent(
-            skin_cluster,
-            component,
-            transformValue=transform_values,
-            normalize=normalize_weights,
-        )
+            mesh_dag = _get_mesh_dag_path(mesh_name)
+            skin_fn = _get_skincluster_fn(skin_cluster)
+            vertex_component = _build_full_vertex_component(vertex_count)
+            cmds.progressBar(g_main_progress_bar, edit=True, step=1, status="Resolving influences...")
+
+            influence_indices = om2.MIntArray()
+            for inf in cluster_influences:
+                sel = om2.MSelectionList()
+                sel.add(inf)
+                inf_dag = sel.getDagPath(0)
+                influence_indices.append(int(skin_fn.indexForInfluenceObject(inf_dag)))
+
+            weight_matrix = _build_skin_weight_matrix(
+                skin_data=skin_data,
+                cluster_influences=cluster_influences,
+                vertex_count=vertex_count,
+            )
+
+            if normalize_weights:
+                row_sums = weight_matrix.sum(axis=1)
+                non_zero = row_sums > 1e-12
+                weight_matrix[non_zero] = weight_matrix[non_zero] / row_sums[non_zero, None]
+            cmds.progressBar(g_main_progress_bar, edit=True, step=1, status="Applying weights...")
+
+            weight_values = om2.MDoubleArray(weight_matrix.reshape(-1).tolist())
+            skin_fn.setWeights(
+                mesh_dag,
+                vertex_component,
+                influence_indices,
+                weight_values,
+                normalize_weights,
+            )
+            cmds.progressBar(g_main_progress_bar, edit=True, step=1, status="Skinweights applied.")
+            cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
+            return skin_cluster
+        except Exception as exc:
+            try:
+                cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
+            except Exception:
+                pass
+            cmds.warning(
+                f"Falling back to per-vertex skinPercent in load_skinweights_on_mesh due to API error: {exc}"
+            )
+
+    return _load_skinweights_on_mesh_with_skinpercent(
+        mesh_name=mesh_name,
+        skin_cluster=skin_cluster,
+        skin_data=skin_data,
+        cluster_influences=cluster_influences,
+        vertex_count=vertex_count,
+        replace_existing_weights=replace_existing_weights,
+        normalize_weights=normalize_weights,
+    )
+
+
+def _load_skinweights_on_mesh_with_skinpercent(
+    mesh_name: str,
+    skin_cluster: str,
+    skin_data: MeshSkinWeights,
+    cluster_influences: List[str],
+    vertex_count: int,
+    replace_existing_weights: bool,
+    normalize_weights: bool,
+) -> str:
+    """
+    Fallback loader: apply skin weights using per-vertex cmds.skinPercent calls.
+    """
+    g_main_progress_bar = mel.eval('$tmp = $gMainProgressBar')
+    cmds.progressBar(
+        g_main_progress_bar,
+        edit=True,
+        beginProgress=True,
+        isInterruptable=True,
+        status=f"Applying skinweights on {mesh_name}...",
+        maxValue=max(vertex_count, 1),
+    )
+    try:
+        for vertex_id in range(vertex_count):
+            if cmds.progressBar(g_main_progress_bar, query=True, isCancelled=True):
+                raise RuntimeError("Skinweight loading cancelled by user.")
+
+            component = f"{mesh_name}.vtx[{vertex_id}]"
+            weights_for_vertex = skin_data.vertex_weights.get(vertex_id, [])
+
+            if replace_existing_weights:
+                mapped = dict(weights_for_vertex)
+                transform_values = [(inf, float(mapped.get(inf, 0.0))) for inf in cluster_influences]
+            else:
+                transform_values = [(joint_name, float(weight)) for joint_name, weight in weights_for_vertex]
+
+            cmds.skinPercent(
+                skin_cluster,
+                component,
+                transformValue=transform_values,
+                normalize=normalize_weights,
+            )
+            cmds.progressBar(
+                g_main_progress_bar,
+                edit=True,
+                step=1,
+                status=f"Applying vertex {vertex_id + 1}/{vertex_count}",
+            )
+    finally:
+        cmds.progressBar(g_main_progress_bar, edit=True, endProgress=True)
 
     return skin_cluster
 
