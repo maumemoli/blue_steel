@@ -2,6 +2,8 @@
 from os import makedirs
 from os import path as ospath
 from ...api.editor import BlueSteelEditor
+from maya import cmds
+from maya.api import OpenMaya as om2
 import re
 import os
 
@@ -15,7 +17,7 @@ except ImportError:
 
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from enum import Enum
 
 
@@ -108,6 +110,41 @@ class BlendShapeTarget:
     raw_ctrls:       List[RawControl] = field(default_factory=list)
     blue_steel_target_name: Optional[str] = None  # to be filled in later during conversion
 
+
+@dataclass
+class BlendShapeDelta:
+    """
+    Geometry delta payload for one blendshape target from DNA.
+    """
+    target_index: int
+    target_name: str
+    vertex_indices: List[int] = field(default_factory=list)
+    deltas: List[Tuple[float, float, float]] = field(default_factory=list)
+
+
+@dataclass
+class JointDefinition:
+    """
+    One joint from DNA, including hierarchy and neutral local transform.
+    """
+    index: int
+    name: str
+    parent_index: int
+    translation: Tuple[float, float, float]
+    rotation: Tuple[float, float, float]
+
+
+@dataclass
+class MeshSkinWeights:
+    """
+    Skinning payload for one mesh extracted from DNA.
+    """
+    mesh_name: str
+    vertex_count: int
+    influences: List[str] = field(default_factory=list)
+    # vertex index -> list of (joint name, weight)
+    vertex_weights: Dict[int, List[Tuple[str, float]]] = field(default_factory=dict)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +160,276 @@ def _load_dna(path: str):
     if not dna.Status.isOk():
         raise RuntimeError(f"Failed to read DNA: {dna.Status.getLastMessage()}")
     return reader
+
+
+def _find_mesh_index(reader, mesh_name: str) -> int:
+    for i in range(reader.getMeshCount()):
+        if reader.getMeshName(i) == mesh_name:
+            return i
+
+    available = [reader.getMeshName(i) for i in range(reader.getMeshCount())]
+    raise ValueError(f"Mesh '{mesh_name}' not found. Available: {available}")
+
+
+def _extract_positions(reader, mesh_index: int) -> List[Tuple[float, float, float]]:
+    """
+    Extract mesh vertex positions while supporting different DNA python bindings.
+    """
+    xs_fn = getattr(reader, "getVertexPositionXs", None)
+    ys_fn = getattr(reader, "getVertexPositionYs", None)
+    zs_fn = getattr(reader, "getVertexPositionZs", None)
+    if callable(xs_fn) and callable(ys_fn) and callable(zs_fn):
+        xs = list(xs_fn(mesh_index))
+        ys = list(ys_fn(mesh_index))
+        zs = list(zs_fn(mesh_index))
+        if len(xs) == len(ys) == len(zs):
+            return [(float(x), float(y), float(z)) for x, y, z in zip(xs, ys, zs)]
+
+    count_fn = getattr(reader, "getVertexPositionCount", None)
+    get_pos_fn = getattr(reader, "getVertexPosition", None)
+    if callable(count_fn) and callable(get_pos_fn):
+        positions: List[Tuple[float, float, float]] = []
+        for i in range(int(count_fn(mesh_index))):
+            p = get_pos_fn(mesh_index, i)
+            if hasattr(p, "x") and hasattr(p, "y") and hasattr(p, "z"):
+                positions.append((float(p.x), float(p.y), float(p.z)))
+            elif isinstance(p, (list, tuple)) and len(p) >= 3:
+                positions.append((float(p[0]), float(p[1]), float(p[2])))
+            else:
+                raise RuntimeError("Unsupported DNA vertex position payload")
+        return positions
+
+    raise RuntimeError(
+        "Could not extract vertex positions from DNA reader. "
+        "Expected one of: getVertexPositionXs/Ys/Zs or getVertexPositionCount+getVertexPosition."
+    )
+
+
+def _extract_polygons(reader, mesh_index: int) -> Tuple[List[int], List[int]]:
+    """
+    Extract polygon counts and polygon connects while supporting different
+    DNA python bindings.
+    """
+    face_count_fn = getattr(reader, "getFaceCount", None)
+    face_layout_fn = getattr(reader, "getFaceVertexLayoutIndices", None)
+    direct_face_indices_fn = getattr(reader, "getFaceVertexIndices", None)
+
+    if callable(face_count_fn) and callable(face_layout_fn):
+        layout_count_fn = getattr(reader, "getVertexLayoutCount", None)
+        layout_item_fn = getattr(reader, "getVertexLayout", None)
+
+        layout_to_position: Dict[int, int] = {}
+        if callable(layout_count_fn) and callable(layout_item_fn):
+            for i in range(int(layout_count_fn(mesh_index))):
+                layout_item = layout_item_fn(mesh_index, i)
+                if hasattr(layout_item, "positionIndex"):
+                    layout_to_position[i] = int(layout_item.positionIndex)
+                elif isinstance(layout_item, (list, tuple)) and layout_item:
+                    layout_to_position[i] = int(layout_item[0])
+
+        polygon_counts: List[int] = []
+        polygon_connects: List[int] = []
+        for face_id in range(int(face_count_fn(mesh_index))):
+            layout_indices = list(face_layout_fn(mesh_index, face_id))
+            if not layout_indices:
+                continue
+
+            polygon_counts.append(len(layout_indices))
+            for li in layout_indices:
+                polygon_connects.append(layout_to_position.get(int(li), int(li)))
+
+        if polygon_counts and polygon_connects:
+            return polygon_counts, polygon_connects
+
+    if callable(face_count_fn) and callable(direct_face_indices_fn):
+        polygon_counts = []
+        polygon_connects = []
+        for face_id in range(int(face_count_fn(mesh_index))):
+            indices = list(direct_face_indices_fn(mesh_index, face_id))
+            if not indices:
+                continue
+            polygon_counts.append(len(indices))
+            polygon_connects.extend(int(i) for i in indices)
+
+        if polygon_counts and polygon_connects:
+            return polygon_counts, polygon_connects
+
+    raise RuntimeError(
+        "Could not extract topology from DNA reader. "
+        "Expected face and layout accessors (or direct face vertex indices)."
+    )
+
+
+def _extract_target_delta_xyz(delta_payload) -> Tuple[float, float, float]:
+    """
+    Coerce a DNA delta payload item to xyz values.
+    """
+    if hasattr(delta_payload, "x") and hasattr(delta_payload, "y") and hasattr(delta_payload, "z"):
+        return float(delta_payload.x), float(delta_payload.y), float(delta_payload.z)
+
+    if hasattr(delta_payload, "deltaX") and hasattr(delta_payload, "deltaY") and hasattr(delta_payload, "deltaZ"):
+        return float(delta_payload.deltaX), float(delta_payload.deltaY), float(delta_payload.deltaZ)
+
+    if isinstance(delta_payload, (list, tuple)) and len(delta_payload) >= 3:
+        return float(delta_payload[0]), float(delta_payload[1]), float(delta_payload[2])
+
+    raise RuntimeError("Unsupported DNA blendshape delta payload")
+
+
+def _extract_blendshape_target_deltas(
+    reader,
+    mesh_index: int,
+    target_index: int,
+) -> Tuple[List[int], List[Tuple[float, float, float]]]:
+    """
+    Extract sparse blendshape deltas for a target while supporting different
+    DNA python bindings.
+    """
+    vertex_indices_fn = getattr(reader, "getBlendShapeTargetVertexIndices", None)
+    dx_fn = getattr(reader, "getBlendShapeTargetDeltaXs", None)
+    dy_fn = getattr(reader, "getBlendShapeTargetDeltaYs", None)
+    dz_fn = getattr(reader, "getBlendShapeTargetDeltaZs", None)
+
+    if callable(vertex_indices_fn) and callable(dx_fn) and callable(dy_fn) and callable(dz_fn):
+        vertex_indices = [int(i) for i in list(vertex_indices_fn(mesh_index, target_index))]
+        dx = list(dx_fn(mesh_index, target_index))
+        dy = list(dy_fn(mesh_index, target_index))
+        dz = list(dz_fn(mesh_index, target_index))
+
+        if len(vertex_indices) == len(dx) == len(dy) == len(dz):
+            deltas = [(float(x), float(y), float(z)) for x, y, z in zip(dx, dy, dz)]
+            return vertex_indices, deltas
+
+    count_fn = getattr(reader, "getBlendShapeTargetDeltaCount", None)
+    get_delta_fn = getattr(reader, "getBlendShapeTargetDelta", None)
+    if callable(count_fn) and callable(get_delta_fn) and callable(vertex_indices_fn):
+        vertex_indices = [int(i) for i in list(vertex_indices_fn(mesh_index, target_index))]
+        delta_count = int(count_fn(mesh_index, target_index))
+        sample_count = min(delta_count, len(vertex_indices))
+
+        deltas: List[Tuple[float, float, float]] = []
+        for i in range(sample_count):
+            deltas.append(_extract_target_delta_xyz(get_delta_fn(mesh_index, target_index, i)))
+
+        if len(deltas) == len(vertex_indices):
+            return vertex_indices, deltas
+
+    raise RuntimeError(
+        "Could not extract blendshape deltas from DNA reader. "
+        "Expected target vertex indices plus delta xyz accessors."
+    )
+
+
+def _assign_default_shader(mesh_transform: str) -> None:
+    """
+    Assign Maya's default initial shading group to a newly created mesh.
+    """
+    shapes = cmds.listRelatives(
+        mesh_transform,
+        shapes=True,
+        noIntermediate=True,
+        fullPath=True,
+    ) or []
+
+    if not shapes:
+        shapes = [mesh_transform]
+
+    for shape in shapes:
+        cmds.sets(shape, edit=True, forceElement="initialShadingGroup")
+
+
+def _get_mesh_dag_path(node_name: str) -> om2.MDagPath:
+    sel = om2.MSelectionList()
+    sel.add(node_name)
+    dag = sel.getDagPath(0)
+    if dag.apiType() == om2.MFn.kTransform:
+        dag.extendToShape()
+    if dag.apiType() != om2.MFn.kMesh:
+        raise ValueError(f"Node '{node_name}' is not a mesh")
+    return dag
+
+
+def _safe_maya_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    if not safe:
+        safe = "target"
+    if safe[0].isdigit():
+        safe = f"_{safe}"
+    return safe
+
+
+def _build_target_mesh_from_deltas(
+    base_mesh: str,
+    target_name: str,
+    vertex_indices: List[int],
+    deltas: List[Tuple[float, float, float]],
+) -> str:
+    """
+    Duplicate base mesh and apply sparse per-vertex deltas.
+    """
+    temp_mesh = cmds.duplicate(base_mesh, name=f"{_safe_maya_name(target_name)}_tmp")[0]
+
+    mesh_fn = om2.MFnMesh(_get_mesh_dag_path(temp_mesh))
+    points = mesh_fn.getPoints(om2.MSpace.kObject)
+    point_count = len(points)
+
+    for vid, (dx, dy, dz) in zip(vertex_indices, deltas):
+        if 0 <= vid < point_count:
+            p = points[vid]
+            points[vid] = om2.MPoint(p.x + dx, p.y + dy, p.z + dz)
+
+    mesh_fn.setPoints(points, om2.MSpace.kObject)
+    return temp_mesh
+
+
+def _extract_joint_vector(reader, joint_index: int, kind: str) -> Tuple[float, float, float]:
+    """
+    Read a joint neutral transform vector from DNA reader across binding variants.
+    kind: "translation" or "rotation"
+    """
+    if kind == "translation":
+        vector_fn = getattr(reader, "getNeutralJointTranslation", None)
+        xs_fn = getattr(reader, "getNeutralJointTranslationXs", None)
+        ys_fn = getattr(reader, "getNeutralJointTranslationYs", None)
+        zs_fn = getattr(reader, "getNeutralJointTranslationZs", None)
+    elif kind == "rotation":
+        vector_fn = getattr(reader, "getNeutralJointRotation", None)
+        xs_fn = getattr(reader, "getNeutralJointRotationXs", None)
+        ys_fn = getattr(reader, "getNeutralJointRotationYs", None)
+        zs_fn = getattr(reader, "getNeutralJointRotationZs", None)
+    else:
+        raise ValueError(f"Unsupported joint vector kind: {kind}")
+
+    if callable(vector_fn):
+        v = vector_fn(joint_index)
+        if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+            return float(v.x), float(v.y), float(v.z)
+        if isinstance(v, (list, tuple)) and len(v) >= 3:
+            return float(v[0]), float(v[1]), float(v[2])
+
+    if callable(xs_fn) and callable(ys_fn) and callable(zs_fn):
+        xs = list(xs_fn())
+        ys = list(ys_fn())
+        zs = list(zs_fn())
+        if joint_index < len(xs) and joint_index < len(ys) and joint_index < len(zs):
+            return float(xs[joint_index]), float(ys[joint_index]), float(zs[joint_index])
+
+    raise RuntimeError(f"Could not extract neutral joint {kind} for index {joint_index}")
+
+
+def _find_skincluster_for_mesh(mesh_name: str) -> Optional[str]:
+    """
+    Return the first skinCluster found in mesh history, if any.
+    """
+    shape_nodes = cmds.listRelatives(mesh_name, shapes=True, noIntermediate=True, fullPath=True) or []
+    history = cmds.listHistory(shape_nodes[0], pruneDagObjects=True) if shape_nodes else cmds.listHistory(mesh_name, pruneDagObjects=True)
+    if not history:
+        return None
+
+    for node in history:
+        if cmds.nodeType(node) == "skinCluster":
+            return node
+    return None
 
 
 def _make_segment(from_v: float, to_v: float, slope: float, cut: float,
@@ -302,6 +609,349 @@ def _build_psd_map(reader, raw_to_gui: Dict[int, List[dict]]) -> Dict[int, List[
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def build_mesh_from_dna(mesh_name: str, dna_path: str) -> str:
+    """
+    Build a Maya mesh from a DNA file.
+
+    Parameters
+    ----------
+    mesh_name : mesh name found in the DNA file
+    dna_path  : path to a MetaHuman DNA file
+
+    Returns
+    -------
+    str : created mesh transform name in Maya
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    mesh_index = _find_mesh_index(reader, mesh_name)
+    positions = _extract_positions(reader, mesh_index)
+    polygon_counts, polygon_connects = _extract_polygons(reader, mesh_index)
+
+    if not positions:
+        raise RuntimeError(f"No vertex positions found for mesh '{mesh_name}'")
+    if not polygon_counts:
+        raise RuntimeError(f"No polygon data found for mesh '{mesh_name}'")
+
+    if cmds.objExists(mesh_name):
+        cmds.delete(mesh_name)
+
+    points = [om2.MPoint(x, y, z) for x, y, z in positions]
+    mesh_fn = om2.MFnMesh()
+    mesh_obj = mesh_fn.create(points, polygon_counts, polygon_connects)
+
+    shape_fn = om2.MFnDagNode(mesh_obj)
+    shape_path = shape_fn.fullPathName()
+    if cmds.objExists(shape_path) and cmds.nodeType(shape_path) == "transform":
+        mesh_transform = cmds.rename(shape_path, mesh_name)
+    else:
+        cmds.error(f"Expected a transform node but got {shape_path} of type {cmds.nodeType(shape_path)}")
+
+    _assign_default_shader(mesh_transform)
+    load_blendshapes_on_mesh(mesh_name=mesh_transform, dna_path=dna_path)
+    return mesh_transform
+
+
+def read_blendshape_deltas(
+    dna_path: str,
+    mesh_name: str = "head_lod0_mesh",
+) -> List[BlendShapeDelta]:
+    """
+    Read sparse blendshape deltas for every target on a DNA mesh.
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    mesh_index = _find_mesh_index(reader, mesh_name)
+
+    results: List[BlendShapeDelta] = []
+    target_count = int(reader.getBlendShapeTargetCount(mesh_index))
+    for target_idx in range(target_count):
+        channel_idx = reader.getBlendShapeChannelIndex(mesh_index, target_idx)
+        target_name = str(reader.getBlendShapeChannelName(channel_idx))
+        vertex_indices, deltas = _extract_blendshape_target_deltas(reader, mesh_index, target_idx)
+
+        results.append(BlendShapeDelta(
+            target_index=target_idx,
+            target_name=target_name,
+            vertex_indices=vertex_indices,
+            deltas=deltas,
+        ))
+
+    return results
+
+
+def load_blendshapes_on_mesh(
+    mesh_name: str,
+    dna_path: str,
+    blendshape_node_name: Optional[str] = None,
+    delete_target_meshes: bool = True,
+) -> str:
+    """
+    Build a Maya blendShape on mesh_name from DNA target deltas.
+    """
+    if not cmds.objExists(mesh_name):
+        raise ValueError(f"Mesh does not exist in Maya scene: {mesh_name}")
+
+    targets = read_blendshape_deltas(dna_path=dna_path, mesh_name=mesh_name)
+    node_name = blendshape_node_name or f"{mesh_name}_blendShapes"
+
+    if cmds.objExists(node_name):
+        blendshape_node = node_name
+    else:
+        blendshape_node = cmds.blendShape(mesh_name, name=node_name, origin="world", foc=True)[0]
+
+    aliases = cmds.aliasAttr(blendshape_node, query=True) or []
+    existing_aliases = set(aliases[0::2])
+    weight_indices = cmds.getAttr(f"{blendshape_node}.weight", multiIndices=True) or []
+    next_weight_index = (max(weight_indices) + 1) if weight_indices else 0
+
+    for target in targets:
+        if not target.vertex_indices:
+            continue
+
+        alias_name = target.target_name
+        if alias_name in existing_aliases:
+            alias_name = f"{target.target_name}_{target.target_index}"
+
+        temp_target = _build_target_mesh_from_deltas(
+            base_mesh=mesh_name,
+            target_name=alias_name,
+            vertex_indices=target.vertex_indices,
+            deltas=target.deltas,
+        )
+
+        try:
+            cmds.blendShape(
+                blendshape_node,
+                edit=True,
+                target=(mesh_name, next_weight_index, temp_target, 1.0),
+            )
+            cmds.aliasAttr(alias_name, f"{blendshape_node}.w[{next_weight_index}]")
+            existing_aliases.add(alias_name)
+            next_weight_index += 1
+        finally:
+            if delete_target_meshes and cmds.objExists(temp_target):
+                cmds.delete(temp_target)
+
+    return blendshape_node
+
+
+def read_joints_from_dna(dna_path: str) -> List[JointDefinition]:
+    """
+    Read all joints from a DNA file, including hierarchy and neutral transforms.
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    joint_count = int(reader.getJointCount())
+
+    joints: List[JointDefinition] = []
+    for joint_index in range(joint_count):
+        joint_name = str(reader.getJointName(joint_index))
+        parent_index = int(reader.getJointParentIndex(joint_index))
+        translation = _extract_joint_vector(reader, joint_index, "translation")
+        rotation = _extract_joint_vector(reader, joint_index, "rotation")
+
+        joints.append(JointDefinition(
+            index=joint_index,
+            name=joint_name,
+            parent_index=parent_index,
+            translation=translation,
+            rotation=rotation,
+        ))
+
+    return joints
+
+
+def create_joints_from_dna(
+    dna_path: str,
+    root_group_name: Optional[str] = None,
+    delete_existing: bool = False,
+) -> List[str]:
+    """
+    Create Maya joints from DNA hierarchy and neutral transforms.
+
+    Parameters
+    ----------
+    dna_path        : path to a MetaHuman DNA file
+    root_group_name : optional transform to parent all root joints under
+    delete_existing : if True, delete joints with conflicting names first
+
+    Returns
+    -------
+    List[str] : created joint names in DNA order
+    """
+    joints = read_joints_from_dna(dna_path)
+    if not joints:
+        return []
+
+    created_by_index: Dict[int, str] = {}
+
+    for joint in joints:
+        if cmds.objExists(joint.name):
+            if delete_existing:
+                cmds.delete(joint.name)
+            else:
+                raise ValueError(
+                    f"Joint '{joint.name}' already exists in scene. "
+                    "Use delete_existing=True to replace it."
+                )
+
+        created_by_index[joint.index] = cmds.createNode("joint", name=joint.name)
+
+    for joint in joints:
+        child = created_by_index[joint.index]
+        parent_idx = joint.parent_index
+        if parent_idx != joint.index and parent_idx in created_by_index:
+            cmds.parent(child, created_by_index[parent_idx])
+
+    for joint in joints:
+        joint_name = created_by_index[joint.index]
+        cmds.setAttr(f"{joint_name}.translate", *joint.translation, type="double3")
+        cmds.setAttr(f"{joint_name}.rotate", *joint.rotation, type="double3")
+
+    if root_group_name:
+        if cmds.objExists(root_group_name):
+            if delete_existing:
+                cmds.delete(root_group_name)
+                root_group = cmds.createNode("transform", name=root_group_name)
+            else:
+                root_group = root_group_name
+        else:
+            root_group = cmds.createNode("transform", name=root_group_name)
+
+        for joint in joints:
+            if joint.parent_index == joint.index or joint.parent_index not in created_by_index:
+                cmds.parent(created_by_index[joint.index], root_group)
+
+    return [created_by_index[j.index] for j in joints]
+
+
+def read_skinweights_from_dna(
+    dna_path: str,
+    mesh_name: str = "head_lod0_mesh",
+    drop_zero_weights: bool = True,
+) -> MeshSkinWeights:
+    """
+    Read skin weights for a specific DNA mesh.
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    mesh_index = _find_mesh_index(reader, mesh_name)
+    vertex_count = int(reader.getVertexPositionCount(mesh_index))
+
+    joint_count = int(reader.getJointCount())
+    all_joint_names = [str(reader.getJointName(i)) for i in range(joint_count)]
+
+    result = MeshSkinWeights(mesh_name=mesh_name, vertex_count=vertex_count)
+    influence_set = set()
+
+    for vertex_id in range(vertex_count):
+        joint_indices = [int(i) for i in list(reader.getSkinWeightsJointIndices(mesh_index, vertex_id))]
+        weights = [float(w) for w in list(reader.getSkinWeightsValues(mesh_index, vertex_id))]
+
+        pairs: List[Tuple[str, float]] = []
+        for joint_index, weight in zip(joint_indices, weights):
+            if joint_index < 0 or joint_index >= joint_count:
+                continue
+            if drop_zero_weights and abs(weight) <= 1e-12:
+                continue
+
+            joint_name = all_joint_names[joint_index]
+            pairs.append((joint_name, weight))
+            influence_set.add(joint_name)
+
+        result.vertex_weights[vertex_id] = pairs
+
+    result.influences = sorted(influence_set)
+    return result
+
+
+def load_skinweights_on_mesh(
+    mesh_name: str,
+    dna_path: str,
+    skincluster_name: Optional[str] = None,
+    create_skincluster_if_missing: bool = True,
+    replace_existing_weights: bool = True,
+    normalize_weights: bool = True,
+) -> str:
+    """
+    Load DNA skin weights onto a specific Maya mesh.
+
+    Returns the skinCluster node name.
+    """
+    if not cmds.objExists(mesh_name):
+        raise ValueError(f"Mesh does not exist in Maya scene: {mesh_name}")
+
+    skin_data = read_skinweights_from_dna(dna_path=dna_path, mesh_name=mesh_name, drop_zero_weights=False)
+    existing_skincluster = _find_skincluster_for_mesh(mesh_name)
+
+    if existing_skincluster:
+        skin_cluster = existing_skincluster
+    else:
+        if not create_skincluster_if_missing:
+            raise ValueError(f"No skinCluster found on mesh '{mesh_name}'")
+
+        if not skin_data.influences:
+            raise RuntimeError(f"No influences found in DNA skin weights for mesh '{mesh_name}'")
+
+        missing_joints = [j for j in skin_data.influences if not cmds.objExists(j)]
+        if missing_joints:
+            raise ValueError(
+                "Cannot create skinCluster because some DNA joints are missing in scene: "
+                f"{missing_joints[:20]}"
+            )
+
+        skin_cluster = cmds.skinCluster(
+            skin_data.influences,
+            mesh_name,
+            toSelectedBones=True,
+            normalizeWeights=1 if normalize_weights else 0,
+            name=skincluster_name or f"{mesh_name}_skinCluster",
+        )[0]
+
+    cluster_influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+    influence_set = set(cluster_influences)
+
+    required_influences = set(skin_data.influences)
+    missing_from_cluster = [j for j in sorted(required_influences) if j not in influence_set and cmds.objExists(j)]
+    if missing_from_cluster:
+        cmds.skinCluster(skin_cluster, edit=True, addInfluence=missing_from_cluster, weight=0.0)
+        cluster_influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+        influence_set = set(cluster_influences)
+
+    unresolved = [j for j in sorted(required_influences) if j not in influence_set]
+    if unresolved:
+        raise ValueError(
+            f"These DNA influences are not available on skinCluster '{skin_cluster}': {unresolved[:20]}"
+        )
+
+    for vertex_id in range(skin_data.vertex_count):
+        component = f"{mesh_name}.vtx[{vertex_id}]"
+        weights_for_vertex = skin_data.vertex_weights.get(vertex_id, [])
+
+        if replace_existing_weights:
+            mapped = dict(weights_for_vertex)
+            transform_values = [(inf, float(mapped.get(inf, 0.0))) for inf in cluster_influences]
+        else:
+            transform_values = [(joint_name, float(weight)) for joint_name, weight in weights_for_vertex]
+
+        cmds.skinPercent(
+            skin_cluster,
+            component,
+            transformValue=transform_values,
+            normalize=normalize_weights,
+        )
+
+    return skin_cluster
+
 def read_blendshape_targets(
     dna_path: str,
     mesh_name: str = "head_lod0_mesh",
@@ -329,14 +979,7 @@ def read_blendshape_targets(
     node_name = blendshape_node_name or f"{mesh_name}_blendShapes"
 
     # Find mesh index
-    mesh_index = None
-    for i in range(reader.getMeshCount()):
-        if reader.getMeshName(i) == mesh_name:
-            mesh_index = i
-            break
-    if mesh_index is None:
-        available = [reader.getMeshName(i) for i in range(reader.getMeshCount())]
-        raise ValueError(f"Mesh '{mesh_name}' not found. Available: {available}")
+    mesh_index = _find_mesh_index(reader, mesh_name)
 
     raw_count  = reader.getRawControlCount()
     raw_to_gui = _build_raw_to_gui(reader)
