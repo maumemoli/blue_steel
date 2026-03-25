@@ -72,7 +72,9 @@ class Blendshape(object):
             raise ValueError(f"Blendshape node '{self.name}' has no base mesh connected.")
         else:
             self.base = self.base[0]
-
+        # sourcing the artAttrBlendShapeToolScript.mel to make sure set_target_weight_paint_mode will work without errors
+        mel.eval('source "artAttrBlendShapeToolScript.mel"')
+        mel.eval('source "artAttrBlendShapeCallback.mel"')
     def __str__(self):
         return self.name
 
@@ -616,7 +618,7 @@ class Blendshape(object):
         #artBlendShapeSelectTarget artAttrCtx "browDownL";
         base_mesh = self.get_base()
         cmds.select(base_mesh)
-        mel.eval('source "artAttrBlendShapeToolScript.mel"')
+    
         mel.eval(f'artSetToolAndSelectAttr("artAttrCtx", "blendShape.{self.name}.baseWeights")')
         mel.eval(f'artAttrInitPaintableAttr')
         # thiss needs to be deferred because it will throw an error if artAttrBlendShapeToolScript.mel is

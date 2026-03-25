@@ -861,6 +861,29 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_weight_parent_directory(weight, parent__dir)
         return weight
 
+    @undoable
+    def duplicate_work_shape(self, shape_name: str)->str:
+        """
+        Duplicate a work shape in the work blendshape node.
+        Parameters:
+            shape_name (str): The name of the work shape to duplicate
+        Returns:
+            str: The name of the new duplicated work shape
+        """
+        if self.work_blendshape is None:
+            raise ValueError("Work blendshape not found.")
+        weight = self.work_blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Work shape '{shape_name}' not found in blendshape.")
+        new_shape_name = f"{shape_name}_copy"
+        duplicated_weight = self.add_work_shape(new_shape_name)
+        # we need to copy the delta from the original shape to the duplicated shape
+        weight_map_values = self.work_blendshape.get_weight_map_values(weight)
+        self.work_blendshape.set_weight_map_values(duplicated_weight, weight_map_values)
+        deltas = self.work_blendshape.get_target_delta(weight)
+        self.work_blendshape.set_target_delta(duplicated_weight, deltas)
+        return duplicated_weight
+
     def paint_work_blendshape_target(self, weight_name: str) -> int:
         """Enter paint mode for one work blendshape target and return its target id."""
         if self.work_blendshape is None:

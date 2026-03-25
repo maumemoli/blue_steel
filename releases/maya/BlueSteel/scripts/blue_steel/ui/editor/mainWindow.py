@@ -1648,6 +1648,7 @@ class WorkShapesListView(SliderListView):
 	def __init__(
 		self,
 		drop_callback: Callable[[str, str], None],
+		duplicate_callback: Callable[[str], None],
 		break_link_callback: Callable[[str], None],
 		copy_weights_callback: Optional[Callable[[str], None]] = None,
 		paste_weights_callback: Optional[Callable[[str], None]] = None,
@@ -1659,6 +1660,7 @@ class WorkShapesListView(SliderListView):
 	) -> None:
 		super().__init__(parent)
 		self._drop_callback = drop_callback
+		self.duplicate_callback = duplicate_callback
 		self._break_link_callback = break_link_callback
 		self._copy_weights_callback = copy_weights_callback
 		self._paste_weights_callback = paste_weights_callback
@@ -1724,6 +1726,7 @@ class WorkShapesListView(SliderListView):
 		if not receiver_name:
 			return
 		menu = QMenu(self)
+		duplicate_action = menu.addAction(f"Duplicate")
 		connections_menu = menu.addMenu("Connections")
 		break_link_action = connections_menu.addAction("Break Link")
 
@@ -1746,7 +1749,9 @@ class WorkShapesListView(SliderListView):
 			selected_action = menu.exec(self.viewport().mapToGlobal(pos))
 		else:
 			selected_action = menu.exec_(self.viewport().mapToGlobal(pos))
-		if selected_action == break_link_action:
+		if selected_action == duplicate_action:
+			self.duplicate_callback(receiver_name)
+		elif selected_action == break_link_action:
 			self._break_link_callback(receiver_name)
 		elif selected_action == copy_weights_action and self._copy_weights_callback is not None:
 			self._copy_weights_callback(receiver_name)
@@ -2337,6 +2342,7 @@ class MainWindow(QMainWindow):
 		work_shapes_layout.addLayout(work_toolbar)
 		self.work_shapes_view = WorkShapesListView(
 			self._on_work_shape_drop_received,
+			self._on_work_shape_duplicate_requested,
 			self._on_work_shape_break_link_requested,
 			self._on_work_shape_copy_weights_requested,
 			self._on_work_shape_paste_weights_requested,
@@ -4093,6 +4099,22 @@ class MainWindow(QMainWindow):
 		if self.current_editor is None:
 			return False
 		return getattr(self.current_editor, "copied_weight_map_values", None) is not None
+
+	def _on_work_shape_duplicate_requested(self, work_shape_name: str) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		try:
+			self._stop_active_blendshape_trackers()
+			new_work_shape_name = str(self.current_editor.duplicate_work_shape(work_shape_name))
+		except Exception as exc:
+			self._set_status(f"Error duplicating work shape '{work_shape_name}': {exc}", error=True)
+			return
+		finally:
+			self._start_active_blendshape_trackers()
+		self._reload_work_shapes_from_editor()
+		self._select_work_shape(new_work_shape_name)
+		self._set_status(f"Duplicated work shape '{work_shape_name}' to '{new_work_shape_name}'.")	
 
 	def _on_work_shape_copy_weights_requested(self, work_shape_name: str) -> None:
 		if self.current_editor is None:
