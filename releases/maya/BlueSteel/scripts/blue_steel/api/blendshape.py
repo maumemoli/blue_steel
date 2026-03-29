@@ -204,6 +204,18 @@ class Blendshape(object):
         np_array = mayaUtils.get_mesh_raw_points(self.base)
         return np_array
 
+    def set_sculpt_target_index(self, weight_index: int):
+        """
+        Sets the sculpt target index for the specified weight.
+        Parameters:
+            weight_index (int): The index of the weight to set the sculpt target for.
+        Example:
+            >>> blendshape = Blendshape.create("myBlendshape", "pCube1")
+            >>> weight = blendshape.get_weight_by_name("Smile")
+            >>> blendshape.set_sculpt_target_index(.id)
+        """
+        cmds.sculptTarget(self.name, e=True, t=int(weight_index))
+
     def get_sculpt_target_indices(self)->list:
         """
         Returns a list of sculpt target IDs in the blendShape node.

@@ -101,6 +101,29 @@ class BlueSteelEditor(object):
         self.copied_weight_map_values = None
         # setting up the network
         self.build_network()
+        self.sync_up_muted_shapes()
+
+
+    @property
+    def locked_shapes(self):
+        if not cmds.attributeQuery("lockedShapes", node=self.container.name, exists=True):
+            attrUtils.add_tag(self.container.name, "lockedShapes", "")
+        shapes_list_str = attrUtils.get_tag(self.container.name, "lockedShapes")
+        locked_shapes_names = shapes_list_str.split(",") if shapes_list_str else []
+        locked_shapes = set()
+        for shape_name in locked_shapes_names:
+            shape = self.network.get_shape(shape_name)
+            locked_shapes.add(shape)
+
+        return locked_shapes
+
+    @locked_shapes.setter
+    def locked_shapes(self, shapes: set):
+        if not cmds.attributeQuery("lockedShapes", node=self.container.name, exists=True):
+            attrUtils.add_tag(self.container.name, "lockedShapes", "")
+        shapes_list_str = ",".join(sorted(shapes)) if shapes else ""
+
+        cmds.setAttr(f"{self.container.name}.lockedShapes", shapes_list_str, type="string") 
 
 
     @property
@@ -160,6 +183,14 @@ class BlueSteelEditor(object):
         """
         return cmds.objExists(self.container.name)
 
+
+    def unlock_all_shapes(self):
+        """
+        Unlock all shapes in the Blue Steel rig.
+        Returns:
+            None
+        """
+        self.locked_shapes = set()
 
 
     def fix_mid_layer_blendshapes_indices_position(self):
@@ -309,6 +340,35 @@ class BlueSteelEditor(object):
         for work_shape_name in work_shape_names:
             self.delete_work_shape(work_shape_name)
 
+
+    def add_shape_to_locked_shapes(self, shape_name: str):
+        """
+        Add a shape to the locked shapes set. Locked shapes cannot be deleted or have their connections removed.
+        Parameters:
+            shape_name (str): The name of the shape to lock
+        """
+        shape = self.network.get_shape(shape_name)
+        if shape is None:
+            raise ValueError(f"Shape '{shape_name}' not found in the network.")
+        locked = self.locked_shapes
+        locked.add(shape)
+        self.locked_shapes = locked
+
+
+    def remove_shape_from_locked_shapes(self, shape_name: str):
+        """
+        Remove a shape from the locked shapes set.
+        Parameters:
+            shape_name (str): The name of the shape to unlock
+        """
+        print(f"Removing shape '{shape_name}' from locked shapes.")
+        shape = self.network.get_shape(shape_name)
+        if shape is None:
+            raise ValueError(f"Shape '{shape_name}' not found in the network.")
+        locked = self.locked_shapes
+        if shape in locked:
+            locked.discard(shape)
+        self.locked_shapes = locked
 
     def delete_work_shape(self, work_shape_name: str):
         """
@@ -544,6 +604,11 @@ class BlueSteelEditor(object):
                     shapes_to_remove.extend(descendants)
             shapes_to_remove.append(shape)
         print(f"Removing shapes: {shapes_to_remove}")
+        
+        # we also need to remove the shapes from the locked shapes set if they are in it to avoid issues with the connections removal
+        for shape in shapes_to_remove:
+            if shape in self.locked_shapes:
+                self.remove_shape_from_locked_shapes(shape)
         # we need to sort by insertion and reverse it so we remove the children first
         shapes_to_remove = shapes_to_remove.sort_for_insertion()[::-1]
         # Now we can remove the shapes
@@ -693,15 +758,32 @@ class BlueSteelEditor(object):
                     break
             if mesh:
                 break
+        empty_delta = False
+        if mesh == self.base_mesh:
+            empty_delta = True
         pose_name = self.get_active_state_name()
         if not pose_name:
             raise ValueError("No active state found on the control to commit the shape to.")
         shape = self.network.get_shape(pose_name)
-        self.commit_shape(pose_name, mesh)
-        if shape is None and mesh == self.base_mesh:
-            # we need to reset the delta of this one.
+        if shape is not None and empty_delta:
+            # we are stopping here because if the shape already exists and there is no mesh to commit we might end up with a shape with no delta that can cause issues with the remap nodes and the shape editor manager
+            raise ValueError(f"Operation cancelled: Shape '{pose_name}' already exists and there is no selected mesh to commit.")
+        elif empty_delta:
+            # adding empty delta this is not going to affect the locked shapes anyway.
+            self._commit_batch_shapes_with_progress_bar({pose_name: mesh})
             self.reset_delta_for_shapes([pose_name])
-        return pose_name
+            return pose_name
+        else:
+            locked_related_shapes = self.get_related_shapes_downstream(pose_name)
+            locked_related_shapes = set(locked_related_shapes).intersection(self.locked_shapes)
+            extraction_group, extracted_locked_meshes = self.extract_shapes_to_mesh(locked_related_shapes)
+
+            self._commit_batch_shapes_with_progress_bar({pose_name: mesh})
+            if extracted_locked_meshes:
+                self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes,
+                                                            progress_bar_message="Restoring locked {0} shapes...")
+            cmds.delete(extraction_group)
+            return pose_name
 
 
     def add_new_primary_shape(self, shape_name: str)->Shape:
@@ -755,6 +837,41 @@ class BlueSteelEditor(object):
         self.add_inbetween_shape(None, shape)
         return shape
 
+    def _commit_batch_shapes_with_progress_bar(self,
+                                               shapes_dict: dict, 
+                                               progress_bar_message: str = "Committing {0} shapes..."):
+        """
+        Internal method to commit a batch of shapes with a progress bar.
+        Parameters:
+            shapes_dict (dict): A dictionary of shape names and their corresponding meshes
+        Returns:
+            None
+        """
+         # --- Start the progress bar ---
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        sorted_shapes = utilities.sort_for_insertion(list(shapes_dict.keys()), self.separator)
+        total_shapes = len(sorted_shapes)
+
+        cmds.progressBar(gMainProgressBar, edit=True,
+                        beginProgress=True,
+                        isInterruptable=True,
+                        status=progress_bar_message.format(total_shapes),
+                        maxValue=total_shapes)
+        try:
+            for shape_name in sorted_shapes:
+                mesh = shapes_dict[shape_name]
+                self.commit_shape(shape_name, mesh)
+                cmds.progressBar(gMainProgressBar,
+                        edit=True,
+                        step=1,
+                        status=f'Adding shape: {shape_name}...')
+        except Exception as e:
+            cmds.warning(f"An error occurred while committing shapes: {e}")
+        finally:
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            return True
+
+
     @undoable
     def commit_shapes(self, selected: list, close_shape_editor: bool = True):
         """
@@ -767,60 +884,78 @@ class BlueSteelEditor(object):
         start = time.time()
         # we need to sync the network first
         self.sync_network()
+        # let's check if there is any muted shape.
+        if self.get_muted_shapes():
+            result = cmds.confirmDialog(title='Muted Shapes Detected',
+                                            message=f'The network contains muted shapes. Do you want to continue? Muted shapes can affect the newly committed shapes.',
+                                            button = ['Unmute All','Continue','Cancel'],
+                                            defaultButton='Unmute All',
+                                            cancelButton='Cancel',
+                                            dismissString='Cancel')
+            if result == 'Cancel':
+                raise ValueError(f"Operation cancelled by the user. No shapes have been committed.")
+            elif result == 'Unmute All':
+                self.unmute_all_shapes()
+
+
         # let's create the shapes instances
-        shapes = ShapeList([], self.separator)
-        valid_meshes = []
+        valid_meshes = {}
         invalid_shapes = []
+        skip_all_locked = False
+        related_downstream_shapes = set()
         for mesh in selected:
             shape_name = mesh.split("|")[-1]
             if utilities.is_valid(shape_name, self.separator):
-                valid_meshes.append(mesh)
-                shapes.append(shape_name)
+                related_downstream_shapes.update(self.get_related_shapes_downstream(shape_name))
+                if shape_name in self.locked_shapes:
+                    # we need a prompt to ask the user if they want to unlock the shape and continue or skip this shape
+                    if skip_all_locked == True:
+                        continue
+                    result = cmds.confirmDialog(title='Locked Shape Detected',
+                                            message=f'Shape "{shape_name}" is locked. Do you want to unlock it and continue?',
+                                            button=['Unlock', 'Skip', 'Unlock All', 'Skip All', 'Cancel'],
+                                            defaultButton='Unlock',
+                                            cancelButton='Cancel',
+                                            dismissString='Cancel')
+                    if result == 'Unlock':
+                        self.unlock_shape(shape_name)
+                    elif result == 'Cancel':
+                        raise ValueError(f"Operation cancelled by the user. No shapes have been committed.")
+                    elif result == 'Unlock All':
+                        self.unlock_all_shapes()
+                    elif result == 'Skip All':
+                        skip_all_locked = True
+                    else:
+                        continue
+                valid_meshes[shape_name] = mesh
             else:
                 invalid_shapes.append(mesh)
-        # let's sort the shapes and the selected for insertion
-        # the insertion order is: PrimaryShapes -> InbetweenShapes -> ComboShapes -> ComboInbetweenShapes
-        sorted_shapes = utilities.sort_for_insertion(shapes, self.separator)
-        sorted_selected = [None] * len(sorted_shapes)
 
-        for mesh in valid_meshes:
-            shape_name = mesh.split("|")[-1]
-            index = sorted_shapes.index(shape_name)
-            sorted_selected[index] = mesh
+        related_downstream_locked_shapes = related_downstream_shapes.intersection(self.locked_shapes)
+        extracted_locked_meshes = None
+        extraction_group = None
+        if related_downstream_locked_shapes:
+            extraction_group, extracted_locked_meshes = self.extract_shapes_to_mesh(related_downstream_locked_shapes)
+
+        # we need to get the downstream shapes for the selected shapes.
         # close the shape editor if it's open
         shape_editor_exists = cmds.window(self.SHAPE_EDITOR_PANEL, exists=True)
         if shape_editor_exists and close_shape_editor:
             cmds.deleteUI(self.SHAPE_EDITOR_PANEL)
-                # --- Start the progress bar ---
-        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
-        total_shapes = len(sorted_shapes)
-        cmds.progressBar(gMainProgressBar, edit=True,
-                        beginProgress=True,
-                        isInterruptable=True,
-                        status=f'Committing {total_shapes} shapes...',
-                        maxValue=total_shapes)
-        try:
-            for i in range(len(sorted_shapes)):
-                shape_name = sorted_shapes[i]
-                mesh = sorted_selected[i]
-                shape = self.commit_shape(shape_name, mesh)
-                # check if the shape is valid
-                cmds.progressBar(gMainProgressBar,
-                        edit=True,
-                        step=1,
-                        status=f'Adding shape: {shape_name}...')
-                if shape is None:
-                    invalid_shapes.append(mesh)
-        finally:
-            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
-            # after all shapes have been added we need to update the remap nodes for the primaries that had new inbetweens added
-            if shape_editor_exists and close_shape_editor:
-                cmds.ShapeEditor()
-            if TIMED:
-                print(f"Finished committing {len(shapes)} shapes on {len(selected)} selected in {time.time() - start:.2f} seconds.")
-            cmds.select(clear=True)
-            cmds.select(self.container.name, replace=True)
-            return invalid_shapes
+        self._commit_batch_shapes_with_progress_bar(valid_meshes, progress_bar_message="Committing {0} shapes...")
+        # after all shapes have been added we need to update the remap nodes for the primaries that had new inbetweens added
+        # now we need to commit the locked
+        if extracted_locked_meshes:
+            self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes, progress_bar_message="Restoring locked {0} shapes...")
+            if extraction_group:
+                cmds.delete(extraction_group)
+        if shape_editor_exists and close_shape_editor:
+            cmds.ShapeEditor()
+        if TIMED:
+            print(f"Finished committing {len(valid_meshes)} shapes on {len(selected)} Restored: {len(extracted_locked_meshes) if extracted_locked_meshes else 0} locked shapes in {time.time() - start:.2f} seconds.")
+        cmds.select(clear=True)
+        cmds.select(self.container.name, replace=True)
+        return invalid_shapes
 
     @undoable
     def rename_work_shape(self, old_name: str, new_name: str):
@@ -845,6 +980,18 @@ class BlueSteelEditor(object):
         self.work_blendshape.rename_weight(old_name, new_name)
         self.work_blendshape.rename_target_dir(parent_dir, new_name)
 
+    def set_work_shape_editable(self, shape_name: str):
+        """
+        Set the editability of a work shape by muting or unmuting its parent directory.
+        Parameters:
+            shape_name (str): The name of the work shape
+            editable (bool): Whether the work shape should be editable
+        """
+        weight = self.work_blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Work shape '{shape_name}' not found in blendshape.")
+        self.work_blendshape.set_sculpt_target_index(weight.id)
+
     @undoable
     def add_work_shape(self, name = "WorkShape")->str:
         """
@@ -859,6 +1006,8 @@ class BlueSteelEditor(object):
         parent__dir = self.work_blendshape.add_target_dir(work_shape_name)
         weight = self.work_blendshape.add_target(work_shape_name)
         self.work_blendshape.set_weight_parent_directory(weight, parent__dir)
+        self.work_blendshape.set_weight_value(weight, 1.0)
+        self.set_work_shape_editable(work_shape_name)
         return weight
 
     @undoable
@@ -937,9 +1086,12 @@ class BlueSteelEditor(object):
         shape name.
         Parameters:
             shape_names (list): A list of shapes to extract
+        Returns:
+             dict: A dictionary of shape names and their corresponding extracted mesh names
         """
-
+        extracted_meshes = {}
         extraction_mesh = self.create_extraction_mesh()
+        extraction_group = cmds.listRelatives(extraction_mesh, parent=True, fullPath=True)[0]
         for shape_name in shape_names:
             shape = self.network.get_shape(shape_name)
             if shape is None:
@@ -948,10 +1100,10 @@ class BlueSteelEditor(object):
             self.set_shape_pose(shape)
             # we need to duplicate the extraction mesh with the shape name
             extracted_shape_mesh = cmds.duplicate(extraction_mesh, name=shape_name)[0]
-            if extracted_shape_mesh != shape_name:
-                cmds.rename(extracted_shape_mesh, shape_name)
+            extracted_meshes[shape_name] = extracted_shape_mesh
         cmds.delete(extraction_mesh)
-
+        return extraction_group, extracted_meshes
+    
     #############################################################################################
     # Export Import
     #############################################################################################
@@ -1480,6 +1632,17 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_target_dir_weight_value(parent_dir, 0.0 if state else 1.0)
         # self.work_blendshape.set_target_mute_state(w, state)
 
+    def sync_up_muted_shapes(self):
+        """
+        Sync up the muted shapes in the blendshape with the network.
+        This is useful when the mute state of the shapes is changed outside of the API.
+        Returns:
+            None
+        """
+        self.sync_network() # just rebuilding the network to make sure it's up to date
+        muted_shapes = self.get_muted_shapes()
+        for shape in self.network._shapes:
+            shape.muted = True if shape in muted_shapes else False
 
     def set_shape_mute_state(self, shape_name: str, state: bool):
         """
@@ -1513,7 +1676,7 @@ class BlueSteelEditor(object):
         for w in self.blendshape.get_weights():
             self.blendshape.set_target_mute_state(w, False)
             parent_dir = self.blendshape.get_weight_parent_directory(w)
-            self.blendshape.set_target_dir_visibility(parent_dir, True)
+            self.blendshape.set_target_dir_weight_value(parent_dir, 1.0)
         for shape in self.network._shapes:
             shape.muted = False
 
@@ -1775,6 +1938,7 @@ class BlueSteelEditor(object):
         # add a message attribute to link the base mesh to the container
         attrUtils.add_message_attr(container.name, BASE_MESH_STRING_IDENTIFIER, mesh_name)
         attrUtils.add_message_attr(container.name, NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
+        attrUtils.add_tag(container.name, "lockedShapes", "")
         container.add_member(network_container.name)
 
         editor_group_name = f"{editor_name}_Blendshapes_GRP"

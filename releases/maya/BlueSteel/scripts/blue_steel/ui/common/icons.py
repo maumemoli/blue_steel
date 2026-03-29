@@ -16,8 +16,8 @@ def join_icons_path(icon_name):
 
 INFO_STYLE = "color: white; font-size: 15px;"
 PRIMARY_ICON = QIcon(":/ts-head3.png")
-SECONDARY_ICON = QIcon(":/ts-head3.png")
-MUTED_ICON = QIcon(":/ts-head4.png")
+MUTE_OFF_ICON = QIcon(":/ts-head3.png")
+MUTE_ON_ICON = QIcon(":/ts-head4.png")
 REFRESH_ICON = colorize_icon(QIcon(":/refresh.png"))
 DELETE_ICON = colorize_icon(QIcon(":/trash.png"))
 EXTRACT_ICON = colorize_icon(QIcon(":/animateSweep.png"))
@@ -42,3 +42,5 @@ HIDDEN_ICON = QIcon(":/hidden.png")
 mmtoolicon_path = join_icons_path("mmTools_icon.png")
 print(f"Loading mmTools icon from path: {mmtoolicon_path}")
 MMTOOLS_ICON = QIcon(mmtoolicon_path)
+LOCK_ON_ICON = QIcon(":/nodeGrapherLocked.png")
+LOCK_OFF_ICON = colorize_icon(QIcon(":/nodeGrapherUnlocked.png"))

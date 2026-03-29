@@ -35,15 +35,17 @@ from ..common.icons import (
 	DOWN_ARROW_ICON,
 	DUPLICATE_ICON,
 	MMTOOLS_ICON,
-	MUTED_ICON,
+	MUTE_ON_ICON,
 	REFRESH_ICON,
 	RENAME_ICON,
-	SECONDARY_ICON,
+	MUTE_OFF_ICON,
 	SELECT_ICON,
 	UP_ARROW_ICON,
 	ZERO_VALUE_ICON,
 	AUTO_POSE_ICON,
 	ADD_AT_POSE_ICON,
+	LOCK_ON_ICON,
+	LOCK_OFF_ICON,
 
 )
 from .. import mmtools
@@ -152,6 +154,8 @@ class ShapeItemsModel(QAbstractListModel):
 	HeaderCollapsedRole = Qt.UserRole + 10
 	UpstreamRelatedRole = Qt.UserRole + 11
 	DownstreamRelatedRole = Qt.UserRole + 12
+	LockedRole = Qt.UserRole + 13
+	LockIconVisibleRole = Qt.UserRole + 14
 
 	primaryValueCommitted = Signal(str, float)
 
@@ -186,6 +190,8 @@ class ShapeItemsModel(QAbstractListModel):
 			self.HeaderCollapsedRole: b"headerCollapsed",
 			self.UpstreamRelatedRole: b"upstreamRelated",
 			self.DownstreamRelatedRole: b"downstreamRelated",
+			self.LockedRole: b"locked",
+			self.LockIconVisibleRole: b"lockIconVisible",
 		}
 
 	def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
@@ -217,6 +223,10 @@ class ShapeItemsModel(QAbstractListModel):
 		if role == self.DownstreamRelatedRole:
 			name = str(row.get("name", ""))
 			return name in self._downstream_related_names
+		if role == self.LockedRole:
+			return bool(row.get("locked", False))
+		if role == self.LockIconVisibleRole:
+			return bool(row.get("lock_icon_visible", False))
 		return None
 
 	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
@@ -282,6 +292,7 @@ class ShapeItemsModel(QAbstractListModel):
 		all_shapes = editor.get_all_shapes().sort_for_display()
 		weights = editor.blendshape.get_weights() or set()
 		weight_by_name = {str(weight): weight for weight in weights}
+		locked_shape_names = {str(name) for name in (getattr(editor, "locked_shapes", set()) or set())}
 
 		valid_shapes = [shape for shape in all_shapes if shape.type != "InvalidShape"]
 		level_counts: Dict[int, int] = {}
@@ -306,6 +317,8 @@ class ShapeItemsModel(QAbstractListModel):
 						"shape": None,
 						"is_header": True,
 						"header_level": level,
+						"locked": False,
+						"lock_icon_visible": False,
 					}
 				)
 				current_level = level
@@ -324,6 +337,8 @@ class ShapeItemsModel(QAbstractListModel):
 				"shape": shape,
 				"is_header": False,
 				"header_level": level,
+				"locked": str(shape) in locked_shape_names,
+				"lock_icon_visible": shape.type != "PrimaryShape",
 			}
 			self._row_by_name[row_data["name"]] = len(self._rows)
 			self._rows.append(row_data)
@@ -388,6 +403,40 @@ class ShapeItemsModel(QAbstractListModel):
 		row["muted"] = target
 		model_index = self.index(row_index, 0)
 		self.dataChanged.emit(model_index, model_index, [self.MutedRole, Qt.DisplayRole])
+
+	def set_shape_locked_state_local(self, shape_name: str, locked: bool) -> None:
+		"""Update locked flag in-model without forcing a full rebuild."""
+		row_index = self._row_by_name.get(shape_name)
+		if row_index is None:
+			return
+		row = self._rows[row_index]
+		target = bool(locked)
+		if bool(row.get("locked", False)) == target:
+			return
+		row["locked"] = target
+		model_index = self.index(row_index, 0)
+		self.dataChanged.emit(model_index, model_index, [self.LockedRole, Qt.DisplayRole])
+
+	def refresh_locked_states_from_editor(self) -> int:
+		"""Sync lock flags for all non-header rows from editor lock state."""
+		if self._editor is None:
+			return 0
+
+		locked_names = {str(name) for name in (getattr(self._editor, "locked_shapes", set()) or set())}
+		changed_count = 0
+		for row_index, row in enumerate(self._rows):
+			if bool(row.get("is_header", False)):
+				continue
+			shape_name = str(row.get("name", ""))
+			target = shape_name in locked_names
+			if bool(row.get("locked", False)) == target:
+				continue
+			row["locked"] = target
+			model_index = self.index(row_index, 0)
+			self.dataChanged.emit(model_index, model_index, [self.LockedRole, Qt.DisplayRole])
+			changed_count += 1
+
+		return changed_count
 
 	def get_shape_value(self, shape_name: str) -> Optional[float]:
 		row_index = self._row_by_name.get(shape_name)
@@ -810,6 +859,8 @@ class WorkShapeItemsModel(QAbstractListModel):
 	IsHeaderRole = ShapeItemsModel.IsHeaderRole
 	HeaderLevelRole = ShapeItemsModel.HeaderLevelRole
 	HeaderCollapsedRole = ShapeItemsModel.HeaderCollapsedRole
+	LockedRole = ShapeItemsModel.LockedRole
+	LockIconVisibleRole = ShapeItemsModel.LockIconVisibleRole
 	InEditModeRole = Qt.UserRole + 50
 	ConnectedRole = Qt.UserRole + 51
 
@@ -850,6 +901,10 @@ class WorkShapeItemsModel(QAbstractListModel):
 		if role == self.HeaderLevelRole:
 			return 0
 		if role == self.HeaderCollapsedRole:
+			return False
+		if role == self.LockedRole:
+			return False
+		if role == self.LockIconVisibleRole:
 			return False
 		if role == self.InEditModeRole:
 			return str(row["name"]) == str(self._edit_shape_name)
@@ -1090,6 +1145,33 @@ class PrimaryDropListView(QListView):
 		current_muted = bool(index.data(ShapeItemsModel.MutedRole))
 		return shape_name, (not current_muted)
 
+	def _resolve_lock_icon_click(self, event_pos) -> Optional[tuple]:
+		delegate = self.itemDelegate()
+		if not isinstance(delegate, SliderItemDelegate):
+			return None
+
+		index = self.indexAt(event_pos)
+		if not index.isValid():
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		icon_rect = delegate._lock_icon_rect(option, index)
+		if icon_rect.isNull() or not icon_rect.contains(event_pos):
+			return None
+
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+
+		current_locked = bool(index.data(ShapeItemsModel.LockedRole))
+		return shape_name, (not current_locked)
+
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
 			mute_payload = self._resolve_mute_icon_click(event.pos())
@@ -1098,6 +1180,15 @@ class PrimaryDropListView(QListView):
 				if isinstance(delegate, SliderItemDelegate):
 					shape_name, next_state = mute_payload
 					delegate.muteToggleRequested.emit(shape_name, next_state)
+					self._icon_click_active = True
+					event.accept()
+					return
+			lock_payload = self._resolve_lock_icon_click(event.pos())
+			if lock_payload is not None:
+				delegate = self.itemDelegate()
+				if isinstance(delegate, SliderItemDelegate):
+					shape_name, next_state = lock_payload
+					delegate.lockToggleRequested.emit(shape_name, next_state)
 					self._icon_click_active = True
 					event.accept()
 					return
@@ -1125,7 +1216,10 @@ class PrimaryDropListView(QListView):
 		super().mouseReleaseEvent(event)
 
 	def mouseDoubleClickEvent(self, event):  # noqa: N802
-		if event.button() == Qt.LeftButton and self._resolve_mute_icon_click(event.pos()) is not None:
+		if event.button() == Qt.LeftButton and (
+			self._resolve_mute_icon_click(event.pos()) is not None
+			or self._resolve_lock_icon_click(event.pos()) is not None
+		):
 			event.accept()
 			return
 		super().mouseDoubleClickEvent(event)
@@ -1165,6 +1259,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 	valueDragDelta = Signal(float)
 	valueDragSelectionContext = Signal(bool)
 	muteToggleRequested = Signal(str, bool)
+	lockToggleRequested = Signal(str, bool)
 
 	def sizeHint(self, option, index):  # noqa: N802
 		if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
@@ -1201,15 +1296,19 @@ class SliderItemDelegate(QStyledItemDelegate):
 		icon_gap = 8
 		right_margin = 4
 		value_w = min(self._value_column_width, max(40, rect.width() - 40))
+		icon_slots = 1 + (1 if self._is_lock_icon_visible(index) else 0)
 
 		value_left = rect.left() + left_margin
 		value_rect = QRect(value_left, rect.top(), value_w, rect.height())
 
 		icon_left = value_rect.right() + 1 + column_gap
-		text_left = icon_left + icon_size + icon_gap
+		text_left = icon_left + (icon_size * icon_slots) + (icon_gap * icon_slots)
 		text_width = max(20, rect.right() - text_left - right_margin)
 		text_rect = QRect(text_left, rect.top(), text_width, rect.height())
 		return value_rect, text_rect
+
+	def _is_lock_icon_visible(self, index) -> bool:
+		return bool(index.model().data(index, ShapeItemsModel.LockIconVisibleRole))
 
 	def _mute_icon_rect(self, option, index) -> QRect:
 		value_rect, _ = self._area_rects(option, index)
@@ -1218,6 +1317,38 @@ class SliderItemDelegate(QStyledItemDelegate):
 		x = value_rect.right() + 1 + column_gap
 		y = option.rect.top() + (option.rect.height() - icon_size) // 2
 		return QRect(x, y, icon_size, icon_size)
+
+	def _lock_icon_rect(self, option, index) -> QRect:
+		if not self._is_lock_icon_visible(index):
+			return QRect()
+		mute_rect = self._mute_icon_rect(option, index)
+		icon_gap = 8
+		return QRect(mute_rect.right() + 1 + icon_gap, mute_rect.top(), mute_rect.width(), mute_rect.height())
+
+	def _draw_icon_pixmap(self, painter: QPainter, icon_rect: QRect, icon: QIcon) -> None:
+		"""Draw icon with smoother scaling and HiDPI-aware rasterization."""
+		if icon_rect.isNull() or icon.isNull():
+			return
+
+		dpr = 1.0
+		device = painter.device()
+		if device is not None and hasattr(device, "devicePixelRatioF"):
+			try:
+				dpr = max(1.0, float(device.devicePixelRatioF()))
+			except Exception:
+				dpr = 1.0
+
+		pixmap_size = QSize(
+			max(1, int(round(icon_rect.width() * dpr))),
+			max(1, int(round(icon_rect.height() * dpr))),
+		)
+		pixmap = icon.pixmap(pixmap_size)
+		if pixmap.isNull():
+			return
+
+		pixmap.setDevicePixelRatio(dpr)
+		painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+		painter.drawPixmap(icon_rect, pixmap)
 
 	def paint(self, painter: QPainter, option, index):
 		model = index.model()
@@ -1312,9 +1443,16 @@ class SliderItemDelegate(QStyledItemDelegate):
 		painter.drawText(value_rect.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, f"{value:.3f}")
 
 		icon_rect = self._mute_icon_rect(option, index)
-		mute_icon = MUTED_ICON if muted else SECONDARY_ICON
+		mute_icon = MUTE_ON_ICON if muted else MUTE_OFF_ICON
 		if not mute_icon.isNull():
-			painter.drawPixmap(icon_rect, mute_icon.pixmap(icon_rect.size()))
+			self._draw_icon_pixmap(painter, icon_rect, mute_icon)
+
+		lock_rect = self._lock_icon_rect(option, index)
+		if not lock_rect.isNull():
+			is_locked = bool(model.data(index, ShapeItemsModel.LockedRole))
+			lock_icon = LOCK_ON_ICON if is_locked else LOCK_OFF_ICON
+			if not lock_icon.isNull():
+				self._draw_icon_pixmap(painter, lock_rect, lock_icon)
 
 		painter.restore()
 
@@ -1494,6 +1632,13 @@ class SliderItemDelegate(QStyledItemDelegate):
 					current_muted = bool(model.data(index, ShapeItemsModel.MutedRole))
 					self.muteToggleRequested.emit(shape_name, not current_muted)
 				return True
+			lock_rect = self._lock_icon_rect(option, index)
+			if not lock_rect.isNull() and lock_rect.contains(event.pos()):
+				shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					current_locked = bool(model.data(index, ShapeItemsModel.LockedRole))
+					self.lockToggleRequested.emit(shape_name, not current_locked)
+				return True
 
 		if not bool(model.data(index, ShapeItemsModel.EditableRole)):
 			return super().editorEvent(event, model, option, index)
@@ -1601,6 +1746,34 @@ class SliderListView(QListView):
 		current_muted = bool(index.data(ShapeItemsModel.MutedRole))
 		return shape_name, (not current_muted)
 
+	def _resolve_lock_icon_click(self, event_pos) -> Optional[tuple]:
+		"""Return (shape_name, next_state) if event is on lock icon, else None."""
+		delegate = self.itemDelegate()
+		if not isinstance(delegate, SliderItemDelegate):
+			return None
+
+		index = self.indexAt(event_pos)
+		if not index.isValid():
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		icon_rect = delegate._lock_icon_rect(option, index)
+		if icon_rect.isNull() or not icon_rect.contains(event_pos):
+			return None
+
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+
+		current_locked = bool(index.data(ShapeItemsModel.LockedRole))
+		return shape_name, (not current_locked)
+
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
 			mute_payload = self._resolve_mute_icon_click(event.pos())
@@ -1609,6 +1782,15 @@ class SliderListView(QListView):
 				if isinstance(delegate, SliderItemDelegate):
 					shape_name, next_state = mute_payload
 					delegate.muteToggleRequested.emit(shape_name, next_state)
+					self._icon_click_active = True
+					event.accept()
+					return
+			lock_payload = self._resolve_lock_icon_click(event.pos())
+			if lock_payload is not None:
+				delegate = self.itemDelegate()
+				if isinstance(delegate, SliderItemDelegate):
+					shape_name, next_state = lock_payload
+					delegate.lockToggleRequested.emit(shape_name, next_state)
 					self._icon_click_active = True
 					event.accept()
 					return
@@ -1636,7 +1818,10 @@ class SliderListView(QListView):
 		super().mouseReleaseEvent(event)
 
 	def mouseDoubleClickEvent(self, event):  # noqa: N802
-		if event.button() == Qt.LeftButton and self._resolve_mute_icon_click(event.pos()) is not None:
+		if event.button() == Qt.LeftButton and (
+			self._resolve_mute_icon_click(event.pos()) is not None
+			or self._resolve_lock_icon_click(event.pos()) is not None
+		):
 			event.accept()
 			return
 		super().mouseDoubleClickEvent(event)
@@ -2618,9 +2803,9 @@ class MainWindow(QMainWindow):
 		editor_frame_layout.addWidget(self.duplicate_button)
 
 		edit_shapes_frame_layout = frameLayout.FrameLayout("Shapes Edit")
-		self.add_primary_button = self._create_tool_button("Add New Primary", ADD_ICON)
+		self.add_primary_button = self._create_tool_button("Add/Commit New Primary", ADD_ICON)
 		self.add_primary_button.setToolTip("Add selected mesh as a new primary shape.\n If there are no selected meshes, creates an empty primary shape that can be filled by copying values from an existing shape.")
-		self.add_selected_at_current_pose_button = self._create_tool_button("Add At Current Pose", ADD_AT_POSE_ICON)
+		self.add_selected_at_current_pose_button = self._create_tool_button("Add/Commit At Current Pose", ADD_AT_POSE_ICON)
 		self.add_selected_at_current_pose_button.setToolTip("Add the selected mesh at the current pose extrapolating the name from the active values in the controller.\nFor example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen\nIf no mesh is selected an empty shape will be added.")
 		self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON)
 		edit_shapes_frame_layout.addWidget(self.commit_shapes_button)
@@ -2629,8 +2814,10 @@ class MainWindow(QMainWindow):
 
 
 		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
-		self.unmute_all_shapes_button = self._create_tool_button("Unmute All Shapes", SECONDARY_ICON)
+		self.unmute_all_shapes_button = self._create_tool_button("Unmute All Shapes", MUTE_OFF_ICON)
 		preview_shapes_frame_layout.addWidget(self.unmute_all_shapes_button)
+		self.unlock_all_shapes_button = self._create_tool_button("Unlock All Shapes", LOCK_OFF_ICON)
+		preview_shapes_frame_layout.addWidget(self.unlock_all_shapes_button)
 
 		debug_shapes_frame_layout = frameLayout.FrameLayout("Debug")
 		self.compare_shapes_button = self._create_tool_button("Compare Shapes")
@@ -2660,8 +2847,11 @@ class MainWindow(QMainWindow):
 		self._primaries_delegate.valueDragStarted.connect(lambda: self._on_value_drag_state_changed(True))
 		self._primaries_delegate.valueDragEnded.connect(lambda: self._on_value_drag_state_changed(False))
 		self._shapes_delegate.muteToggleRequested.connect(self._on_shapes_mute_toggle_requested)
+		self._shapes_delegate.lockToggleRequested.connect(self._on_shapes_lock_toggle_requested)
 		self._active_shapes_delegate.muteToggleRequested.connect(self._on_active_shapes_mute_toggle_requested)
+		self._active_shapes_delegate.lockToggleRequested.connect(self._on_active_shapes_lock_toggle_requested)
 		self._primary_drop_delegate.muteToggleRequested.connect(self._on_primary_drop_mute_toggle_requested)
+		self._primary_drop_delegate.lockToggleRequested.connect(self._on_primary_drop_lock_toggle_requested)
 		self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
 		self.primaries_search.textChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
@@ -2689,6 +2879,7 @@ class MainWindow(QMainWindow):
 		self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
 		self.remove_shapes_button.clicked.connect(self.remove_selected_shapes)
 		self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
+		self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
 		self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
 		self.mmtools_button.clicked.connect(self.launch_mmtools)
 		self._shape_model.primaryValueCommitted.connect(self._on_primary_value_committed)
@@ -2919,6 +3110,18 @@ class MainWindow(QMainWindow):
 			return
 		self._reload_shapes_from_editor()
 		self._set_status(f"All shapes in '{self.current_editor.name}' are unmuted.")
+
+	def unlock_all_shapes(self) -> None:
+		print("Unlocking all shapes...")
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		if getattr(self.current_editor, "locked_shapes", None) is None:
+			self.current_editor.locked_shapes = set()
+
+		self.current_editor.unlock_all_shapes()
+		self._shape_model.refresh_locked_states_from_editor()
+		self._set_status(f"All shapes in '{self.current_editor.name}' are unlocked.")
 
 	def select_face_ctrl(self) -> None:
 		if self.current_editor is None:
@@ -3410,7 +3613,10 @@ class MainWindow(QMainWindow):
 		if self._syncing_shapes_tree:
 			return
 		self._sync_shapes_tree_items_from_source_rows(_top_left, _bottom_right)
-		if roles and all(role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole) for role in roles):
+		if roles and all(
+			role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole, ShapeItemsModel.LockedRole)
+			for role in roles
+		):
 			return
 		self._update_info_labels()
 		self._update_delegate_name_columns()
@@ -3758,6 +3964,8 @@ class MainWindow(QMainWindow):
 					ShapeItemsModel.TypeRole,
 					ShapeItemsModel.ValueRole,
 					ShapeItemsModel.MutedRole,
+					ShapeItemsModel.LockedRole,
+					ShapeItemsModel.LockIconVisibleRole,
 					ShapeItemsModel.LevelRole,
 					ShapeItemsModel.PrimariesRole,
 					ShapeItemsModel.EditableRole,
@@ -3802,6 +4010,8 @@ class MainWindow(QMainWindow):
 					ShapeItemsModel.TypeRole,
 					ShapeItemsModel.ValueRole,
 					ShapeItemsModel.MutedRole,
+					ShapeItemsModel.LockedRole,
+					ShapeItemsModel.LockIconVisibleRole,
 					ShapeItemsModel.LevelRole,
 					ShapeItemsModel.PrimariesRole,
 					ShapeItemsModel.EditableRole,
@@ -4044,17 +4254,13 @@ class MainWindow(QMainWindow):
 			self._update_work_shape_button_panel()
 			return
 
-		weight = self.current_editor.work_blendshape.get_weight_by_name(shape_name)
-		if weight is None:
-			self._set_status(f"Work shape '{shape_name}' not found.", error=True)
-			return
 		try:
-			cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=int(weight.id))
+			self.current_editor.set_work_shape_editable(shape_name)
 		except Exception as exc:
 			self._set_status(f"Error enabling edit mode: {exc}", error=True)
 			return
 		self._work_shape_model.set_edit_shape(shape_name)
-		self._set_status(f"Edit mode enabled for '{shape_name}' (target id {int(weight.id)}).")
+		self._set_status(f"Edit mode enabled for '{shape_name}'.")
 
 		self._update_work_shape_button_panel()
 
@@ -4658,6 +4864,60 @@ class MainWindow(QMainWindow):
 		finally:
 			if self.blendshape_tracker is not None:
 				self.blendshape_tracker.start()
+
+	def _on_shapes_lock_toggle_requested(self, shape_name: str, state: bool) -> None:
+		"""Handle delegate lock icon clicks without rebuilding full UI state."""
+		print(f"Lock toggle requested for shape '{shape_name}' with state {state}.")
+		if self.current_editor is None:
+			return
+
+		selected_shape_names = self._selected_shape_names_from_shapes_view()
+		self._apply_shape_lock_toggle(shape_name, state, selected_shape_names)
+
+	def _on_active_shapes_lock_toggle_requested(self, shape_name: str, state: bool) -> None:
+		"""Handle active-shapes delegate lock icon clicks with list-selection semantics."""
+		if self.current_editor is None:
+			return
+
+		selected_shape_names = self._selected_active_shape_names()
+		self._apply_shape_lock_toggle(shape_name, state, selected_shape_names)
+
+	def _on_primary_drop_lock_toggle_requested(self, shape_name: str, state: bool) -> None:
+		"""Handle primary-drop delegate lock icon clicks with list-selection semantics."""
+		if self.current_editor is None:
+			return
+
+		selected_shape_names = self._selected_primary_drop_shape_names()
+		self._apply_shape_lock_toggle(shape_name, state, selected_shape_names)
+		
+	def _apply_shape_lock_toggle(self, shape_name: str, state: bool, selected_shape_names: List[str]) -> None:
+		"""Apply shape lock state for one or many names and refresh in-model lock flags."""
+		if shape_name in selected_shape_names:
+			target_shape_names = list(dict.fromkeys(selected_shape_names))
+		else:
+			target_shape_names = [shape_name]
+
+		if getattr(self.current_editor, "locked_shapes", None) is None:
+			self.current_editor.locked_shapes = set()
+
+		updated_target_names: List[str] = []
+		for target_name in target_shape_names:
+			target_shape = self.current_editor.get_shape(target_name)
+			if target_shape is not None and getattr(target_shape, "type", "") == "PrimaryShape":
+				continue
+			if state:
+				self.current_editor.add_shape_to_locked_shapes(target_name)
+			else:
+				self.current_editor.remove_shape_from_locked_shapes(target_name)
+			self._shape_model.set_shape_locked_state_local(target_name, bool(state))
+			updated_target_names.append(target_name)
+
+		if not updated_target_names:
+			return
+		if len(updated_target_names) == 1:
+			self._set_status(f"{'Locked' if state else 'Unlocked'} shape '{updated_target_names[0]}'.")
+		else:
+			self._set_status(f"{'Locked' if state else 'Unlocked'} {len(updated_target_names)} selected shape(s).")
 
 	def _on_work_shapes_mute_toggle_requested(self, shape_name: str, state: bool) -> None:
 		"""Handle work-shape delegate mute icon clicks with shapes-panel semantics."""
