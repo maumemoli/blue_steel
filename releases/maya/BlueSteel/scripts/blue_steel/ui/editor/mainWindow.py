@@ -227,6 +227,8 @@ class ShapeItemsModel(QAbstractListModel):
 			return bool(row.get("locked", False))
 		if role == self.LockIconVisibleRole:
 			return bool(row.get("lock_icon_visible", False))
+		if role == Qt.ToolTipRole:
+			return row.get("tooltip", None)
 		return None
 
 	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
@@ -234,6 +236,11 @@ class ShapeItemsModel(QAbstractListModel):
 			return False
 
 		row = self._rows[index.row()]
+		if role == Qt.ToolTipRole:
+			row["tooltip"] = value
+			self.dataChanged.emit(index, index, [Qt.ToolTipRole])
+			return True
+
 		if role not in (Qt.EditRole, self.ValueRole):
 			return False
 		if not row["editable"] or self._editor is None:
@@ -910,6 +917,8 @@ class WorkShapeItemsModel(QAbstractListModel):
 			return str(row["name"]) == str(self._edit_shape_name)
 		if role == self.ConnectedRole:
 			return bool(row.get("connected", False))
+		if role == Qt.ToolTipRole:
+			return row.get("tooltip", None)
 		return None
 
 	def flags(self, index: QModelIndex):
@@ -920,6 +929,17 @@ class WorkShapeItemsModel(QAbstractListModel):
 	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
 		if not index.isValid() or not (0 <= index.row() < len(self._rows)):
 			return False
+		if role == Qt.ToolTipRole:
+			row = self._rows[index.row()]
+			tooltip_text = str(value).strip() if value else ""
+			if row.get("tooltip", "") == tooltip_text:
+				return False
+			if tooltip_text:
+				row["tooltip"] = tooltip_text
+			else:
+				row.pop("tooltip", None)
+			self.dataChanged.emit(index, index, [Qt.ToolTipRole])
+			return True
 		if role not in (Qt.EditRole, self.ValueRole):
 			return False
 		if self._editor is None or self._editor.work_blendshape is None:
@@ -953,10 +973,13 @@ class WorkShapeItemsModel(QAbstractListModel):
 				name = str(weight)
 				value = float(editor.work_blendshape.get_weight_value(weight))
 				muted = bool(editor.get_work_shape_muted_state(name))
-				driver = editor.work_blendshape.get_weight_driver(weight)
-				connected = bool(driver)
+				driver_name = editor.get_work_shape_driver(weight)
+				connected = bool(driver_name)
 				self._row_by_name[name] = len(self._rows)
-				self._rows.append({"name": name, "type": "WorkShape", "value": value, "muted": muted, "connected": connected})
+				row = {"name": name, "type": "WorkShape", "value": value, "muted": muted, "connected": connected}
+				if driver_name:
+					row["tooltip"] = f"Driven by {driver_name}"
+				self._rows.append(row)
 				if self._edit_shape_name is None and int(weight.id) in sculpt_target_indices:
 					self._edit_shape_name = name
 		self.endResetModel()

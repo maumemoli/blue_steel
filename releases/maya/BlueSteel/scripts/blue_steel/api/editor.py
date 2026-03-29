@@ -7,7 +7,7 @@ import sys
 from . import attrUtils
 from .mayaUtils import undoable
 from .container import Container
-from .blendshape import Blendshape
+from .blendshape import Blendshape, Weight
 from ..logic.shape import Shape
 from ..logic.shapeList import ShapeList
 from ..logic.network import Network
@@ -402,6 +402,40 @@ class BlueSteelEditor(object):
         driver = self.work_blendshape.get_weight_driver(w)
         if driver is not None and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
             cmds.delete(driver)
+
+    def get_work_shape_driver(self, weight: str):
+        """
+        Get the driver of a work shape.
+        Parameters:
+            work_shape_weight (Weight): The weight object of the work shape
+        Returns:
+            str: The name of the driver node, or None if not found
+        """
+        if not isinstance(weight, Weight):
+            weight = self.work_blendshape.get_weight_by_name(weight)
+            if weight is None:
+                raise ValueError(f"Weight for work shape '{weight}' not found in blendshape.") 
+        driver = self.work_blendshape.get_weight_driver(weight)
+        if driver and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
+            connections = cmds.listConnections(f"{driver}.input", plugs=True) or []
+            for conn in connections:
+                if conn.startswith(f"{self.blendshape.name}."):
+                    primary_shape_name = conn.split(".")[-1]
+                    return primary_shape_name
+        return None
+    
+    def get_connected_work_shapes(self):
+        """
+        Create a dictionary with the work shapes that are connected to the main blendshape
+        where the key is the work shape name and the value is the primary shape name that is driving it.
+        """
+        connected_work_shapes = {}
+        work_weights = self.work_blendshape.get_weights() or []
+        for work_weight in work_weights:
+            primary_shape_name = self.get_work_shape_driver(work_weight)
+            if primary_shape_name:
+                connected_work_shapes[work_weight] = primary_shape_name
+        return connected_work_shapes
 
     @undoable
     def connect_work_shape_to_shape(self,work_shape_name: str, shape_name: str):
