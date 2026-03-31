@@ -39,6 +39,12 @@ Install NumPy with `mayapy`:
 
 If your Maya version differs, replace `2026` in the path.
 
+If you are still having trouble installing numpy check out this [Autodek Forum post](https://forums.autodesk.com/t5/maya-programming-forum/guide-how-to-install-numpy-scipy-in-maya-windows-64-bit/td-p/5796722).
+
+## Videos for kids who can't read good
+
+- [Blue Steel Quick Start Guide](https://www.youtube.com/watch?v=ci4G5WN6mcs)
+
 ## Shape Types
 
 Blue Steel classifies shape names into these types:
@@ -56,6 +62,29 @@ Shape validity and typing are driven by the logic layer.
 
 ## Main Editor Panels
 
+### Sidebar Tool Buttons
+
+#### MMTools Button:
+- Opens the MMTools utility window.
+
+#### Editor Group
+- **Select Controller**: Select the current controller in the scene.
+- **Zero All**: Set all values to zero.
+- **Rename To Pose**: Rename the current selection to match the pose.
+- **Duplicate Rename**: Duplicate and rename the current selection.
+
+#### Shapes Edit Group
+- **Add/Commit New Primary**: Add a new primary shape (from selection or empty).
+- **Add/Commit At Current Pose**: Add a shape at the current pose, naming it from active values.
+- **Commit Selected**: Commit the selected shapes.
+
+#### Shapes Preview Group
+- **Unmute All Shapes**: Unmute all shapes for preview.
+- **Unlock All Shapes**: Unlock all shapes for editing.
+
+#### Debug Group
+- **Compare Shapes**: Compare selected shapes for differences.
+
 ### Primaries
 
 What it does:
@@ -70,6 +99,7 @@ Key behavior:
 - Value edits commit to the active editor.
 - Sorting can be by name or value.
 - Folder rows summarize descendant values for sorting.
+- When a primary is selected the shapes panel gets updated showing shapes related to the primary selection.
 
 ### Shapes
 
@@ -85,6 +115,11 @@ Key behavior:
 - Double-clicking a shape sets that pose.
 - Shape rows reflect value/mute/editability state.
 
+Top bar toggle buttons:
+- Auto Pose: When checked set automatically the pose on the selected shape.
+- Downstram: When checked display all the related shapes that the selected shape is going to affect.
+- Upstream: When checked display display all the related shape that are going to affect the selected shape.
+
 ### Sliders Drop Box
 
 What it does:
@@ -99,7 +134,9 @@ What it does:
 - Manage work blendshape targets.
 - Supports adding/removing targets.
 - Supports painting and edit mode toggling.
-- Supports link operations and weight map copy/paste operations.
+- Supports link operations and weight map copy/paste operations with different options (Inverted, Summed, Subtracted).
+- Support duplication of the selected work shape.
+
 
 ### Active Shapes
 
@@ -117,9 +154,7 @@ What it does:
 
 ### 2. Author Primaries
 
-1. Use Add Primary to create a new empty primary shape.
-2. Adjust primary values in the Primaries panel.
-3. Rename primaries inline when needed.
+1. Commit a selected mesh with a valid primary name (lipCornerPuller) or create a new shape using the Add Shape button in the tools side bar.
 
 ### 3. Add Inbetweens
 
