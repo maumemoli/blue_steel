@@ -46,6 +46,7 @@ from ..common.icons import (
 	ADD_AT_POSE_ICON,
 	LOCK_ON_ICON,
 	LOCK_OFF_ICON,
+	HIGHLIGHT_ICON,
 
 )
 from .. import mmtools
@@ -2468,7 +2469,8 @@ class MainWindow(QMainWindow):
 		shapes_header_layout.setSpacing(2)
 		self.shapes_auto_pose_button = QPushButton("Auto Pose")
 		self.shapes_auto_pose_button.setIcon(AUTO_POSE_ICON)
-		self.shapes_auto_pose_button.setFixedHeight(26)
+		self.shapes_auto_pose_button.setIconSize(QSize(16, 16))
+		self.shapes_auto_pose_button.setFixedHeight(32)
 		self.shapes_auto_pose_button.setToolTip("When enabled, selecting a shape sets it to its pose")
 		self.shapes_auto_pose_button.setCheckable(True)
 		self.shapes_auto_pose_button.setChecked(False)
@@ -2477,7 +2479,7 @@ class MainWindow(QMainWindow):
 		self.shapes_downstream_button = QPushButton("Downstream")
 		self.shapes_downstream_button.setIcon(DOWN_ARROW_ICON)
 		self.shapes_downstream_button.setIconSize(QSize(16, 16))
-		self.shapes_downstream_button.setFixedHeight(26)
+		self.shapes_downstream_button.setFixedHeight(32)
 		self.shapes_downstream_button.setToolTip("List Downstream Connections")
 		self.shapes_downstream_button.setCheckable(True)
 		self.shapes_downstream_button.setChecked(False)
@@ -2486,11 +2488,20 @@ class MainWindow(QMainWindow):
 		self.shapes_upstream_button = QPushButton("Upstream")
 		self.shapes_upstream_button.setIcon(UP_ARROW_ICON)
 		self.shapes_upstream_button.setIconSize(QSize(16, 16))
-		self.shapes_upstream_button.setFixedHeight(26)
+		self.shapes_upstream_button.setFixedHeight(32)
 		self.shapes_upstream_button.setToolTip("List Upstream Connections")
 		self.shapes_upstream_button.setCheckable(True)
 		self.shapes_upstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_upstream_button)
+
+		self.shapes_highlight_related_button = QPushButton("Highlight Related")
+		self.shapes_highlight_related_button.setIcon(HIGHLIGHT_ICON)
+		self.shapes_highlight_related_button.setIconSize(QSize(24, 24))
+		self.shapes_highlight_related_button.setFixedHeight(32)
+		self.shapes_highlight_related_button.setToolTip("When enabled, highlight upstream/downstream related shapes on selection")
+		self.shapes_highlight_related_button.setCheckable(True)
+		self.shapes_highlight_related_button.setChecked(False)
+		shapes_header_layout.addWidget(self.shapes_highlight_related_button)
 		shapes_header_layout.addStretch(1)
 		shapes_layout.addLayout(shapes_header_layout)
 
@@ -2880,6 +2891,7 @@ class MainWindow(QMainWindow):
 		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
 		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
+		self.shapes_highlight_related_button.toggled.connect(lambda _: self._update_related_shape_highlights_from_selection())
 		self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
 		self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
 		self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
@@ -3672,6 +3684,10 @@ class MainWindow(QMainWindow):
 
 	def _update_related_shape_highlights_from_selection(self) -> None:
 		"""Highlight upstream/downstream rows related to current shapes selection."""
+		if not self.shapes_highlight_related_button.isChecked():
+			self._shape_model.set_related_shape_names(tuple(), tuple())
+			self.shapes_view.viewport().update()
+			return
 		if self.current_editor is None:
 			self._shape_model.set_related_shape_names(tuple(), tuple())
 			self.shapes_view.viewport().update()

@@ -1,10 +1,16 @@
 from ..api import mayaUtils
 from maya import cmds
-VERTEX_POS_BUFFER = None
 
 def copy_selected_mesh_vertex_position():
     """Copy the vertex positions of the selected mesh to a buffer."""
-    global VERTEX_POS_BUFFER
+    # enable bsMeshPointsClipboard plugin if it's not already enabled
+    if not cmds.pluginInfo("bsMeshPointsClipboard", query=True, loaded=True):
+        try:
+            cmds.loadPlugin("bsMeshPointsClipboard")
+        except RuntimeError as e:
+            cmds.warning (f"Could not load bsMeshPointsClipboard plugin. Please make sure it is installed and try again. Error: {e}")
+            return
+
     sel = cmds.ls (selection=True, flatten=True)
     if not sel:
         cmds.warning ("Nothing selected.")
@@ -18,16 +24,16 @@ def copy_selected_mesh_vertex_position():
     if not shapes:
         cmds.warning ("Selected transform has no shapes.")
         return
-    global VERTEX_POS_BUFFER
-    VERTEX_POS_BUFFER = mayaUtils.get_points_as_numpy(mesh)
-    cmds.inViewMessage (message=f"{mesh} vertex positions copied to buffer.", pos="topCenter", fade=True)
+    cmds.bsCopyMeshPoints(mesh)
 
 def paste_vertex_positions_to_selected_mesh():
     """Paste the vertex positions from the buffer to the selected mesh."""
-    global VERTEX_POS_BUFFER
-    if VERTEX_POS_BUFFER is None:
-        cmds.warning ("No vertex positions in buffer. Please copy vertex positions first.")
-        return
+    if not cmds.pluginInfo("bsMeshPointsClipboard", query=True, loaded=True):
+        try:
+            cmds.loadPlugin("bsMeshPointsClipboard")
+        except RuntimeError as e:
+            cmds.warning (f"Could not load bsMeshPointsClipboard plugin. Please make sure it is installed and try again. Error: {e}")
+            return
     sel = cmds.ls (selection=True, flatten=True)
     if not sel:
         cmds.warning ("Nothing selected.")
@@ -40,11 +46,6 @@ def paste_vertex_positions_to_selected_mesh():
     shapes = cmds.listRelatives (mesh, shapes=True, fullPath=True)
     if not shapes:
         cmds.warning ("Selected transform has no shapes.")
-        return
-    # let's check if this mesh has the same number of vertices as the buffer
-    num_vertices = cmds.polyEvaluate (mesh, vertex=True)
-    if num_vertices != VERTEX_POS_BUFFER.shape[0]:
-        cmds.warning (f"Selected mesh has {num_vertices} vertices, but buffer has {VERTEX_POS_BUFFER.shape[0]} vertices. Please select a mesh with the same number of vertices as the buffer.")
         return
     # check if the mesh has history, if it does, we need to get the original mesh shapee
     history = cmds.listHistory (mesh, pruneDagObjects=True)
@@ -59,9 +60,7 @@ def paste_vertex_positions_to_selected_mesh():
                                 fade=True,
                                 backColor=(1, 0, 0))
             return
-    
-    mayaUtils.set_points_from_numpy(mesh, VERTEX_POS_BUFFER)
-    cmds.inViewMessage (message=f"Vertex positions pasted to {mesh}.", pos="topCenter", fade=True)
+    cmds.bsPasteMeshPoints(mesh)
 
 def update_intermediate_object():
     """Update the intermediate object of the selected mesh."""
