@@ -32,7 +32,7 @@ global proc shelf_BlueSteel () {
         -style "iconOnly" 
         -marginWidth 0
         -marginHeight 1
-        -command "from maya import cmds\nimport os\nfrom importlib import reload\n\n\npackage_name = \"blue_steel\"\n\ndef reload_package(package_name):\n    \"\"\"\n    Reloads a package and all its submodules.n\n    \"\"\"\n    modules_to_reload = [\n        name for name in sys.modules\n        if name == package_name or name.startswith(package_name + \".\")\n    ]\n    \n\n    for name in sorted(modules_to_reload, key=len, reverse=True):\n        print(\"Reloading {0}\".format(name))\n        reload(sys.modules[name])\nreload_package(package_name)\n\n" 
+        -command "from maya import cmds\nimport os\nimport sys\nfrom importlib import reload\n\n\npackage_name = \"blue_steel\"\n\ndef reload_package(package_name):\n    \"\"\"\n    Reloads a package and all its submodules.n\n    \"\"\"\n    modules_to_reload = [\n        name for name in sys.modules\n        if name == package_name or name.startswith(package_name + \".\")\n    ]\n    \n\n    for name in sorted(modules_to_reload, key=len, reverse=True):\n        print(\"Reloading {0}\".format(name))\n        reload(sys.modules[name])\nreload_package(package_name)\n\n" 
         -sourceType "python" 
         -commandRepeatable 1
         -flat 1
