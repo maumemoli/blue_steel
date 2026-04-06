@@ -1,23 +1,36 @@
 # Simplex shapes naming conversion module for blue_steel
-# simplex shape name structure:
-# Separator: "_"
-# Side: "L" or "R"
-# ShapeName: string representing the shape
-# Value: 2-digit integer (00-100)
-# Primary: <Side>_<ShapeName>
-# Inbetween: <Side>_<ShapeName>_<Value>
-# Combo: <Side>_<ShapeName1>_<Side>_<ShapeName2>_...
-# Combo Inbetween: <Side>_<ShapeName1>_<Value1>_<Side>_<ShapeName2>_<Value2>_...
+# This module will read the simplex node definition and
+# convert the shape names to blue_steel compatible names
+# based on the sliders names and progressives,
+# then it will add the shapes to the blue_steel editor.
+# it will also provide an option to merge shapes with the same root but different sides into a single shape.
+# The conversion will be based on the following rules:
+# - The control attribute names will be converted to camel case if the SEPARATOR is present.
+# - The control attribute values will be converted to percentage and appended to the name,
+#   with 100% being omitted for cleaner names.
+# - The side tokens (single char Upper Case) will be separated from the attribute name and
+#   placed at the end of the name before the inbetween values.
+
 from ... import env
+import json
 from ...logic import utilities
 from ...api.blendshape import Blendshape
 from ...api.editor import BlueSteelEditor
 from maya import cmds, mel
 import traceback
-
+from dataclasses import dataclass , field
+from typing import List, Optional, Dict, Tuple
 
 SEPARATOR = env.SEPARATOR
 SIMPLEX_SEPARATOR = "_"
+
+@dataclass
+class SimplexShape:
+    simplex_target_name:     str
+    control_attributes:           list = field(default_factory=list)
+    control_values:           list = field(default_factory=list)
+    blue_steel_target_name: Optional[str] = None  # to be filled in later during conversion
+    blue_steel_merged_target_name: Optional[str] = None  # to be filled in later during conversion
 
 def get_available_simplex_nodes()-> list:
     """
@@ -55,6 +68,151 @@ def load_simplex_plugin()-> bool:
             return False
     return True
 
+def get_simplex_definition(simplex_node)-> dict:
+    """
+    Get the definition of a simplex node.
+
+    Parameters:
+        simplex_node (str): The name of the simplex node.
+
+    Returns:
+        dict: A dictionary containing the simplex node definition.
+    """
+    try:
+        definition_json = cmds.getAttr(f"{simplex_node}.definition")
+        definition = json.loads(definition_json)
+        return definition
+    except Exception as e:
+        print(f"Failed to get definition for {simplex_node}: {e}")
+        return {}
+
+def generate_conversion_data(simplex_node)-> dict:
+    """
+    Generate conversion data from a simplex node definition.
+
+    Parameters:
+        simplex_node (str): The name of the simplex node.
+    Returns:
+        A dictionary containing the conversion data for the simplex node.
+    """
+    conversion_data = dict()
+    controller = get_controller_from_simplex_node(simplex_node)
+    conversion_data["controller"] = controller
+    mesh = get_mesh_from_simplex_node(simplex_node)
+    conversion_data["mesh"] = mesh
+    definition = get_simplex_definition(simplex_node)
+    sliders = definition.get("sliders", [])
+    combos = definition.get("combos", [])
+    shapes = definition.get("shapes", [])
+    progressions = definition.get("progressions", [])
+    shapes_count = 0
+    merged_shapes_count = 0
+    # getting the primaries and the inbetweens for each slider
+    simplex_shapes = dict()
+    for slider in sliders:
+        progression = progressions[slider["prog"]]
+        for shape_id, slider_value in progression["pairs"]:
+            if shape_id == 0:
+                continue  # skip the rest shape
+            simplex_target_name = shapes[shape_id]["name"]
+            control_attribtutes = [slider["name"]]
+            control_values = [slider_value]
+            simplex_shape = create_simplex_shape(simplex_target_name, control_attribtutes, control_values)
+            shapes_count += 1
+            simplex_shape_key = simplex_shape.blue_steel_merged_target_name
+            if simplex_shape_key not in simplex_shapes:
+                merged_shapes_count += 1
+            shapes_list = simplex_shapes.get(simplex_shape_key, [])
+            shapes_list.append(simplex_shape)
+            simplex_shapes[simplex_shape_key] = shapes_list
+    conversion_data["simplex_shapes"] = simplex_shapes
+    # now we do the combos
+    for combo in combos:
+        pairs = combo["pairs"]
+        simples_target_name = combo["name"]
+        control_attributes = []
+        control_values = []
+        for slider_id, slider_value in pairs:
+            slider = sliders[slider_id]
+            control_attributes.append(slider["name"])
+            control_values.append(slider_value)
+        simplex_shape = create_simplex_shape(simples_target_name, control_attributes, control_values)
+        shapes_count += 1
+        simplex_shape_key = simplex_shape.blue_steel_merged_target_name
+        if simplex_shape_key not in simplex_shapes:
+            merged_shapes_count += 1
+        shapes_list = simplex_shapes.get(simplex_shape_key, [])
+        shapes_list.append(simplex_shape)
+        simplex_shapes[simplex_shape_key] = shapes_list
+    conversion_data["shapes_count"] = shapes_count
+    conversion_data["merged_shapes_count"] = merged_shapes_count
+    return conversion_data
+
+
+def create_simplex_shape(simplex_target_name, control_attributes, control_values)-> SimplexShape:
+    """
+    Create a simplex shape name based on the shape name, control attributes, and control values.
+
+    Parameters:
+        simplex_target_name (str): The base shape name.
+        control_attributes (list of str): List of control attribute names.
+        control_values (list of float): List of control attribute values.
+
+    Returns:
+        SimplexShape: The generated simplex shape.
+    """
+    # generating the blue_steel_target_name and the blue_steel_merged_target_name
+    # based on the control attributes and values
+    blue_steel_shape_parts = set()
+    blue_steel_merged_shape_parts = set()
+    for attribute, value in zip(control_attributes, control_values):
+        value_str = f"{int(value * 100):02d}"  # Convert to percentage and format as two digits
+        if value_str == "100":
+            value_str = ""  # Omit the value for 100% to keep the name cleaner
+        merged_name, side = convert_simplex_slider_name(attribute)
+        blue_steel_part = f"{merged_name}{side}{value_str}"
+        blue_steel_merged_part = f"{merged_name}{value_str}"
+        blue_steel_shape_parts.add(blue_steel_part)
+        blue_steel_merged_shape_parts.add(blue_steel_merged_part)
+    blue_steel_target_name = SEPARATOR.join(sorted(blue_steel_shape_parts))
+    blue_steel_merged_target_name = SEPARATOR.join(sorted(blue_steel_merged_shape_parts))
+    return SimplexShape(simplex_target_name,
+                        control_attributes=control_attributes,
+                        control_values=control_values,
+                        blue_steel_target_name=blue_steel_target_name,
+                        blue_steel_merged_target_name=blue_steel_merged_target_name)
+
+
+def convert_simplex_slider_name(slider_name: str) -> tuple[str, str]:
+    """
+    Convert the simplex slider name to a blue_steel compatible name by converting the separators to camel case
+    and separating the side prefixes, returning the cleaned shape name and the side prefix.
+
+    Parameters:
+        slider_name (str): The simplex shape name to be cleaned.
+    Returns:
+        tuple[str, str]: A tuple containing the cleaned shape name and separating the side prefix.
+    Example:
+        >>> convert_simplex_slider_name("L_eye_smile")
+        ("eyeSmile", "L")
+        >>> convert_simplex_slider_name("mouth_frown_R")
+        ("mouthFrown", "R")
+    """
+    parts = slider_name.split(SEPARATOR)
+    cleaned_parts = []
+    sides = []
+    for part in parts:
+        if len(part) == 1 and part.isupper():
+            sides.append(part)  # Store the side prefix
+            continue  # Skip side prefixes
+        if len(cleaned_parts) > 0 :
+            part = part.capitalize()  # Capitalize the first letter of subsequent parts for better readability
+        cleaned_parts.append(part)
+    side = "".join(sides) if sides else ""  # Combine side prefixes if there are multiple
+    sanitized_name =  "".join(cleaned_parts)
+    return (sanitized_name, side)
+
+    
 def get_controller_from_simplex_node(simplex_node)-> str:
     """
     Get the controller associated with a simplex node.
@@ -68,6 +226,22 @@ def get_controller_from_simplex_node(simplex_node)-> str:
     controller = cmds.listConnections(f"{simplex_node}.ctrlMsg", s=True, d=False)
     if controller:
         return controller[0]
+    return None
+
+def get_simplex_node_from_controller(controller)-> str:
+    """
+    Get the simplex node associated with a controller.
+
+    Parameters:
+        controller (str): The name of the controller.
+
+    Returns:
+        str: The name of the associated simplex node.
+    """
+    if cmds.attributeQuery("solver", node=controller, exists=True):  # Check if the attribute exists before querying connections
+        simplex_node = cmds.listConnections(f"{controller}.solver")
+        if simplex_node:
+            return simplex_node[0]
     return None
 
 def get_blendshape_from_simplex_node(simplex_node)-> str:
@@ -100,12 +274,12 @@ def get_mesh_from_simplex_node(simplex_node)-> str:
     if blendshape:
         base_mesh = cmds.blendShape(blendshape, query=True, geometry=True)
         if base_mesh:
-            transform = cmds.listRelatives(base_mesh[0], parent=True)
+            transform = cmds.listRelatives(base_mesh[0], parent=True, fullPath=True)
             if transform:
                 return transform[0]
     return None
 
-def connect_blue_steel_ctrl_to_simplex_ctrl(blue_steel_ctrl: str, simplex_ctrl: str, merge_sides: bool = False):
+def connect_blue_steel_ctrl_to_simplex_ctrl(blue_steel_ctrl: str, simplex_ctrl: str):
     """
     Connect a blue_steel controller to a simplex controller.
 
@@ -119,46 +293,18 @@ def connect_blue_steel_ctrl_to_simplex_ctrl(blue_steel_ctrl: str, simplex_ctrl: 
     blue_steel_attr = cmds.listAttr(blue_steel_ctrl, keyable=True, scalar=True) or []
     # print(f"Blue Steel attributes: {blue_steel_attr}")
     # convert the simplex attribute names to blue_steel attribute names
-    converted = simplex_shape_names_to_blue_steel(simplex_attr, merge_sides=merge_sides)
+    simplex_node = get_simplex_node_from_controller(simplex_ctrl)
+    definition = get_simplex_definition(simplex_node)
+    sliders = definition.get("sliders", [])
     # print(f"Converted attributes: {converted}")
+    for slider in sliders:
+        merged_name, side = convert_simplex_slider_name(slider["name"])
+        split_name = f"{merged_name}{side}"
+        if merged_name in blue_steel_attr and slider["name"] in simplex_attr:
+            cmds.connectAttr(f"{blue_steel_ctrl}.{merged_name}", f"{simplex_ctrl}.{slider['name']}", force=True)
+        elif split_name in blue_steel_attr and slider["name"] in simplex_attr:
+            cmds.connectAttr(f"{blue_steel_ctrl}.{split_name}", f"{simplex_ctrl}.{slider['name']}", force=True)
 
-    for blue_steel_shape_name in converted.keys():
-        simplex_shape_names = converted[blue_steel_shape_name]
-        for simplex_shape_name in simplex_shape_names:
-            if blue_steel_shape_name in blue_steel_attr:
-                print(f"Connecting {blue_steel_ctrl}.{blue_steel_shape_name} to {simplex_ctrl}.{simplex_shape_name}")
-                cmds.connectAttr(f"{blue_steel_ctrl}.{blue_steel_shape_name}", f"{simplex_ctrl}.{simplex_shape_name}", force=True)
-
-
-def simplex_shape_names_to_blue_steel(shape_names, merge_sides=False)-> dict:
-    """
-    Convert simplex shape names to blue_steel shape names.
-
-    Parameters:
-        shape_names (list of str): List of simplex shape names.
-
-    Returns:
-        list of str: List of blue_steel shape names.
-    """
-    converted_names = {}
-    for name in shape_names:
-        # Example conversion logic; modify as needed
-        values = get_shape_values(name)
-        roots, sides, values = extract_shape_elements(name)
-        converted_parts = []
-        for value, root, side in zip(values, roots, sides):
-            if merge_sides:
-                converted_part = f"{root}{value}"
-            else:
-                converted_part = f"{root}{side}{value}"
-            converted_parts.append(converted_part)
-        
-        converted_name = SEPARATOR.join(converted_parts)
-        names_list = converted_names.get(converted_name, [])
-        names_list.append(name)
-        converted_names[converted_name] = names_list
-
-    return converted_names
 
 
 def reset_simplex_controller(controller):
@@ -174,53 +320,23 @@ def reset_simplex_controller(controller):
         cmds.setAttr(f"{controller}.{attr}", 0.0)
 
 
-def set_simplex_controller_shapes_values(controller, shape_names):
+def set_simplex_controller_shapes_values(controller, simplex_shapes: list):
     """
-    Set the simplex controller shapes values based on the provided shape names.
+    Set the simplex controller shapes values based on the provided simplex shape.
 
     Parameters:
         controller: The simplex controller object.
-        shape_names (list of str): List of simplex shape names.
+        simplex_shapes (list of SimplexShape): The list of simplex shape objects.
     """
-    for shape_name in shape_names:
-        roots, sides, values = extract_shape_elements(shape_name)
-        for root, side, value in zip(roots, sides, values):
-            attr_name = f"{side}_{root}"
-            control_value = int(value)/100.0 if value else 1.0
-            # print(f"Setting {controller}.{attr_name} to {control_value}")
-            if cmds.attributeQuery(attr_name, node=controller, exists=True):
-                cmds.setAttr(f"{controller}.{attr_name}", control_value)
-
-def duplicate_simplex_shapes(blendshape_node, controller, mesh, merge_sides = False, level_range = (1,10)):
-    """
-    Duplicate simplex shapes from a blendshape node to a controller.
-
-    Parameters:
-        blendshape_node: The blendshape node containing simplex shapes.
-        controller: The simplex controller object.
-        mesh: The mesh object associated with the blendshape.
-    """
-    blendshape = Blendshape(blendshape_node)
-    shape_names = [str(w) for w in blendshape.get_weights() if w != "Rest_faceshapes"]
-    converted_names = simplex_shape_names_to_blue_steel(shape_names, merge_sides=merge_sides)
-    insertion_sorted = utilities.sort_for_insertion(converted_names.keys())
-    # creating a group to hold the duplicated shapes
-    shapes_group = cmds.group(empty=True, name=f"{mesh}_simplexShapes_grp")
-    for shape_name in insertion_sorted:
-        shape_level = len(utilities.get_parents(shape_name, SEPARATOR) )
-        # print(f"Processing shape: {shape_name} at level {shape_level}")
-        if shape_level < level_range[0] or shape_level > level_range[1]:
-            continue
-        source_shapes = converted_names[shape_name]
-        reset_simplex_controller(controller)
-        # print(f"Setting controller for shape: {shape_name} using source shapes: {source_shapes}")
-        set_simplex_controller_shapes_values(controller, source_shapes)
-        dup = cmds.duplicate(mesh, name=shape_name)[0]
-        name = cmds.parent(dup, shapes_group)
+    reset_simplex_controller(controller)
+    for simplex_shape in simplex_shapes:
+        attributes, values = simplex_shape.control_attributes, simplex_shape.control_values
+        for attr, value in zip(attributes, values):
+            if cmds.attributeQuery(attr, node=controller, exists=True):
+                cmds.setAttr(f"{controller}.{attr}", value)
 
 def add_simplex_shapes_to_editor(editor: BlueSteelEditor,
-                                 blendshape_node: str,
-                                 controller: str,
+                                 simplex_node: str,
                                  mesh: str,
                                  merge_sides: bool = False,
                                  level_range: tuple = (1,10)):
@@ -229,16 +345,17 @@ def add_simplex_shapes_to_editor(editor: BlueSteelEditor,
 
     Parameters:
         editor: The blue_steel shape editor object.
-        blendshape_node: The blendshape node containing simplex shapes.
-        controller: The simplex controller object.
-        mesh: The mesh object associated with the blendshape.
+        simplex_node: The simplex node containing simplex shapes.
+        mesh: The mesh object associated with the simplex node.
+        merge_sides: Whether to merge shapes with the same root but different sides into a single shape.
+        level_range: A tuple specifying the range of shape levels to include (inclusive).
     """
-    blendshape = Blendshape(blendshape_node)
-    shape_names = [str(w) for w in blendshape.get_weights() if w != "Rest_faceshapes"]
-    converted_names = simplex_shape_names_to_blue_steel(shape_names, merge_sides=merge_sides)
-    insertion_sorted = utilities.sort_for_insertion(converted_names.keys())
+    simplex_data = generate_conversion_data(simplex_node)
+    controller = simplex_data["controller"]
+    simplex_shapes = simplex_data["simplex_shapes"]
+    insertion_sorted = utilities.sort_for_insertion(simplex_shapes.keys())
     gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
-    total_shapes = len(insertion_sorted)
+    total_shapes = simplex_data["shapes_count"] if not merge_sides else simplex_data["merged_shapes_count"]
     # --- Start the progress bar ---
     cmds.progressBar(gMainProgressBar, edit=True,
                     beginProgress=True,
@@ -246,155 +363,30 @@ def add_simplex_shapes_to_editor(editor: BlueSteelEditor,
                     status=f'Processing {total_shapes} shapes...',
                     maxValue=total_shapes)
     try:
-        for shape_name in insertion_sorted:
-            cmds.progressBar(gMainProgressBar,
-                    edit=True,
-                    step=1,
-                    status=f'Adding shape: {shape_name}...')
-            shape_level = len(utilities.get_parents(shape_name, SEPARATOR) )
+        for shapes_group_name in insertion_sorted:
+            shapes_group = simplex_shapes[shapes_group_name]
+            shape_level = len(utilities.get_parents(shapes_group_name, SEPARATOR) )
             if shape_level < level_range[0] or shape_level > level_range[1]:
                 continue
-            source_shapes = converted_names[shape_name]
-            reset_simplex_controller(controller)
-            set_simplex_controller_shapes_values(controller, source_shapes)
-            editor.commit_shape(shape_name, mesh)
+            if merge_sides:
+                set_simplex_controller_shapes_values(controller, shapes_group)
+                cmds.progressBar(gMainProgressBar,
+                        edit=True,
+                        step=1,
+                        status=f'Adding shape: {shapes_group_name}...')
+                editor.commit_shape(shapes_group_name, mesh)
+            else:
+                for shape in shapes_group:
+                    set_simplex_controller_shapes_values(controller, [shape])
+                    cmds.progressBar(gMainProgressBar,
+                            edit=True,
+                            step=1,
+                            status=f'Adding shape: {shape.blue_steel_target_name}...')
+                    editor.commit_shape(shape.blue_steel_target_name, mesh)
+            
     except Exception as e:
         print("An error occurred while adding simplex shapes to the editor:")
         traceback.print_exc()
     finally:
         # --- End the progress bar ---
         cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
-
-def extract_shape_elements(shape_name)-> list:
-    """
-    Separate the side prefixes from a shape name by removing separators returning three lists.
-    The first list contains the roots without side prefixes and values,
-    the second list contains the sides,
-    and the third list contains the values.
-
-    Parameters:
-        shape_name (str): The simplex shape name.
-    Returns:
-        list: The unsplit shape name.
-    Example:
-        >>> get_unsplit_shape_name("L_eyeSmile_50_R_mouthFrown_30")
-        ['eyeSmile50', "mouthFrown30"], ['L', 'R']
-    """
-    roots = []
-    sides = []
-    values = []
-    parents = get_shape_parents(shape_name)
-    for parent in parents:
-        primary = ""
-        value = ""
-        side = ""
-        parts = parent.split(SIMPLEX_SEPARATOR)
-        if parts[0] in ["L", "R"]:
-            side = parts[0]
-            parts = parts[1:]
-        if all(x.isdigit() for x in parts[-1:]):
-            value = parts[-1]
-            parts = parts[:-1]
-        primary = SIMPLEX_SEPARATOR.join(parts)  # Center or no specific side
-        roots.append(primary)
-        sides.append(side)
-        values.append(value)
-
-    return roots, sides, values
-
-
-def get_shape_sides(shape_name)-> list:
-    """
-    Get the sides from a simplex shape name.
-
-    Parameters:
-        shape_name (str): The simplex shape name.
-    Returns:
-        list: List of sides found in the shape name.
-    Example:
-        >>> get_shape_sides("L_eyeSmile50_R_mouthFrown30")
-        ['L', 'R']
-    """
-    sides = []
-    parents = get_shape_parents(shape_name)
-    for parent in parents:
-        parts = parent.split(SIMPLEX_SEPARATOR)
-        if parts[0] in ["L", "R"]:
-            sides.append(parts[0])
-        else:
-            sides.append("")  # Center or no specific side
-    return sides
-
-def get_shape_parents(shape_name)-> list:
-    """
-    Get the parent shapes from a simplex shape name.
-
-    Parameters:
-        shape_name (str): The simplex shape name.
-    Returns:
-        list: List of parent shape names.
-    Example:
-        >>> get_shape_parents("L_eyeSmile_50_R_mouthFrown_30")
-        ['L_eyeSmile_50', 'R_mouthFrown_30']
-    """
-    parents = []
-    parts = shape_name.split(SIMPLEX_SEPARATOR)
-    i = 0
-    while i < len(parts):
-        if parts[i] in ["L", "R"] and i + 1 < len(parts):
-            parent = parts[i] + SIMPLEX_SEPARATOR + parts[i + 1]
-            if i + 2 < len(parts) and parts[i + 2].isdigit():
-                parent += SIMPLEX_SEPARATOR + parts[i + 2]
-                i += 1
-            parents.append(parent)
-            i += 2
-        else:
-            i += 1
-    return parents
-
-def get_shape_primaries(shape_name)-> list:
-    """
-    Get the primary shapes from a simplex shape name.
-
-    Parameters:
-        shape_name (str): The simplex shape name.
-    Returns:
-        list: List of primary shape names.
-    Example:
-        >>> get_shape_primaries("L_eyeSmile_50_R_mouthFrown_30")
-        ['L_eyeSmile', 'R_mouthFrown']
-    """
-    parents = get_shape_parents(shape_name)
-    primaries = []
-    for parent in parents:
-        parts = parent.split(SIMPLEX_SEPARATOR)
-        if all(x.isdigit() for x in parts[-1:]):
-            primary = SIMPLEX_SEPARATOR.join(parts[:-1])
-        else:
-            primary = parent
-        primaries.append(primary)
-    return primaries
-
-def get_shape_values(shape_name)-> list:
-    """
-    Get the shape values from a simplex shape name.
-
-    Parameters:
-        shape_name (str): The simplex shape name.
-    Returns:
-        list: List of shape values.
-    Example:
-        >>> get_shape_values("L_eyeSmile_50_R_mouthFrown_30")
-        [0.5, 0.3]
-    """
-    values = []
-    parents = get_shape_parents(shape_name)
-    for parent in parents:
-        parts = parent.split(SIMPLEX_SEPARATOR)
-        if all(x.isdigit() for x in parts[-1:]):
-            value_str = parts[-1]
-            value = int(value_str) / 100.0
-        else:
-            value = 1.0
-        values.append(value)
-    return values

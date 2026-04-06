@@ -1,12 +1,10 @@
 from .... import env
 from maya import cmds
-from ..commands import (get_blendshape_from_simplex_node,
-                        get_available_simplex_nodes,
+from ..commands import (get_available_simplex_nodes,
                         get_controller_from_simplex_node,
                         get_mesh_from_simplex_node,
                         load_simplex_plugin,
-                        simplex_plugin_loaded,
-                        add_simplex_shapes_to_editor)
+                        simplex_plugin_loaded,)
 import maya.OpenMayaUI as omui
 
 if env.MAYA_VERSION > 2024:
@@ -327,8 +325,6 @@ class SimplexConverterDialog(QtWidgets.QDialog):
         selected_items = self.simplex_nodes_list.selectedItems()
         self.result_data = {
             'simplex_node': selected_items[0].text(),
-            'blendshape_node': get_blendshape_from_simplex_node(selected_items[0].text()),
-            'controller': self.controller_field.text().strip(),
             'mesh': self.mesh_field.text().strip(),
             'merge_sides': self.merge_sides_checkbox.isChecked(),
             'level_range': (self.min_level_spin.value(), self.max_level_spin.value())

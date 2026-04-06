@@ -52,7 +52,7 @@ INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
 
 
 VERBOSE = False
-TIMED = True
+TIMED = False
 
 class BlueSteelEditor(object):
     SHAPE_EDITOR_PANEL = "shapePanel1Window"

@@ -52,7 +52,7 @@ from ..common.icons import (
 from .. import mmtools
 
 WINDOW = None
-
+SHOW_UPADTE_CHECK = True
 if env.MAYA_VERSION > 2024:
 	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
 	from PySide6.QtGui import QAction, QColor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
@@ -2380,7 +2380,8 @@ class MainWindow(QMainWindow):
 		self.rename_editor_action: Optional[QAction] = None
 		self.explode_container_action: Optional[QAction] = None
 		self.fix_invisible_blendshapes_action: Optional[QAction] = None
-		self.simplex_action: Optional[QAction] = None
+		self.convert_simplex_action: Optional[QAction] = None
+		self.connect_simplex_controllers_action: Optional[QAction] = None
 		self.prepare_for_publishing_action: Optional[QAction] = None
 		self._workshape_rename_editor: Optional[QLineEdit] = None
 		self._workshape_rename_old_name: str = ""
@@ -2959,8 +2960,10 @@ class MainWindow(QMainWindow):
 			self.explode_container_action.setEnabled(activate)
 		if self.fix_invisible_blendshapes_action is not None:
 			self.fix_invisible_blendshapes_action.setEnabled(activate)
-		if self.simplex_action is not None:
-			self.simplex_action.setEnabled(activate)
+		if self.convert_simplex_action is not None:
+			self.convert_simplex_action.setEnabled(activate)
+		if self.connect_simplex_controllers_action is not None:
+			self.connect_simplex_controllers_action.setEnabled(activate)
 		if self.prepare_for_publishing_action is not None:
 			self.prepare_for_publishing_action.setEnabled(activate)
 
@@ -3312,18 +3315,24 @@ class MainWindow(QMainWindow):
 		self.fix_invisible_blendshapes_action.setEnabled(self.current_editor is not None)
 		utilities_menu.addAction(self.fix_invisible_blendshapes_action)
 
-		conversion_menu = menu_bar.addMenu("Converters/Clean-Up")
-		self.simplex_action = QAction("Convert Simplex", self)
-		self.simplex_action.setToolTip("Convert a Simplex facial system into Blue Steel.")
-		self.simplex_action.triggered.connect(self._on_simplex_converter_requested)
-		self.simplex_action.setEnabled(self.current_editor is not None)
-		conversion_menu.addAction(self.simplex_action)
-		conversion_menu.addSeparator()
+		conversion_cleanup_menu = menu_bar.addMenu("Converters/Clean-Up")
+		simplex_menu = conversion_cleanup_menu.addMenu("Simplex Facial System")
+		self.convert_simplex_action = QAction("Convert Simplex", self)
+		self.convert_simplex_action.setToolTip("Convert a Simplex facial system into Blue Steel.")
+		self.convert_simplex_action.triggered.connect(self._on_simplex_converter_requested)
+		self.convert_simplex_action.setEnabled(self.current_editor is not None)
+		simplex_menu.addAction(self.convert_simplex_action)
+		self.connect_simplex_controllers_action = QAction("Connect Simplex Controller", self)
+		self.connect_simplex_controllers_action.setToolTip("Connect the selected Simplex controller to the Blue Steel controller.")
+		self.connect_simplex_controllers_action.triggered.connect(self._on_connect_simplex_controller_requested)
+		self.connect_simplex_controllers_action.setEnabled(self.current_editor is not None)
+		simplex_menu.addAction(self.connect_simplex_controllers_action)
+		conversion_cleanup_menu.addSeparator()
 		self.prepare_for_publishing_action = QAction("Prepare For Publishing", self)
 		self.prepare_for_publishing_action.setToolTip("Prepare the current editor for publishing and remove editor access.")
 		self.prepare_for_publishing_action.triggered.connect(self._on_prepare_for_publishing_requested)
 		self.prepare_for_publishing_action.setEnabled(self.current_editor is not None)
-		conversion_menu.addAction(self.prepare_for_publishing_action)
+		conversion_cleanup_menu	.addAction(self.prepare_for_publishing_action)
 
 		help_menu = menu_bar.addMenu("Help")
 		about_action = QAction("About", self)
@@ -3457,9 +3466,34 @@ class MainWindow(QMainWindow):
 		cmds.nodeEditor("nodeEditorPanel1NodeEditorEd", e=True, useAssets=not collapsed)
 		self._toggle_exploded_container_action_state(not collapsed)
 
+	def _on_connect_simplex_controller_requested(self) -> None:
+		if self.current_editor is None:
+			self._set_status("Please select a Blue Steel Editor before connecting Simplex controllers.",
+					         warning=True)
+			return
+
+		selection = cmds.ls(selection=True, flatten=True) or []
+		if not selection:
+			self._set_status("No controller selected. Please select a Simplex controller to connect.", 
+					warning=True)
+			return
+		controller = selection[0]
+		if cmds.nodeType(controller) != "transform":
+			self._set_status("Selected object is not a transform node. Please select a Simplex controller transform.", 
+					warning=True)
+			return
+		if simplex_commands.get_simplex_node_from_controller(controller) is None:
+			self._set_status("Selected controller is not part of a Simplex facial system. Please select a valid Simplex controller.", 
+					warning=True)
+			return
+		simplex_commands.connect_blue_steel_ctrl_to_simplex_ctrl(
+			blue_steel_ctrl=self.current_editor.face_ctrl,
+			simplex_ctrl=controller,)
+
 	def _on_simplex_converter_requested(self) -> None:
 		if self.current_editor is None:
-			self._set_status("Please select a Blue Steel Editor before converting Simplex systems.", warning=True)
+			self._set_status("Please select a Blue Steel Editor before converting Simplex systems.",
+					          warning=True)
 			return
 
 		self._clear_trackers_for_scene_operation()
@@ -3471,8 +3505,7 @@ class MainWindow(QMainWindow):
 
 			simplex_commands.add_simplex_shapes_to_editor(
 				editor=self.current_editor,
-				blendshape_node=selection.get("blendshape_node"),
-				controller=selection.get("controller"),
+				simplex_node=selection.get("simplex_node"),
 				mesh=selection.get("mesh"),
 				merge_sides=selection.get("merge_sides"),
 				level_range=selection.get("level_range"),
@@ -5160,7 +5193,10 @@ def show() -> MainWindow:
 		>>> win = show()
 		>>> win.refresh_ui()
 	"""
+	print("Opening Blue Steel editor...")
 	global WINDOW
+	global SHOW_UPADTE_CHECK
+
 	try:
 		if WINDOW is not None:
 			WINDOW.close()
@@ -5170,7 +5206,20 @@ def show() -> MainWindow:
 		WINDOW = None
 
 	maya_main_window = get_maya_main_window()
+	import blue_steel
+	status_label = None
+	if blue_steel.__version__  != blue_steel.__latest_version__:
+		url = blue_steel.__update_url__
+		status_label = QLabel(
+			f'Update available: {blue_steel.__latest_version__} Download '
+			f'<a href="{url}" style="color: #5babf2;">Here</a>'
+		)
+		status_label.setStyleSheet("color: #e7b45a;")
+		status_label.setOpenExternalLinks(True)
 	WINDOW = MainWindow(parent=maya_main_window)
 	WINDOW.show()
+	if status_label is not None:
+		WINDOW.status_bar.addPermanentWidget(status_label)
+
 	return WINDOW
 

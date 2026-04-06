@@ -21,13 +21,15 @@ import logging
 import requests
 from maya import cmds
 
-from . import env
 from . import __url__, __version__
 
 LOGGER = logging.getLogger(__name__)
 
-# Subfolder inside the GitHub zipball that maps to the local module root.
-_REPO_SUBPATH = "releases/maya/BlueSteel"
+# Asset name pattern used by the release workflow (BlueSteel-<tag>.zip).
+_ASSET_NAME_TEMPLATE = "BlueSteel-{tag}.zip"
+
+# Top-level folder inside the release asset zip.
+_ZIP_ROOT_FOLDER = "BlueSteel"
 
 
 def _get_bluesteel_root() -> str:
@@ -42,10 +44,26 @@ def _fetch_release_info() -> dict:
     return resp.json()
 
 
-def _download_zipball(zipball_url: str) -> bytes:
-    """Download the zipball and return its raw bytes."""
-    LOGGER.info("Downloading %s …", zipball_url)
-    resp = requests.get(zipball_url, timeout=120, stream=True)
+def _find_asset_url(release: dict, tag: str) -> str:
+    """Return the browser_download_url for the BlueSteel zip asset."""
+    expected_name = _ASSET_NAME_TEMPLATE.format(tag=tag)
+    for asset in release.get("assets", []):
+        if asset.get("name") == expected_name:
+            return asset["browser_download_url"]
+    raise RuntimeError(
+        "Release {} has no asset named '{}'. "
+        "Available assets: {}".format(
+            tag,
+            expected_name,
+            [a.get("name") for a in release.get("assets", [])],
+        )
+    )
+
+
+def _download_asset(url: str) -> bytes:
+    """Download a release asset and return its raw bytes."""
+    LOGGER.info("Downloading %s …", url)
+    resp = requests.get(url, timeout=120, stream=True)
     resp.raise_for_status()
     chunks = []
     for chunk in resp.iter_content(chunk_size=1 << 20):
@@ -53,17 +71,14 @@ def _download_zipball(zipball_url: str) -> bytes:
     return b"".join(chunks)
 
 
-def _extract_subfolder(zip_bytes: bytes, repo_subpath: str, dest: str) -> None:
-    """Extract only *repo_subpath* from the zipball into *dest*.
+def _extract_zip(zip_bytes: bytes, dest: str) -> None:
+    """Extract the release asset zip into *dest*.
 
-    GitHub zipballs have a single top-level directory whose name is
-    ``<owner>-<repo>-<short_sha>/``.  We strip that prefix plus
-    *repo_subpath* so the extracted tree lands directly in *dest*.
+    The zip contains a single top-level ``BlueSteel/`` folder.  Its
+    contents are extracted directly into *dest* (stripping that prefix).
     """
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        # Detect the top-level directory name (first entry).
-        top_level = zf.namelist()[0].split("/")[0]
-        prefix = "{}/{}/".format(top_level, repo_subpath.strip("/"))
+        prefix = "{}/".format(_ZIP_ROOT_FOLDER)
 
         extracted = 0
         for info in zf.infolist():
@@ -84,7 +99,7 @@ def _extract_subfolder(zip_bytes: bytes, repo_subpath: str, dest: str) -> None:
 
         if extracted == 0:
             raise RuntimeError(
-                "No files found under '{}' in the zipball.".format(prefix)
+                "No files found under '{}' in the zip.".format(prefix)
             )
         LOGGER.info("Extracted %d files into %s", extracted, dest)
 
@@ -111,11 +126,8 @@ def update(force: bool = False) -> str:
         cmds.warning(msg)
         return __version__
 
-    zipball_url = release.get("zipball_url")
-    if not zipball_url:
-        raise RuntimeError("No zipball URL found in the release payload.")
-
-    zip_bytes = _download_zipball(zipball_url)
+    asset_url = _find_asset_url(release, latest_tag)
+    zip_bytes = _download_asset(asset_url)
 
     bluesteel_root = _get_bluesteel_root()
     LOGGER.info("BlueSteel root: %s", bluesteel_root)
@@ -128,7 +140,7 @@ def update(force: bool = False) -> str:
     backup_dir = bluesteel_root + "_backup"
 
     try:
-        _extract_subfolder(zip_bytes, _REPO_SUBPATH, staging_dir)
+        _extract_zip(zip_bytes, staging_dir)
 
         # Swap: current -> backup, staging -> current.
         if os.path.exists(backup_dir):
