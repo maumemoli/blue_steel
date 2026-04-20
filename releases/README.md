@@ -19,7 +19,7 @@ Blue Steel manages facial shape systems built on blendshapes, with a UI for:
 
 ## Quick Start (Maya)
 
-1. Download BlueSteel-v#.#.#zip from the [latest release](https://github.com/maumemoli/blue_steel/releases).
+1. Download BlueSteel-v#.#.#zip from the [latest release](https://github.com/maumemoli/blue_steel/releases/latest).
 2. Unzip the file and place the Bluesteel folder where you want to keep it or copy it in the may modules directory.
 3. Drag [drag_into_Maya_to_install.py](releases/maya/BlueSteel/drag_into_Maya_to_install.py) into Maya.
 4. The prompt will ask to locate the module folder and it will create a blue_steel.mod file.
