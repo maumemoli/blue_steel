@@ -27,6 +27,7 @@ from ...api.editor import BlueSteelEditor
 from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
+from .controllerLayoutWindow import ControllerLayoutWindow
 from ..common import frameLayout
 from ..common.icons import (
 	ADD_ICON,
@@ -47,6 +48,8 @@ from ..common.icons import (
 	LOCK_ON_ICON,
 	LOCK_OFF_ICON,
 	HIGHLIGHT_ICON,
+	HEAT_MAP_ICON,
+	CONTROLLER_LAYOUT_ICON,
 
 )
 from .. import mmtools
@@ -1295,6 +1298,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._name_column_width = 0
 		self._value_column_width = 86
 		self._drag_active = False
+		self._undo_chunk_open = False
 		self._drag_index = QPersistentModelIndex()
 		self._drag_model = None
 		self._drag_start_x = 0
@@ -1302,6 +1306,25 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._drag_range_px = 1
 		self._drag_target_indexes: List[QPersistentModelIndex] = []
 		self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
+
+	def _open_drag_undo_chunk(self) -> None:
+		if self._undo_chunk_open:
+			return
+		try:
+			cmds.undoInfo(openChunk=True, chunkName="BlueSteel Slider Drag")
+			self._undo_chunk_open = True
+		except Exception:
+			self._undo_chunk_open = False
+
+	def _close_drag_undo_chunk(self) -> None:
+		if not self._undo_chunk_open:
+			return
+		try:
+			cmds.undoInfo(closeChunk=True)
+		except Exception:
+			pass
+		finally:
+			self._undo_chunk_open = False
 
 	def set_name_column_width(self, width: int) -> None:
 		"""Set aligned name column width used to place the value area."""
@@ -1417,7 +1440,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		is_shapes_tree = isinstance(parent_view, ShapeTreeWidget)
 		if is_shapes_tree and not (option.state & QStyle.State_Selected):
 			if is_upstream_related or is_downstream_related:
-				related_color = QColor(196, 196, 196, 90)
+				related_color = QColor(95, 173, 136, 90)
 				painter.fillRect(option.rect, related_color)
 
 		if option.state & QStyle.State_Selected:
@@ -1600,6 +1623,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 			self._drag_target_indexes = [self._drag_index]
 			self._drag_target_start_values[self._drag_index] = self._drag_start_value
 		self._grab_view_mouse()
+		self._open_drag_undo_chunk()
 		self.valueDragStarted.emit()
 		self._set_drag_value_from_pos(model, event_pos.x())
 
@@ -1616,6 +1640,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._drag_target_start_values = {}
 		self._release_view_mouse()
 		self.valueDragEnded.emit()
+		self._close_drag_undo_chunk()
 
 	def _grab_view_mouse(self) -> None:
 		parent = self.parent()
@@ -2068,6 +2093,7 @@ class PrimaryTreeValueDelegate(QStyledItemDelegate):
 		super().__init__(parent)
 		self._name_role = name_role
 		self._drag_active = False
+		self._undo_chunk_open = False
 		self._drag_index = QPersistentModelIndex()
 		self._drag_model = None
 		self._drag_start_x = 0
@@ -2075,6 +2101,25 @@ class PrimaryTreeValueDelegate(QStyledItemDelegate):
 		self._drag_range_px = 1
 		self._drag_target_indexes: List[QPersistentModelIndex] = []
 		self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
+
+	def _open_drag_undo_chunk(self) -> None:
+		if self._undo_chunk_open:
+			return
+		try:
+			cmds.undoInfo(openChunk=True, chunkName="BlueSteel Slider Drag")
+			self._undo_chunk_open = True
+		except Exception:
+			self._undo_chunk_open = False
+
+	def _close_drag_undo_chunk(self) -> None:
+		if not self._undo_chunk_open:
+			return
+		try:
+			cmds.undoInfo(closeChunk=True)
+		except Exception:
+			pass
+		finally:
+			self._undo_chunk_open = False
 
 	def _shape_name_from_index(self, index: QModelIndex) -> Optional[str]:
 		if not index.isValid():
@@ -2218,6 +2263,7 @@ class PrimaryTreeValueDelegate(QStyledItemDelegate):
 		self._drag_range_px = max(1, track_rect.width())
 		self._resolve_drag_targets(index)
 		self._grab_view_mouse()
+		self._open_drag_undo_chunk()
 		self.valueDragStarted.emit()
 
 	def _end_drag(self) -> None:
@@ -2231,6 +2277,7 @@ class PrimaryTreeValueDelegate(QStyledItemDelegate):
 		self._drag_target_start_values = {}
 		self._release_view_mouse()
 		self.valueDragEnded.emit()
+		self._close_drag_undo_chunk()
 
 	def _grab_view_mouse(self) -> None:
 		parent = self.parent()
@@ -2338,9 +2385,9 @@ class MainWindow(QMainWindow):
 	PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
 	PRIMARY_TREE_FOLDER_ROLE = Qt.UserRole + 201
 
-	def __init__(self, parent: Optional[QWidget] = None):
+	def __init__(self, parent: Optional[QWidget] = None, version: Optional[str] = None) -> None:
 		super().__init__(parent)
-		
+		self.version = version
 		icon_path = os.path.abspath(os.path.join(env.ICONS_PATH, "blue_steel_icon.svg"))
 		if os.path.exists(icon_path):
 			self.setWindowIcon(QIcon(icon_path))
@@ -2387,6 +2434,8 @@ class MainWindow(QMainWindow):
 		self._workshape_rename_old_name: str = ""
 		self._primary_rename_editor: Optional[QLineEdit] = None
 		self._primary_rename_old_name: str = ""
+		self._controller_layout_window: Optional[ControllerLayoutWindow] = None
+		self.heat_map_switch: Optional[QPushButton] = None
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -2415,6 +2464,30 @@ class MainWindow(QMainWindow):
 		controls_layout.addWidget(QLabel("System:"))
 		controls_layout.addWidget(self.editor_combo)
 		controls_layout.addStretch()
+		self.heat_map_switch = QPushButton("Display Heat Map")
+		self.heat_map_switch.setIcon(HEAT_MAP_ICON)
+		self.heat_map_switch.setCheckable(True)
+		self.heat_map_switch.setChecked(False)
+		#self.heat_map_switch.adjustSize()
+		self.heat_map_switch.setFixedHeight(self.refresh_button.sizeHint().height())
+		self.heat_map_switch.setFixedWidth(self.heat_map_switch.sizeHint().width() + 6)
+		self.heat_map_switch.setToolTip("Toggle heat map visualization for selected shape targets")
+		self.heat_map_switch.setVisible(bool(env.DGA_NODES_SUPPORTED))
+		self.heat_map_switch.setEnabled(bool(env.DGA_NODES_SUPPORTED))
+		self.heat_map_switch.setStyleSheet(
+			"""
+			QPushButton:checked {
+				background-color: #4ba66d;
+				border: 1px solid #3f8a5b;
+				color: #ffffff;
+			}
+			QPushButton:!checked {
+				background-color: #5a5a5a;
+				border: 1px solid #2f2f2f;
+			}
+			"""
+		)
+		controls_layout.addWidget(self.heat_map_switch)
 		root_layout.addLayout(controls_layout)
 
 		splitter = QSplitter(Qt.Horizontal)
@@ -2829,10 +2902,13 @@ class MainWindow(QMainWindow):
 
 		editor_frame_layout = frameLayout.FrameLayout("Editor")
 		self.select_editor_button = self._create_tool_button("Select Controller", SELECT_ICON)
+		self.controller_layout_button = self._create_tool_button("Controller Layout", CONTROLLER_LAYOUT_ICON)
+		
 		self.zero_all_button = self._create_tool_button("Zero All", ZERO_VALUE_ICON)
 		self.rename_button = self._create_tool_button("Rename To Pose", RENAME_ICON)
 		self.duplicate_button = self._create_tool_button("Duplicate Rename", DUPLICATE_ICON)
 		editor_frame_layout.addWidget(self.select_editor_button)
+		editor_frame_layout.addWidget(self.controller_layout_button)
 		editor_frame_layout.addWidget(self.zero_all_button)
 		editor_frame_layout.addWidget(self.rename_button)
 		editor_frame_layout.addWidget(self.duplicate_button)
@@ -2877,6 +2953,8 @@ class MainWindow(QMainWindow):
 		self.refresh_button.clicked.connect(self.refresh_ui)
 		self.create_system_button.clicked.connect(self._create_new_editor)
 		self.editor_combo.currentTextChanged.connect(self._on_editor_selected)
+		if self.heat_map_switch is not None:
+			self.heat_map_switch.toggled.connect(self._on_display_heat_map_toggled)
 		self.primaries_view.header().sectionClicked.connect(self._on_primaries_header_clicked)
 		self._primaries_delegate.valueCommitted.connect(self._on_primary_tree_slider_changed)
 		self._primaries_delegate.valueDragStarted.connect(lambda: self._on_value_drag_state_changed(True))
@@ -2906,7 +2984,10 @@ class MainWindow(QMainWindow):
 		self.active_shapes_view.clicked.connect(self._on_active_shapes_item_clicked)
 		self.active_shapes_view.doubleClicked.connect(self._on_active_shapes_double_clicked)
 		self.work_shapes_view.doubleClicked.connect(self._on_work_shapes_double_clicked)
+		if self.active_shapes_view.selectionModel() is not None:
+			self.active_shapes_view.selectionModel().selectionChanged.connect(self._on_active_shapes_selection_changed)
 		self.select_editor_button.clicked.connect(self.select_face_ctrl)
+		self.controller_layout_button.clicked.connect(self._show_controller_layout_window)
 		self.zero_all_button.clicked.connect(self.zero_all)
 		self.rename_button.clicked.connect(self.rename_selected_mesh)
 		self.duplicate_button.clicked.connect(self.duplicate_at_value)
@@ -2966,6 +3047,26 @@ class MainWindow(QMainWindow):
 			self.connect_simplex_controllers_action.setEnabled(activate)
 		if self.prepare_for_publishing_action is not None:
 			self.prepare_for_publishing_action.setEnabled(activate)
+
+	def _show_controller_layout_window(self) -> None:
+		if self._controller_layout_window is None:
+			maya_parent = get_maya_main_window() or self
+			self._controller_layout_window = ControllerLayoutWindow(
+				self._editor_for_controller_layout,
+				lambda msg: self._set_status(msg),
+				maya_parent,
+			)
+			self._controller_layout_window.destroyed.connect(lambda *_args: self._clear_controller_layout_window_ref())
+		self._controller_layout_window.set_current_editor(self.current_editor)
+		self._controller_layout_window.show()
+		self._controller_layout_window.raise_()
+		self._controller_layout_window.activateWindow()
+
+	def _editor_for_controller_layout(self) -> Optional[BlueSteelEditor]:
+		return self.current_editor
+
+	def _clear_controller_layout_window_ref(self) -> None:
+		self._controller_layout_window = None
 
 	def _selected_shape_names_from_shapes_view(self) -> List[str]:
 		names: List[str] = []
@@ -3701,6 +3802,7 @@ class MainWindow(QMainWindow):
 
 	def _on_shapes_selection_changed(self) -> None:
 		self._update_related_shape_highlights_from_selection()
+		self._update_heat_map_target_from_shapes_selection()
 		if self.current_editor is None or not self.shapes_auto_pose_button.isChecked():
 			return
 		shape_names = self._selected_shape_names_from_shapes_view()
@@ -3827,6 +3929,9 @@ class MainWindow(QMainWindow):
 		self._active_shapes_proxy.toggle_level_collapsed(level)
 		self._update_delegate_name_columns()
 		self._update_info_labels()
+
+	def _on_active_shapes_selection_changed(self, *_args) -> None:
+		self._update_heat_map_target_from_active_shapes_selection()
 
 	def _on_active_shapes_double_clicked(self, proxy_index: QModelIndex) -> None:
 		self._set_shape_pose_from_proxy_index(self._active_shapes_proxy, proxy_index)
@@ -4199,6 +4304,76 @@ class MainWindow(QMainWindow):
 
 	def _on_work_shapes_selection_changed(self, *_args) -> None:
 		self._update_work_shape_button_panel()
+		self._update_heat_map_target_from_work_shapes_selection()
+
+	def _on_display_heat_map_toggled(self, checked: bool) -> None:
+		if self.current_editor is None or not env.DGA_NODES_SUPPORTED:
+			return
+		try:
+			self.current_editor.display_heat_maps(bool(checked))
+			if checked:
+				if self._update_heat_map_target_from_shapes_selection():
+					return
+				if self._update_heat_map_target_from_active_shapes_selection():
+					return
+				self._update_heat_map_target_from_work_shapes_selection()
+			else:
+				self.current_editor.clear_heat_map_target()
+		except Exception as exc:
+			self._set_status(f"Error toggling heat map display: {exc}", error=True)
+
+	def _is_heat_map_switch_active(self) -> bool:
+		if self.heat_map_switch is None:
+			return False
+		if not env.DGA_NODES_SUPPORTED:
+			return False
+		return bool(self.heat_map_switch.isChecked())
+
+	def _set_heat_map_target_for_editor(self, blendshape_name: str, shape_name: str) -> bool:
+		if self.current_editor is None or not self._is_heat_map_switch_active():
+			return False
+		if not blendshape_name or not shape_name:
+			return False
+		try:
+			self.current_editor.set_heat_map_target(blendshape_name, shape_name)
+			return True
+		except Exception:
+			return False
+
+	def _clear_heat_map_target_for_editor(self) -> None:
+		if self.current_editor is None or not self._is_heat_map_switch_active():
+			return
+		try:
+			self.current_editor.clear_heat_map_target()
+		except Exception:
+			pass
+
+	def _update_heat_map_target_from_shapes_selection(self) -> bool:
+		if self.current_editor is None or not self._is_heat_map_switch_active():
+			return False
+		selected_shape_names = self._selected_shape_names_from_shapes_view()
+		if not selected_shape_names:
+			self._clear_heat_map_target_for_editor()
+			return False
+		return self._set_heat_map_target_for_editor(self.current_editor.blendshape.name, selected_shape_names[0])
+
+	def _update_heat_map_target_from_active_shapes_selection(self) -> bool:
+		if self.current_editor is None or not self._is_heat_map_switch_active():
+			return False
+		selected_shape_names = self._selected_active_shape_names()
+		if not selected_shape_names:
+			return False
+		return self._set_heat_map_target_for_editor(self.current_editor.blendshape.name, selected_shape_names[0])
+
+	def _update_heat_map_target_from_work_shapes_selection(self) -> bool:
+		if self.current_editor is None or not self._is_heat_map_switch_active():
+			return False
+		selected_shape_names = self._selected_work_shape_names()
+		if not selected_shape_names:
+			return False
+		if self.current_editor.work_blendshape is None:
+			return False
+		return self._set_heat_map_target_for_editor(self.current_editor.work_blendshape.name, selected_shape_names[0])
 
 	def _update_work_shape_button_panel(self) -> None:
 		has_editor = self.current_editor is not None and self.current_editor.work_blendshape is not None
@@ -5118,7 +5293,7 @@ class MainWindow(QMainWindow):
 
 	def _update_window_title(self) -> None:
 		editor_name = self.current_editor.name if self.current_editor is not None else ""
-		title = f"Blue Steel v. {env.VERSION}"
+		title = f"Blue Steel v.{self.version}"
 		if editor_name:
 			title = f"{title} - {editor_name}"
 		self.setWindowTitle(title)
@@ -5132,6 +5307,10 @@ class MainWindow(QMainWindow):
 		self._clear_blendshape_tracker()
 
 		if not name or not cmds.objExists(name):
+			if self.heat_map_switch is not None:
+				self.heat_map_switch.blockSignals(True)
+				self.heat_map_switch.setChecked(False)
+				self.heat_map_switch.blockSignals(False)
 			self.current_editor = None
 			self._update_window_title()
 			self._shape_model.rebuild_from_editor(None)
@@ -5140,16 +5319,33 @@ class MainWindow(QMainWindow):
 			self._update_delegate_name_columns()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
+			if self._controller_layout_window is not None:
+				self._controller_layout_window.set_current_editor(None)
 			self._set_status("No system selected.", warning=True)
 			return
 
 		try:
 			self.current_editor = BlueSteelEditor(name)
+			if self.heat_map_switch is not None:
+				self.heat_map_switch.setEnabled(bool(env.DGA_NODES_SUPPORTED))
+				if env.DGA_NODES_SUPPORTED:
+					if self.current_editor.heat_map_display_state:
+						# we need to block signals here to prevent unwanted toggles since set_current_editor can be called during editor initialization when the heat map state is already active
+						self.heat_map_switch.blockSignals(True)
+						self.heat_map_switch.setChecked(True)
+						self.heat_map_switch.blockSignals(False)
+				if self._is_heat_map_switch_active():
+					try:
+						self.current_editor.display_heat_maps(True)
+					except Exception:
+						pass
 			self._update_window_title()
 			self._reload_shapes_from_editor()
 			self._setup_blendshape_tracker()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
+			if self._controller_layout_window is not None:
+				self._controller_layout_window.set_current_editor(self.current_editor)
 			self._set_status(f"Loaded system: {name}")
 		except Exception as exc:
 			self.current_editor = None
@@ -5160,6 +5356,8 @@ class MainWindow(QMainWindow):
 			self._update_delegate_name_columns()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
+			if self._controller_layout_window is not None:
+				self._controller_layout_window.set_current_editor(None)
 			self._set_status(f"Failed loading system '{name}': {exc}", error=True)
 
 	def refresh_ui(self) -> None:
@@ -5177,10 +5375,14 @@ class MainWindow(QMainWindow):
             self, "About",
             "Blues Steel\n\n"
             "A really, really, ridiculously good-looking\n blendshape manager for Maya\n by Maurizio Memoli\n\n"
-            f"Version: {env.VERSION}\n"
+            f"Version: {self.version}\n"
 		)
 
 	def closeEvent(self, event) -> None:  # noqa: N802
+		if self._controller_layout_window is not None:
+			self._controller_layout_window.close()
+			self._controller_layout_window.deleteLater()
+			self._controller_layout_window = None
 		self._clear_blendshape_tracker()
 		self._clear_scene_editor_tracker()
 		super().closeEvent(event)
@@ -5208,15 +5410,15 @@ def show() -> MainWindow:
 	maya_main_window = get_maya_main_window()
 	import blue_steel
 	status_label = None
-	if blue_steel.__version__  != blue_steel.__latest_version__:
+	if blue_steel.__version__  < blue_steel.__latest_version__:
 		url = blue_steel.__update_url__
 		status_label = QLabel(
-			f'Update available: {blue_steel.__latest_version__} Download '
-			f'<a href="{url}" style="color: #5babf2;">Here</a>'
+			f'Update available: v.{blue_steel.__latest_version__} Download '
+			f'<a href="{url}" style="color: #e7b45a;"><strong>Here</strong></a>'
 		)
 		status_label.setStyleSheet("color: #e7b45a;")
 		status_label.setOpenExternalLinks(True)
-	WINDOW = MainWindow(parent=maya_main_window)
+	WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
 	WINDOW.show()
 	if status_label is not None:
 		WINDOW.status_bar.addPermanentWidget(status_label)

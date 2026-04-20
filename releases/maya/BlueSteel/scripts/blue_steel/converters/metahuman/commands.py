@@ -13,6 +13,16 @@ import os
 
 try:
     import dna
+    from mh_expression_editor.resource import Resources
+    from mh_expression_editor.utils import general
+    from mh_expression_editor import lib, roles, control
+    from frt_api.rig import RigDataHandler
+    from mh_expression_editor.utils import dcc
+    from mh_character_assembler.importer import CharacterImporter
+    from mh_character_assembler.config import Config
+    from mh_assemble_lib.model.dnalib import DNAReader, Layer
+    from mh_character_assembler.core.util import MayaUtil
+
 except ImportError:
     import traceback
     traceback.print_exc()
@@ -467,6 +477,203 @@ def _extract_joint_vector(reader, joint_index: int, kind: str) -> Tuple[float, f
     raise RuntimeError(f"Could not extract neutral joint {kind} for index {joint_index}")
 
 
+def _read_joint_definitions_from_reader(reader) -> List[JointDefinition]:
+    """
+    Read all joints (hierarchy + neutral local transforms) from an already-open DNA reader.
+    """
+    joint_count = int(reader.getJointCount())
+    joints: List[JointDefinition] = []
+
+    for joint_index in range(joint_count):
+        joint_name = str(reader.getJointName(joint_index))
+        parent_index = int(reader.getJointParentIndex(joint_index))
+        translation = _extract_joint_vector(reader, joint_index, "translation")
+        rotation = _extract_joint_vector(reader, joint_index, "rotation")
+        joints.append(JointDefinition(
+            index=joint_index,
+            name=joint_name,
+            parent_index=parent_index,
+            translation=translation,
+            rotation=rotation,
+        ))
+
+    return joints
+
+
+def _resolve_joint_group_indices(reader, lod: Optional[int]) -> List[int]:
+    """
+    Resolve joint-group indices to evaluate for a given LOD.
+
+    Different DNA bindings expose LOD data differently; this helper supports:
+    1) cumulative boundaries: [count_at_lod0, count_at_lod1, ...]
+    2) per-group lod assignment: one value per group
+    3) fallback to all groups
+    """
+    group_count = int(reader.getJointGroupCount())
+    all_indices = list(range(group_count))
+
+    if lod is None:
+        return all_indices
+
+    lods_fn = getattr(reader, "getJointGroupLODs", None)
+    if not callable(lods_fn):
+        return all_indices
+
+    try:
+        lod_data = [int(v) for v in list(lods_fn())]
+    except Exception:
+        return all_indices
+
+    if not lod_data:
+        return all_indices
+
+    # Case 1: one lod value per group index.
+    if len(lod_data) == group_count:
+        return [idx for idx, group_lod in enumerate(lod_data) if group_lod <= int(lod)]
+
+    # Case 2: cumulative boundaries (same pattern used for blendshape LOD arrays).
+    if lod < len(lod_data):
+        boundary = max(0, min(group_count, int(lod_data[lod])))
+        return list(range(boundary))
+
+    return all_indices
+
+
+def _build_raw_control_vector(reader, raw_control_values: Dict[str, float]) -> np.ndarray:
+    """
+    Build a dense raw-control vector from a {raw_control_name: value} map.
+    """
+    raw_count = int(reader.getRawControlCount())
+    vector = np.zeros(raw_count, dtype=np.float64)
+
+    if not raw_control_values:
+        return vector
+
+    name_to_index = {
+        str(reader.getRawControlName(i)): i
+        for i in range(raw_count)
+    }
+
+    for raw_name, raw_value in raw_control_values.items():
+        idx = name_to_index.get(str(raw_name))
+        if idx is None:
+            continue
+        vector[idx] = float(raw_value)
+
+    return vector
+
+
+def _decode_joint_attribute_index(attr_index: int, joint_count: int, slot_count: int) -> Tuple[int, int]:
+    """
+    Decode a DNA joint variable attribute index into (joint_index, attribute_slot).
+
+    Most bindings expose a joint-major packing: attr = joint_index * slot_count + slot.
+    A fallback attr-major decode is also supported for compatibility.
+    """
+    if slot_count <= 0:
+        return -1, -1
+
+    joint_idx = attr_index // slot_count
+    slot_idx = attr_index % slot_count
+    if 0 <= joint_idx < joint_count:
+        return joint_idx, slot_idx
+
+    alt_joint_idx = attr_index % joint_count if joint_count > 0 else -1
+    alt_slot_idx = attr_index // joint_count if joint_count > 0 else -1
+    if 0 <= alt_joint_idx < joint_count and 0 <= alt_slot_idx < slot_count:
+        return alt_joint_idx, alt_slot_idx
+
+    return -1, -1
+
+
+def _evaluate_joint_deltas_from_raw_vector(reader, raw_vector: np.ndarray, lod: Optional[int]) -> Dict[int, Dict[str, np.ndarray]]:
+    """
+    Evaluate DNA joint behavior matrix for a dense raw-control vector.
+
+    Returns
+    -------
+    Dict[joint_index, {"t": np.ndarray(3), "r": np.ndarray(3)}]
+        Local translation/rotation deltas to add to neutral transforms.
+    """
+    joint_count = int(reader.getJointCount())
+    if joint_count <= 0:
+        return {}
+
+    variable_attr_indices_fn = getattr(reader, "getJointVariableAttributeIndices", None)
+    if not callable(variable_attr_indices_fn):
+        raise RuntimeError("DNA binding does not expose getJointVariableAttributeIndices; cannot evaluate posed joints")
+
+    variable_attr_indices = [int(v) for v in list(variable_attr_indices_fn(0))]
+    if not variable_attr_indices:
+        return {}
+
+    max_attr = max(variable_attr_indices)
+    inferred_slot_count = int(np.ceil((max_attr + 1) / float(joint_count))) if joint_count > 0 else 0
+    slot_count = max(6, inferred_slot_count)
+
+    deltas: Dict[int, Dict[str, np.ndarray]] = {
+        j: {
+            "t": np.zeros(3, dtype=np.float64),
+            "r": np.zeros(3, dtype=np.float64),
+        }
+        for j in range(joint_count)
+    }
+
+    group_indices = _resolve_joint_group_indices(reader, lod)
+    for group_index in group_indices:
+        input_indices = [int(v) for v in list(reader.getJointGroupInputIndices(group_index))]
+        output_indices = [int(v) for v in list(reader.getJointGroupOutputIndices(group_index))]
+        values = [float(v) for v in list(reader.getJointGroupValues(group_index))]
+
+        if not input_indices or not output_indices:
+            continue
+
+        input_count = len(input_indices)
+        output_count = len(output_indices)
+        if len(values) < (input_count * output_count):
+            continue
+
+        local_x = np.zeros(input_count, dtype=np.float64)
+        for i, raw_idx in enumerate(input_indices):
+            if 0 <= raw_idx < raw_vector.shape[0]:
+                local_x[i] = raw_vector[raw_idx]
+
+        for output_row, output_idx in enumerate(output_indices):
+            row_start = output_row * input_count
+            row_end = row_start + input_count
+            coeffs = np.asarray(values[row_start:row_end], dtype=np.float64)
+            delta_value = float(np.dot(coeffs, local_x))
+            if abs(delta_value) <= 1e-12:
+                continue
+
+            variable_attr_idx = output_idx
+            if 0 <= output_idx < len(variable_attr_indices):
+                variable_attr_idx = variable_attr_indices[output_idx]
+
+            joint_idx, slot_idx = _decode_joint_attribute_index(variable_attr_idx, joint_count, slot_count)
+            if joint_idx < 0:
+                continue
+
+            if slot_idx <= 2:
+                deltas[joint_idx]["t"][slot_idx] += delta_value
+            elif 3 <= slot_idx <= 5:
+                deltas[joint_idx]["r"][slot_idx - 3] += delta_value
+
+    return deltas
+
+
+def _raw_values_from_target(target: BlendShapeTarget) -> Dict[str, float]:
+    """
+    Convert one BlendShapeTarget driver chain to {raw_control_name: required_value}.
+    """
+    values: Dict[str, float] = {}
+    for raw_ctrl in target.raw_ctrls:
+        if not raw_ctrl.channel:
+            continue
+        values[str(raw_ctrl.channel)] = float(raw_ctrl.required_value)
+    return values
+
+
 def _find_skincluster_for_mesh(mesh_name: str) -> Optional[str]:
     """
     Return the first skinCluster found in mesh history, if any.
@@ -880,24 +1087,138 @@ def read_joints_from_dna(dna_path: str) -> List[JointDefinition]:
         raise ValueError(f"DNA file does not exist: {dna_path}")
 
     reader = _load_dna(dna_path)
-    joint_count = int(reader.getJointCount())
+    return _read_joint_definitions_from_reader(reader)
 
-    joints: List[JointDefinition] = []
-    for joint_index in range(joint_count):
-        joint_name = str(reader.getJointName(joint_index))
-        parent_index = int(reader.getJointParentIndex(joint_index))
-        translation = _extract_joint_vector(reader, joint_index, "translation")
-        rotation = _extract_joint_vector(reader, joint_index, "rotation")
 
-        joints.append(JointDefinition(
-            index=joint_index,
-            name=joint_name,
-            parent_index=parent_index,
-            translation=translation,
-            rotation=rotation,
+def read_posed_joints_from_dna(
+    dna_path: str,
+    raw_control_values: Dict[str, float],
+    lod: Optional[int] = 0,
+) -> List[JointDefinition]:
+    """
+    Evaluate joint transforms for one pose described by raw-control values.
+
+    Parameters
+    ----------
+    dna_path           : path to a MetaHuman DNA file
+    raw_control_values : map of raw control name -> control value
+                         (e.g. {"CTRL_expressions.browRaiseInL": 1.0})
+    lod                : optional LOD to evaluate; use None to evaluate all groups
+
+    Returns
+    -------
+    List[JointDefinition]
+        Joint hierarchy with posed local translation/rotation values
+        (neutral + DNA behavior deltas).
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    neutral_joints = _read_joint_definitions_from_reader(reader)
+    raw_vector = _build_raw_control_vector(reader, raw_control_values)
+    deltas = _evaluate_joint_deltas_from_raw_vector(reader, raw_vector, lod=lod)
+
+    posed: List[JointDefinition] = []
+    for joint in neutral_joints:
+        joint_delta = deltas.get(joint.index)
+        if joint_delta is None:
+            posed_t = joint.translation
+            posed_r = joint.rotation
+        else:
+            posed_t = (
+                float(joint.translation[0] + joint_delta["t"][0]),
+                float(joint.translation[1] + joint_delta["t"][1]),
+                float(joint.translation[2] + joint_delta["t"][2]),
+            )
+            posed_r = (
+                float(joint.rotation[0] + joint_delta["r"][0]),
+                float(joint.rotation[1] + joint_delta["r"][1]),
+                float(joint.rotation[2] + joint_delta["r"][2]),
+            )
+
+        posed.append(JointDefinition(
+            index=joint.index,
+            name=joint.name,
+            parent_index=joint.parent_index,
+            translation=posed_t,
+            rotation=posed_r,
         ))
 
-    return joints
+    return posed
+
+
+def read_posed_joints_for_blendshape_targets(
+    dna_path: str,
+    mesh_name: str = "head_lod0_mesh",
+    lod: int = 0,
+) -> Dict[str, List[JointDefinition]]:
+    """
+    Evaluate posed joints for every blendshape target pose on a mesh.
+
+    For each target, raw controls are populated from its driver chain
+    (RawControl.required_value), then DNA joint behavior is evaluated.
+
+    Returns
+    -------
+    Dict[str, List[JointDefinition]]
+        target_name -> posed joints list
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    reader = _load_dna(dna_path)
+    neutral_joints = _read_joint_definitions_from_reader(reader)
+    targets = read_blendshape_targets(
+        dna_path=dna_path,
+        mesh_name=mesh_name,
+        lod=lod,
+    )
+
+    posed_by_target: Dict[str, List[JointDefinition]] = {}
+    for target in targets:
+        if not target.raw_ctrls:
+            continue
+
+        raw_values = _raw_values_from_target(target)
+        if not raw_values:
+            continue
+
+        raw_vector = _build_raw_control_vector(reader, raw_values)
+        deltas = _evaluate_joint_deltas_from_raw_vector(reader, raw_vector, lod=lod)
+
+        posed: List[JointDefinition] = []
+        for joint in neutral_joints:
+            joint_delta = deltas.get(joint.index)
+            if joint_delta is None:
+                posed_t = joint.translation
+                posed_r = joint.rotation
+            else:
+                posed_t = (
+                    float(joint.translation[0] + joint_delta["t"][0]),
+                    float(joint.translation[1] + joint_delta["t"][1]),
+                    float(joint.translation[2] + joint_delta["t"][2]),
+                )
+                posed_r = (
+                    float(joint.rotation[0] + joint_delta["r"][0]),
+                    float(joint.rotation[1] + joint_delta["r"][1]),
+                    float(joint.rotation[2] + joint_delta["r"][2]),
+                )
+
+            posed.append(JointDefinition(
+                index=joint.index,
+                name=joint.name,
+                parent_index=joint.parent_index,
+                translation=posed_t,
+                rotation=posed_r,
+            ))
+
+        target_key = str(target.target_name)
+        if target_key in posed_by_target:
+            target_key = f"{target_key}_{target.target_index}"
+        posed_by_target[target_key] = posed
+
+    return posed_by_target
 
 
 def create_joints_from_dna(
@@ -1435,3 +1756,621 @@ def print_targets(targets: List[BlendShapeTarget]):
         print()
 
 
+def _find_loaded_plugin_for_node_type(node_type: str) -> Optional[str]:
+    """
+    Return the loaded plugin that registers node_type, if any.
+    """
+    plugins = cmds.pluginInfo(query=True, listPlugins=True) or []
+    for plugin_name in plugins:
+        try:
+            depends = cmds.pluginInfo(plugin_name, query=True, dependNode=True) or []
+        except Exception:
+            continue
+        if node_type in depends:
+            return plugin_name
+    return None
+
+
+def _ensure_plugin_with_node_type_loaded(node_type: str, plugin_candidates: List[str]) -> str:
+    """
+    Ensure a plugin providing node_type is loaded.
+    """
+    existing = _find_loaded_plugin_for_node_type(node_type)
+    if existing:
+        return existing
+
+    for plugin_name in plugin_candidates:
+        try:
+            if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
+                cmds.loadPlugin(plugin_name, quiet=True)
+        except Exception:
+            continue
+
+        existing = _find_loaded_plugin_for_node_type(node_type)
+        if existing:
+            return existing
+
+    existing = _find_loaded_plugin_for_node_type(node_type)
+    if existing:
+        return existing
+
+    raise RuntimeError(
+        f"Could not find a loaded plugin providing node type '{node_type}'. "
+        f"Tried: {plugin_candidates}"
+    )
+
+
+def _ensure_embedded_rl4_node(node_name: str = "embeddedNodeRL4_1") -> str:
+    """
+    Ensure an embeddedNodeRL4 exists and return node name.
+    """
+    if cmds.objExists(node_name):
+        if cmds.nodeType(node_name) != "embeddedNodeRL4":
+            raise ValueError(f"Node '{node_name}' exists but is not type embeddedNodeRL4")
+        return node_name
+
+    return cmds.createNode("embeddedNodeRL4", name=node_name)
+
+
+def _create_embedded_rl4_with_command(
+    node_name: str,
+    dna_path: str,
+    control_naming: str = "<objName>.<attrName>",
+    joint_naming: str = "<objName>.<attrName>",
+    blend_shape_naming: str = "<objName>.<attrName>",
+    animated_map_naming: str = "<objName>.<attrName>",
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Try creating/setup RL4 through the plugin MEL command createEmbeddedNodeRL4.
+
+    Returns
+    -------
+    Tuple[node_name_or_none, mel_command_or_none]
+    """
+    if cmds.objExists(node_name):
+        if cmds.nodeType(node_name) != "embeddedNodeRL4":
+            raise ValueError(f"Node '{node_name}' exists but is not type embeddedNodeRL4")
+        return node_name, None
+
+    try:
+        exists = int(mel.eval('exists "createEmbeddedNodeRL4"'))
+    except Exception:
+        exists = 0
+
+    if not exists:
+        return None, None
+
+    def _esc(text: str) -> str:
+        return str(text).replace('"', '\\"')
+
+    dna_norm = str(dna_path).replace("\\", "/")
+    mel_command = "createEmbeddedNodeRL4"
+    mel_command += f' -n "{_esc(node_name)}"'
+    mel_command += f' -dfp "{_esc(dna_norm)}"'
+    mel_command += f' -cn "{_esc(control_naming)}"'
+    mel_command += f' -jn "{_esc(joint_naming)}"'
+    mel_command += f' -bsn "{_esc(blend_shape_naming)}"'
+    mel_command += f' -amn "{_esc(animated_map_naming)}";'
+
+    before = set(cmds.ls(type="embeddedNodeRL4") or [])
+    cmd_result = mel.eval(mel_command)
+    after = set(cmds.ls(type="embeddedNodeRL4") or [])
+
+    if cmds.objExists(node_name) and cmds.nodeType(node_name) == "embeddedNodeRL4":
+        return node_name, mel_command
+
+    if isinstance(cmd_result, str) and cmds.objExists(cmd_result) and cmds.nodeType(cmd_result) == "embeddedNodeRL4":
+        return cmd_result, mel_command
+
+    new_nodes = sorted(list(after - before))
+    if new_nodes:
+        return new_nodes[0], mel_command
+
+    return None, mel_command
+
+
+def _set_string_attr_if_exists(node: str, attr_names: List[str], value: str) -> Optional[str]:
+    """
+    Set first matching string attr on node. Returns full attr path if set.
+    """
+    for attr in attr_names:
+        if not cmds.attributeQuery(attr, node=node, exists=True):
+            continue
+        try:
+            cmds.setAttr(f"{node}.{attr}", value, type="string")
+            return f"{node}.{attr}"
+        except Exception:
+            continue
+    return None
+
+
+def _hide_transform_channels(node: str) -> None:
+    """
+    Hide and lock standard transform channels on a control holder transform.
+    """
+    attrs = [
+        "tx", "ty", "tz",
+        "rx", "ry", "rz",
+        "sx", "sy", "sz",
+        "v",
+    ]
+    for attr in attrs:
+        plug = f"{node}.{attr}"
+        if not cmds.objExists(plug):
+            continue
+        try:
+            cmds.setAttr(plug, lock=True, keyable=False, channelBox=False)
+        except Exception:
+            pass
+
+
+def _ensure_expression_control_group(
+    group_name: str,
+    expression_names: List[str],
+) -> Dict[str, str]:
+    """
+    Ensure control transform and expression attrs exist.
+
+    Returns
+    -------
+    Dict[str, str]
+        raw control name -> full Maya attr plug
+    """
+    if cmds.objExists(group_name):
+        if cmds.nodeType(group_name) != "transform":
+            raise ValueError(f"Node '{group_name}' exists but is not a transform")
+        ctrl_group = group_name
+    else:
+        ctrl_group = cmds.createNode("transform", name=group_name)
+
+    _hide_transform_channels(ctrl_group)
+
+    raw_to_plug: Dict[str, str] = {}
+    used_attr_names: set = set(cmds.listAttr(ctrl_group) or [])
+
+    for raw_name in expression_names:
+        short_name = str(raw_name).split(".")[-1]
+        attr_name = _safe_maya_name(short_name)
+
+        if attr_name in used_attr_names and not cmds.attributeQuery(attr_name, node=ctrl_group, exists=True):
+            suffix = 1
+            while cmds.attributeQuery(f"{attr_name}_{suffix}", node=ctrl_group, exists=True):
+                suffix += 1
+            attr_name = f"{attr_name}_{suffix}"
+
+        if not cmds.attributeQuery(attr_name, node=ctrl_group, exists=True):
+            cmds.addAttr(
+                ctrl_group,
+                longName=attr_name,
+                attributeType="double",
+                min=0.0,
+                max=1.0,
+                defaultValue=0.0,
+                keyable=True,
+            )
+        else:
+            try:
+                cmds.addAttr(f"{ctrl_group}.{attr_name}", edit=True, min=0.0, max=1.0)
+                cmds.setAttr(f"{ctrl_group}.{attr_name}", keyable=True, channelBox=True)
+            except Exception:
+                pass
+
+        used_attr_names.add(attr_name)
+        raw_to_plug[str(raw_name)] = f"{ctrl_group}.{attr_name}"
+
+    return raw_to_plug
+
+
+def _connect_attr_force(source_plug: str, dest_plug: str) -> bool:
+    """
+    Force-connect source -> dest, disconnecting existing incoming connection on dest.
+    """
+    if not cmds.objExists(source_plug) or not cmds.objExists(dest_plug):
+        return False
+
+    incoming = cmds.listConnections(dest_plug, source=True, destination=False, plugs=True) or []
+    for in_plug in incoming:
+        try:
+            cmds.disconnectAttr(in_plug, dest_plug)
+        except Exception:
+            pass
+
+    try:
+        cmds.connectAttr(source_plug, dest_plug, force=True)
+        return True
+    except Exception:
+        return False
+
+
+def _connect_expression_inputs_to_rl4(
+    rl4_node: str,
+    raw_names: List[str],
+    raw_to_ctrl_plug: Dict[str, str],
+) -> Tuple[int, List[str]]:
+    """
+    Connect expression attrs to RL4 node inputs.
+
+    Uses a name match strategy first, then indexed-array fallbacks.
+    """
+    connected = 0
+    missing: List[str] = []
+
+    connectable_attrs = set(cmds.listAttr(rl4_node, connectable=True) or [])
+    all_attrs = set(cmds.listAttr(rl4_node) or [])
+
+    array_candidates = [
+        "inputValues",
+        "inputs",
+        "input",
+        "rawControls",
+        "rawControlValues",
+        "controlValues",
+    ]
+    array_candidates = [a for a in array_candidates if a in all_attrs]
+
+    for idx, raw_name in enumerate(raw_names):
+        source_plug = raw_to_ctrl_plug.get(raw_name)
+        if not source_plug:
+            missing.append(raw_name)
+            continue
+
+        short_name = str(raw_name).split(".")[-1]
+        safe_short = _safe_maya_name(short_name)
+
+        matched = False
+        name_candidates = [
+            short_name,
+            safe_short,
+            f"input_{short_name}",
+            f"input_{safe_short}",
+            str(raw_name),
+            str(raw_name).replace(".", "_"),
+        ]
+
+        for attr in name_candidates:
+            if attr not in connectable_attrs:
+                continue
+            if _connect_attr_force(source_plug, f"{rl4_node}.{attr}"):
+                connected += 1
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        for base_attr in array_candidates:
+            if _connect_attr_force(source_plug, f"{rl4_node}.{base_attr}[{idx}]"):
+                connected += 1
+                matched = True
+                break
+
+            children = cmds.attributeQuery(base_attr, node=rl4_node, listChildren=True) or []
+            for child in children:
+                if _connect_attr_force(source_plug, f"{rl4_node}.{base_attr}[{idx}].{child}"):
+                    connected += 1
+                    matched = True
+                    break
+            if matched:
+                break
+
+        if not matched:
+            missing.append(raw_name)
+
+    return connected, missing
+
+
+def _connect_rl4_outputs_to_joints(
+    rl4_node: str,
+    joints: List[JointDefinition],
+) -> Tuple[int, List[str]]:
+    """
+    Connect RL4 joint outputs to Maya joints.
+
+    Uses attribute-name heuristics and indexed-array fallbacks.
+    """
+    connected = 0
+    unresolved_joints: List[str] = []
+
+    all_attrs = set(cmds.listAttr(rl4_node) or [])
+
+    tx_arrays = [a for a in ["outputTranslateX", "translateX", "translationsX"] if a in all_attrs]
+    ty_arrays = [a for a in ["outputTranslateY", "translateY", "translationsY"] if a in all_attrs]
+    tz_arrays = [a for a in ["outputTranslateZ", "translateZ", "translationsZ"] if a in all_attrs]
+    rx_arrays = [a for a in ["outputRotateX", "rotateX", "rotationsX"] if a in all_attrs]
+    ry_arrays = [a for a in ["outputRotateY", "rotateY", "rotationsY"] if a in all_attrs]
+    rz_arrays = [a for a in ["outputRotateZ", "rotateZ", "rotationsZ"] if a in all_attrs]
+
+    vector_translate = [a for a in ["outputTranslations", "outputTranslate", "translations"] if a in all_attrs]
+    vector_rotate = [a for a in ["outputRotations", "outputRotate", "rotations"] if a in all_attrs]
+
+    for joint in joints:
+        joint_name = str(joint.name)
+        if not cmds.objExists(joint_name):
+            unresolved_joints.append(joint_name)
+            continue
+
+        joint_connected = 0
+        j_safe = _safe_maya_name(joint_name)
+
+        # Name-based scalar output candidates.
+        for axis, dst_attr in [("tx", "translateX"), ("ty", "translateY"), ("tz", "translateZ"), ("rx", "rotateX"), ("ry", "rotateY"), ("rz", "rotateZ")]:
+            direct_candidates = [
+                f"{joint_name}_{axis}",
+                f"{j_safe}_{axis}",
+                f"{joint_name}{axis.upper()}",
+                f"{j_safe}{axis.upper()}",
+            ]
+            for src_attr in direct_candidates:
+                if src_attr in all_attrs and _connect_attr_force(f"{rl4_node}.{src_attr}", f"{joint_name}.{dst_attr}"):
+                    joint_connected += 1
+                    break
+
+        # Index-based scalar arrays.
+        idx = int(joint.index)
+        for arr in tx_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.translateX"):
+                joint_connected += 1
+                break
+        for arr in ty_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.translateY"):
+                joint_connected += 1
+                break
+        for arr in tz_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.translateZ"):
+                joint_connected += 1
+                break
+        for arr in rx_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.rotateX"):
+                joint_connected += 1
+                break
+        for arr in ry_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.rotateY"):
+                joint_connected += 1
+                break
+        for arr in rz_arrays:
+            if _connect_attr_force(f"{rl4_node}.{arr}[{idx}]", f"{joint_name}.rotateZ"):
+                joint_connected += 1
+                break
+
+        # Index-based vector arrays (compound children).
+        if joint_connected < 6:
+            for arr in vector_translate:
+                children = cmds.attributeQuery(arr, node=rl4_node, listChildren=True) or []
+                if len(children) >= 3:
+                    okx = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[0]}", f"{joint_name}.translateX")
+                    oky = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[1]}", f"{joint_name}.translateY")
+                    okz = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[2]}", f"{joint_name}.translateZ")
+                    joint_connected += int(okx) + int(oky) + int(okz)
+                    if okx and oky and okz:
+                        break
+
+            for arr in vector_rotate:
+                children = cmds.attributeQuery(arr, node=rl4_node, listChildren=True) or []
+                if len(children) >= 3:
+                    okx = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[0]}", f"{joint_name}.rotateX")
+                    oky = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[1]}", f"{joint_name}.rotateY")
+                    okz = _connect_attr_force(f"{rl4_node}.{arr}[{idx}].{children[2]}", f"{joint_name}.rotateZ")
+                    joint_connected += int(okx) + int(oky) + int(okz)
+                    if okx and oky and okz:
+                        break
+
+        connected += joint_connected
+        if joint_connected == 0:
+            unresolved_joints.append(joint_name)
+
+    return connected, unresolved_joints
+
+def create_expression_ctrl_group(
+    dna_path: str,
+    ctrl_group_name: str = "CTRL_expressions"):
+    """Create the control group with the expression attributes, without connecting them to any RL4 node.
+    This can be used when the user wants to set up the embedded RL4 node manually (e.g. through the createEmbeddedNodeRL4 command) but still wants to have the control group with the expression attributes created for them.
+    """
+    reader = _load_dna(dna_path)
+    raw_names = [str(reader.getRawControlName(i)) for i in range(int(reader.getRawControlCount()))]
+    return  _ensure_expression_control_group(ctrl_group_name, raw_names)
+
+def setup_embedded_rl4_driver(
+    dna_path: str,
+    rl4_node_name: str = "embeddedNodeRL4_1",
+    ctrl_group_name: str = "CTRL_expressions",
+    plugin_candidates: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    """
+    Build a basic RL4 driving setup:
+    1) Ensure RL4 plugin is loaded.
+    2) Ensure embeddedNodeRL4 node exists.
+    3) Create CTRL_expressions transform and expression attrs (0..1).
+    4) Set DNA file path on the RL4 node.
+    5) Connect expression inputs and joint outputs.
+
+    Returns a summary dictionary with counts and unresolved items.
+    """
+    if not dna_path or not ospath.exists(dna_path):
+        raise ValueError(f"DNA file does not exist: {dna_path}")
+
+    candidates = plugin_candidates or [
+        "embeddedRL4",
+        "embeddedRL4.mll",
+        "RigLogic4",
+        "RigLogic4.mll",
+    ]
+
+    plugin_name = _ensure_plugin_with_node_type_loaded("embeddedNodeRL4", candidates)
+
+    reader = _load_dna(dna_path)
+    raw_names = [str(reader.getRawControlName(i)) for i in range(int(reader.getRawControlCount()))]
+    joints = _read_joint_definitions_from_reader(reader)
+
+    raw_to_ctrl_plug = _ensure_expression_control_group(ctrl_group_name, raw_names)
+
+    rl4_node, create_command = _create_embedded_rl4_with_command(
+        node_name=rl4_node_name,
+        dna_path=dna_path,
+        control_naming="<objName>.<attrName>",
+        joint_naming="<objName>.<attrName>",
+        blend_shape_naming="<objName>.<attrName>",
+        animated_map_naming="<objName>.<attrName>",
+    )
+
+    used_create_command = rl4_node is not None and create_command is not None
+    if rl4_node is None:
+        rl4_node = _ensure_embedded_rl4_node(rl4_node_name)
+
+    dna_attr = _set_string_attr_if_exists(
+        rl4_node,
+        ["dnaFilePath", "dnaPath", "dnaFile", "filePath", "dna"],
+        dna_path,
+    )
+
+    # If createEmbeddedNodeRL4 was used, it should already establish the naming-based
+    # connections. We still run fallback wiring only when needed.
+    input_connected, missing_inputs = _connect_expression_inputs_to_rl4(
+        rl4_node=rl4_node,
+        raw_names=raw_names,
+        raw_to_ctrl_plug=raw_to_ctrl_plug,
+    )
+
+    output_connected, unresolved_joints = _connect_rl4_outputs_to_joints(
+        rl4_node=rl4_node,
+        joints=joints,
+    )
+
+    return {
+        "plugin": plugin_name,
+        "rl4_node": rl4_node,
+        "ctrl_group": ctrl_group_name,
+        "used_createEmbeddedNodeRL4": used_create_command,
+        "createEmbeddedNodeRL4_command": create_command,
+        "dna_attr": dna_attr,
+        "raw_control_count": len(raw_names),
+        "joint_count": len(joints),
+        "input_connections_made": input_connected,
+        "output_connections_made": output_connected,
+        "missing_input_controls": missing_inputs,
+        "unresolved_output_joints": unresolved_joints,
+    }
+
+
+#=============================================================================
+# Meta human expression editor rig builder
+#=============================================================================
+
+def _create_config_from_dna(mh_path: str) -> Config:
+    """
+    Create a configuration dictionary from the MetaHuman file path.
+    """
+    if not ospath.exists(mh_path):
+        raise ValueError(f"MetaHuman file does not exist: {mh_path}")
+    if ospath.isfile(mh_path):
+        mh_path = ospath.dirname(mh_path)
+    name = ospath.split(mh_path)[-1]
+    # Creating the "config key"
+    bodyDnaPath = ospath.join(mh_path,"body.dna")
+    if not ospath.exists(bodyDnaPath):
+        raise ValueError(f"MetaHuman file does not contain body.dna: {mh_path}")
+    headDnaPath = ospath.join(mh_path,"head.dna")
+    if not ospath.exists(headDnaPath):
+        raise ValueError(f"MetaHuman file does not contain head.dna: {mh_path}")
+    mapsDirPath = ospath.join(mh_path,"Maps")
+    if not ospath.exists(mapsDirPath):
+        raise ValueError(f"MetaHuman file does not contain Maps folder: {mh_path}")
+    config= {
+              "bodyDnaPath": bodyDnaPath,
+              "mapsDirPath": mapsDirPath, 
+              "headDnaPath": headDnaPath,
+            }
+    return Config(config)
+
+
+def build_facial_rig_from_dna(dna_path: str, up_axis: str = "dna"):
+    """
+    Build the facial rig for a MetaHuman character.
+    
+    Args:
+        dna_path (str): Path to the DNA file.
+
+        up_axis (str): Up axis for the rig ('y', 'z', 'dna').
+                       Defaults to "dna".
+    """
+    # we need to take the directory name
+    character_importer = CharacterImporter()
+    character_importer.config = _create_config_from_dna(dna_path)
+    character_importer.config.options.import_head = True
+    character_importer.config.options.import_body = False
+    character_importer.config.options.import_textures = False
+    character_importer.config.options.combine_skeletons = False
+    character_importer.config.scene_orientation_string_value = up_axis
+    character_importer.config.options.scene_orientation = character_importer.config.resolve_scene_orientation()
+    dna = DNAReader.read(character_importer.config.head_dna_path, Layer.all)
+    character_importer.import_head(dna)
+    character_importer.namespace_head_joints()
+    character_importer.scene_cleanup()
+    character_importer.connect_follow_head()
+    character_importer.create_rl_nodes()
+    character_importer.order_display_layers()
+    character_importer.create_head_controls_set()
+
+    print(f"Config created from DNA: {character_importer.config}")
+
+def build_expressions_rig(dna_path: str, up_axis: str = "dna"):
+    """
+    Build the expressions rig for a MetaHuman character.
+    
+    Args:
+        dna_path (str): Path to the DNA file.
+        up_axis (str): Up axis for the rig ('y', 'z', 'dna').
+                       Defaults to "dna".
+    """
+    if not Resources().initialize_from_dna_file(dna_path):
+        raise RuntimeError(f"MetaHuman DNA format not supported.")
+    
+    node_name = control.Controller.DNA_CALIB_NODE_NAME
+
+    config = general.load_json(Resources().config_file_path)
+
+    joint_pruning_threshold = [
+            config["pruning_threshold"]["joint_translation_pruning_threshold"],
+            config["pruning_threshold"]["joint_rotation_pruning_threshold"],
+            config["pruning_threshold"]["joint_scale_pruning_threshold"],
+        ]
+    head_turns_main_expressions = config["head_turns_data"]["main_expressions"]
+    neck_joints = config["neck_joints"]
+    neck_joints_values = []
+    
+    for main_expression in head_turns_main_expressions:
+        main_expression_data = config["head_turns_data"]["neck_joints_animation"][main_expression]
+        for neck_joint in neck_joints:
+            neck_joints_values.extend(main_expression_data[neck_joint])
+
+    lib.validate_rdf_compatibility(Resources().rdf_file_path, Resources().dna_file_path)
+    result = lib.orient_dna(Resources().dna_file_path, up_axis)
+    if result is not None:
+        print(f"DNA orientation result: {result}")
+    load_dna_file_path = result[0]
+    up_axis = result[1]
+    global_up_axis_rotation = result[2]
+    cbs_pruning_threshold = config["pruning_threshold"]["corrective_blend_shape_pruning_threshold"]
+    # build Rig Data handler
+    rig = RigDataHandler(
+                Resources().rdf_file_path,
+                load_dna_file_path,
+                **config["pruning_threshold"],)
+            
+    # starting the rig assembling process
+    dcc.assemble_rig_editing_scene(
+            rig = rig,
+            **config["gui_positioning"], #left_arm_joint_name, eye_aim_control_name, right_eye_control_name, gui_object_name,
+            up_axis=up_axis,
+            rotation=global_up_axis_rotation,
+        )
+    dcc.add_dna_calib_node(
+        node_name,
+        Resources().dna_file_path,
+        Resources().rdf_file_path,
+        cbs_pruning_threshold,
+        joint_pruning_threshold,
+        head_turns_main_expressions,
+        neck_joints,
+        neck_joints_values,
+        global_up_axis_rotation)

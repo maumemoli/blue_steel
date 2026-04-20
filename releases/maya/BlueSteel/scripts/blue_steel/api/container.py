@@ -106,6 +106,19 @@ class Container(object):
         if member not in self.members:
             cmds.container(self.name, edit=True, addNode=member)
 
+    def add_mesh_as_member(self, mesh: str):
+        """
+        Add a mesh as a member to the container
+        :param mesh: the mesh to add as a member
+        """
+        #container -edit -force   -includeShapes -includeTransform  -addNode test_heatMapMesh test_blueSteelEditor ;
+        cmds.container(self.name,
+                        edit=True,
+                        force=True,
+                        includeShapes=True,
+                        includeTransform=True,
+                        addNode=mesh)
+
     def remove(self):
         """
         Remove the container

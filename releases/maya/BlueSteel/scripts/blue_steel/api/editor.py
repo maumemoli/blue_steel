@@ -33,6 +33,8 @@ except ImportError:
 VERSION = env.VERSION
 ICONS_PATH = env.ICONS_PATH
 SEPARATOR = env.SEPARATOR
+MAYA_VERSION = env.MAYA_VERSION
+DGA_NODES_SUPPORTED = env.DGA_NODES_SUPPORTED
 # end globals
 
 
@@ -40,11 +42,15 @@ SEPARATOR = env.SEPARATOR
 MAIN_BLENDSHAPE_STRING_IDENTIFIER = "mainBlendShape"
 SPLIT_BLENDSHAPE_STRING_IDENTIFIER = "splitBlendShape"
 WORK_BLENDSHAPE_STRING_IDENTIFIER = "workBlendShape"
+HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER = "heatMapBlendShape"
 SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
 FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
 NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
 BASE_MESH_STRING_IDENTIFIER = "baseMesh"
-
+HEAT_MAP_MESH_STRING_IDENTIFIER = "heatMapMesh"
+DGA_VISUALIZER_STRING_IDENTIFIER = "dgaVisualizer"
+DGA_DELTA_STRING_IDENTIFIER = "dgaDelta"
+DELTA_MAP_STRING_IDENTIFIER = "deltaMap"
 # TARGET GROUP NAMES
 PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
 COMBO_SHAPES_GRP_NAME = "Combos_GRP"
@@ -62,34 +68,40 @@ class BlueSteelEditor(object):
         self.network = None
         # debug network
         self.network_rebuild_count = 0
-
+        self.dga_nodes_supported = DGA_NODES_SUPPORTED
         self.container = Container(container)
         
-        self.blendshapes = dict()
+        if self.dga_nodes_supported == False:
+            self._delete_dga_heat_maps_node_network()
+            self._delete_heat_map_blendshape()
+            print("DGA nodes are not supported in this Maya version. Heat map visualization will be disabled.")
+
 
         self.separator = separator
         self.blendshape = None
         self.split_blendshape = None
         self.work_blendshape = None
+        self.heat_map_blendshape = None
         # Signals
         self.signals_connected = False
         # getting the blendshape nodes
         if self.main_blendshape_name:
             self.blendshape = Blendshape(self.main_blendshape_name)
-            self.blendshapes[self.main_blendshape_name] = self.blendshape
         else:
             raise ValueError(f"Editor '{container}' does not have a main blendshape linked.")
         
         if self.split_blendshape_name:
             self.split_blendshape = Blendshape(self.split_blendshape_name)
-            self.blendshapes[self.split_blendshape_name] = self.split_blendshape
         else:
             raise ValueError(f"Editor '{container}' does not have a split blendshape linked.")
         if self.work_blendshape_name:
             self.work_blendshape = Blendshape(self.work_blendshape_name)
-            self.blendshapes[self.work_blendshape_name] = self.work_blendshape
         else:
             raise ValueError(f"Editor '{container}' does not have a work blendshape linked.")
+        # if self.heat_map_blendshape_name:
+        #     self.heat_map_blendshape = Blendshape(self.heat_map_blendshape_name)
+        # else:
+        #     print(f"Warning: Editor '{container}' does not have a heat map blendshape linked.")
         if self.node_network_container is None:
             raise ValueError(f"Editor '{container}' does not have a node network container linked.")
         if self.split_attr_grp is None:
@@ -99,9 +111,266 @@ class BlueSteelEditor(object):
         if not cmds.objExists(self.shape_editor_manager):
             raise ValueError(f"shapeEditorManager node does not exist in the scene.")
         self.copied_weight_map_values = None
+        # Clean up in case the scene was saved with display heat maps.
+
         # setting up the network
         self.build_network()
         self.sync_up_muted_shapes()
+
+    #-----------------------------
+    # Heat map setup creation
+    #-----------------------------
+    
+    def display_heat_maps(self, display: bool):
+        """
+        Display or hide the heat map visualization by connecting or disconnecting the heat map blendshape to the dga node network.
+        Parameters:
+            display (bool): Whether to display the heat map visualization or not
+        """
+        if not self.dga_nodes_supported:
+            print("DGA nodes not supported in this Maya version. Heat map visualization is not available.")
+            return
+        if display:
+            self._create_heat_map_blendshape()
+            self._create_dga_heat_maps_node_network()
+
+        else:
+            self._delete_dga_heat_maps_node_network()
+            self._delete_heat_map_blendshape()
+            base_shape = self.blendshape.get_base()
+            if base_shape:
+                cmds.setAttr(f"{base_shape[0]}.displayColors", 0)
+                cmds.setAttr(f"{base_shape[0]}.materialBlend", 0)
+
+    def set_heat_map_target(self, blendshape_name: str, target_name: str):
+        """
+        Sets the heat map visualization for a specific target by connecting it to the heat map blendshape.
+        Parameters:
+            blendshape_name (str): The name of the blendshape that contains the target to visualize
+            target_name (str): The name of the target to visualize in the heat map
+        """
+        if not self.dga_nodes_supported:
+            return
+        self._connect_target_to_heat_map_blendshape(blendshape_name, target_name)
+
+    def clear_heat_map_target(self):
+        """
+        Clear the heat map visualization by disconnecting the current target from the heat map blendshape.
+        """
+        if not self.dga_nodes_supported:
+            return
+        if self.heat_map_blendshape is None:
+            return
+        self._disconnect_heat_map_blendshape_target()
+
+    def _delete_heat_map_blendshape(self):
+        blend_name = self.heat_map_blendshape_name
+        heat_mesh_name = self.heat_map_mesh
+        if blend_name and cmds.objExists(blend_name):
+            print(f"Deleting heat map blendshape '{self.heat_map_blendshape_name}' and mesh '{heat_mesh_name}'.")
+            cmds.delete(blend_name)
+            self.heat_map_blendshape = None
+        if self.heat_map_mesh:
+            if cmds.objExists(heat_mesh_name):
+                print(f"Deleting heat map mesh '{heat_mesh_name}'.")
+                cmds.delete(heat_mesh_name)
+
+    def _disconnect_heat_map_blendshape_target(self):
+        if self.heat_map_blendshape is None:
+            return
+        weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
+        if weight is None:
+            return
+        self.heat_map_blendshape.disconnect_mesh_from_target(weight.id)
+        self.heat_map_blendshape.disconnect_target_from_blendshape_target(weight.id)
+        self.heat_map_blendshape.reset_target(weight.id)
+
+    def _connect_target_to_heat_map_blendshape(self,
+                                            blendshape_name: str,
+                                            target_name: str):
+        """
+        Connect a target in self.blendshape to the heatMapTarget in the heat map blendshape so that 
+        it drives the heat map visualization when the target weight is changed.
+        parameters:
+            blendshape_name (str): The name of the blendshape in self.blendshapes to connect to the heat map blendshape
+            target_name (str): The name of the target in self.blendshape to connect to the heat map blendshape
+        """
+        blendshape = self.blendshapes.get(blendshape_name)
+        if blendshape is None:
+            raise ValueError(f"Blendshape '{blendshape_name}' not found.")
+        if self.heat_map_blendshape is None:
+            raise ValueError("Heat map blendshape not found.")
+        target_weight = blendshape.get_weight_by_name(target_name)
+        if target_weight is None:
+            raise ValueError(f"Target '{target_name}' not found in main blendshape.")
+        # making  sure there is no mesh connected to the heat map target weight
+        # before connecting it to the target weight  
+        heat_map_target_weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
+        if heat_map_target_weight is None:
+            heat_map_target_weight = self.heat_map_blendshape.add_target("heatMapTarget")
+        # disconnecting any connected geometry to the heat map target group.
+        self.heat_map_blendshape.disconnect_mesh_from_target(heat_map_target_weight.id)
+        # we need to connect the target weight to the heat map target weight
+        input_weight_id = target_weight.id
+        output_weight_id = heat_map_target_weight.id
+        output_blendshape_name = self.heat_map_blendshape.name
+        blendshape.connect_target_to_blendshape_target(input_target_index=input_weight_id,
+                                                        output_blendshape_name=output_blendshape_name,
+                                                        output_target_index=output_weight_id)
+
+    # def _create_heat_map_blendshape(self):
+    #     """
+    #     Check if the heat map blendshape and mesh exist, and create them if they don't.
+    #     """
+    #     if self.heat_map_blendshape or self.heat_map_mesh:
+    #         # cleaning up existing nodes if they exist before creating new ones to avoid duplicates
+    #         if self.heat_map_blendshape:
+    #             cmds.delete(self.heat_map_blendshape_name)
+    #         if self.heat_map_mesh:
+    #             cmds.delete(self.heat_map_mesh)
+    #         self._create_heat_map_blendshape()
+    #     # just making sure the heat map target weight exists.
+    #     heat_weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
+    #     if heat_weight is None:
+    #         heat_weight = self.heat_map_blendshape.add_target("heatMapTarget")
+    #         self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
+
+    def _delete_dga_heat_maps_node_network(self):
+        """
+        Delete the nodes for the heat map setup.
+        """
+        if self.dga_delta:
+            if cmds.objExists(self.dga_delta):
+                node = self.dga_delta
+                mayaUtils.disconnect_node(node)
+                cmds.delete(node)
+
+        if self.dga_visualizer:
+            input_connection = cmds.listConnections(f"{self.dga_visualizer}.ig", source=True, destination=False, plugs=True) or []
+            output_connection = cmds.listConnections(f"{self.dga_visualizer}.og", source=False, destination=True, plugs=True) or []
+                # we need to disconnect the dga visualizer from the heat map blendshape and mesh before deleting it
+            if input_connection and output_connection:
+                cmds.disconnectAttr(input_connection[0], f"{self.dga_visualizer}.ig")
+                cmds.disconnectAttr(f"{self.dga_visualizer}.og", output_connection[0])
+                cmds.connectAttr(input_connection[0], output_connection[0], force=True)
+            cmds.delete(self.dga_visualizer)
+
+
+
+    def _create_dga_heat_maps_node_network(self):
+        """
+        Create the nodes for the heat map setup.
+        """
+        # let's check if the heat_mesh exists before creating the dga nodes since we need to connect them to it
+        if not self.heat_map_mesh:
+            raise ValueError("Heat map mesh not found. Cannot create DGA heat map node network.")
+        if not self.heat_map_blendshape:
+            raise ValueError("Heat map blendshape not found. Cannot create DGA heat map node network.")
+        # deleting the existing nodes if they exist to avoid duplicates
+        self._delete_dga_heat_maps_node_network()
+        # creating the dga delta node
+        delta_node_name = f"{self.editor_base_name}_{DGA_DELTA_STRING_IDENTIFIER}"
+        delta_node = cmds.createNode("dgaDelta", name=delta_node_name)
+        # link to the message attribute for easy access
+        attrUtils.add_message_attr(self.container.name, DGA_DELTA_STRING_IDENTIFIER, delta_node)
+        self.container.add_member(delta_node)
+        # now we neeed to connect the delta node to the heat map blendshape and mesh
+        heat_map_shape = self.heat_map_blendshape.get_base()[0]
+        heat_original_mesh = self.heat_map_blendshape.get_original_geometry()
+        cmds.connectAttr(f"{heat_map_shape}.outMesh", f"{delta_node}.inputGeometry", force=True)
+        cmds.connectAttr(f"{heat_original_mesh}.outMesh", f"{delta_node}.originalGeometry", force=True)
+        # now let's create the dga visualizer node
+        visualizer_node_name = f"{self.editor_base_name}_{DGA_VISUALIZER_STRING_IDENTIFIER}"
+        visualizer_node = cmds.createNode("dgaVisualizer", name=visualizer_node_name)
+        # link to the message attribute for easy access
+        attrUtils.add_message_attr(self.container.name, DGA_VISUALIZER_STRING_IDENTIFIER, visualizer_node)
+        self.container.add_member(visualizer_node)
+        # connecting the visualizer node to the delta node and to the heat map mesh
+        base_shape = self.blendshape.get_base()
+        if not base_shape:
+            raise ValueError("Base shape not found in main blendshape. Cannot connect DGA visualizer node.")
+        base_shape_input = cmds.listConnections(f"{base_shape[0]}.inMesh",
+                                                     source=True,
+                                                     destination=False,
+                                                     plugs=True)
+        if not base_shape_input:
+            raise ValueError("Base shape does not have an input mesh connection. Cannot connect DGA visualizer node.")
+        cmds.connectAttr(base_shape_input[0], f"{visualizer_node}.inputGeometry", force=True)
+        cmds.connectAttr(f"{visualizer_node}.outputGeometry", f"{base_shape[0]}.inMesh", force=True)
+        # now let's connect the dgaDelta attribute node to the dgaVisualizer
+        cmds.connectAttr(f"{delta_node}.outputAttributes[0]", f"{visualizer_node}.inputAttributes[0]", force=True)
+        # finally we need to set normalization mode to 0 static 1 dynamic 
+        cmds.setAttr(f"{visualizer_node}.normalizationMode", 1)
+        cmds.setAttr(f"{base_shape[0]}.displayColors", 1)
+        cmds.setAttr(f"{base_shape[0]}.materialBlend", 3)
+
+    def _create_delta_heat_map_node(self):
+        """
+        Create a single delta heat map node.
+        """
+        # make sure the plugin is loaded
+        if cmds.pluginInfo("deltaMap", query=True, loaded=True) is False:
+            cmds.loadPlugin("deltaMap")
+        # check if the node exists first
+        if self.delta_map:
+            return
+        # out_shape = cmds.listRelatives(self.base_mesh, shapes=True, fullPath=True) or None
+        # if out_shape is None:
+        #     raise ValueError(f"Base mesh '{self.base_mesh}' does not have any shapes.")
+        # out_shape = out_shape[0]
+        # previous_connection = cmds.listConnections(f"{out_shape}.inMesh", source=True, destination=False, plugs=True) or []
+        # if not previous_connection:
+        #     raise ValueError(f"Base mesh '{self.base_mesh}' does not have a connection to its shape node. Cannot connect heat map delta node.")
+        delta_node_name = f"{self.editor_base_name}_{DELTA_MAP_STRING_IDENTIFIER}"
+        delta_node = cmds.deformer(self.base_mesh, type="deltaMap", name=delta_node_name)[0]
+        attrUtils.add_message_attr(self.container.name, DELTA_MAP_STRING_IDENTIFIER, delta_node)
+        self.container.add_member(delta_node)
+        # # we need to find the orig shape for the heat map mesh and connect it to the delta node orig input,
+        # cmds.connectAttr(f"{previous_connection[0]}", f"{delta_node}.inMesh", force=True)
+        # cmds.connectAttr(f"{delta_node}.outMesh", f"{out_shape}.inMesh", force=True)
+        # we need to get the heat mesh intermediate shape and connect it to the delta node deformed input
+        heat_base_shapes = cmds.listRelatives(self.heat_map_mesh, shapes=True, fullPath=True) or None
+        if heat_base_shapes is None:
+            raise ValueError(f"Heat map mesh '{self.heat_map_mesh}' does not have any shapes.")
+        heat_map_base_shape = None
+        for shape in heat_base_shapes:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                heat_map_base_shape = shape
+                break
+        cmds.connectAttr(f"{self.heat_map_mesh}.outMesh", f"{delta_node}.deformedMesh", force=True)
+        cmds.connectAttr(f"{heat_map_base_shape}.outMesh", f"{delta_node}.baseMesh", force=True)
+
+    def _create_heat_map_blendshape(self):
+        """
+        Create the blendshape node with an empty target.
+        The blendshape out mesh will be connected into the heat map node network.
+        """
+        if self.heat_map_blendshape and self.heat_map_mesh:
+            heat_weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
+            self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
+            return
+        # we need to create a mesh node to connect to.
+        heat_map_geo_name = f"{self.editor_base_name}_{HEAT_MAP_MESH_STRING_IDENTIFIER}"
+        heat_map_geo = self.duplicate_base_mesh_neutral_state(heat_map_geo_name)
+        cmds.setAttr(f"{heat_map_geo}.v", 0)
+        attrUtils.add_message_attr(self.container.name,
+                                   HEAT_MAP_MESH_STRING_IDENTIFIER,
+                                   heat_map_geo)
+        self.container.add_mesh_as_member(heat_map_geo)
+
+        heat_blendshape_name = f"{self.editor_base_name}_{HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER}"
+        heat_blendshape =self.add_new_blendshape_to_container(blendshape_name=heat_blendshape_name,
+                                                              mesh_name=heat_map_geo,
+                                                              container=self.container,
+                                                              message_attr=HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER,
+                                                              parent_directory_index=0)
+
+        parent_dir_id = self.blendshape.mid_layer_parent
+        self.heat_map_blendshape = Blendshape(heat_blendshape)
+        self.heat_map_blendshape.set_mid_layer_parent(parent_dir_id)
+
+        heat_weight = self.heat_map_blendshape.add_target("heatMapTarget")
+        self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
 
 
     @property
@@ -125,6 +394,11 @@ class BlueSteelEditor(object):
 
         cmds.setAttr(f"{self.container.name}.lockedShapes", shapes_list_str, type="string") 
 
+    @property
+    def heat_map_display_state(self):
+        if self.dga_visualizer:
+            return True
+        return False
 
     @property
     def uuid(self):
@@ -147,18 +421,47 @@ class BlueSteelEditor(object):
     def work_blendshape_name(self):
         return attrUtils.get_message_attr(self.container.name, WORK_BLENDSHAPE_STRING_IDENTIFIER)
     @property
+    def heat_map_blendshape_name(self):
+        return attrUtils.get_message_attr(self.container.name, HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER)
+    @property
     def split_attr_grp(self):
         return attrUtils.get_message_attr(self.container.name, SPLIT_ATTR_GRP_STRING_IDENTIFIER)
+
+    @property
+    def dga_visualizer(self):
+        return attrUtils.get_message_attr(self.container.name, DGA_VISUALIZER_STRING_IDENTIFIER)
+    
+    @property
+    def dga_delta(self):
+        return attrUtils.get_message_attr(self.container.name, DGA_DELTA_STRING_IDENTIFIER)
+    
+    @property
+    def delta_map(self):
+        return attrUtils.get_message_attr(self.container.name, DELTA_MAP_STRING_IDENTIFIER)
 
     @property
     def face_ctrl(self):
         return attrUtils.get_message_attr(self.container.name, FACE_CTRL_STRING_IDENTIFIER)
 
     @property
+    def heat_map_mesh(self):
+        return attrUtils.get_message_attr(self.container.name, HEAT_MAP_MESH_STRING_IDENTIFIER)
+
+    @property
     def node_network_container(self):
         node_network_name = attrUtils.get_message_attr(self.container.name, NODE_NETWORK_CONTAINER_STRING_IDENTIFIER)
         if node_network_name:
             return Container(node_network_name)
+        return None
+
+    @property
+    def current_heat_map_target(self):
+        if self.heat_map_blendshape is None:
+            return None
+        heat_map_target_weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
+        if heat_map_target_weight is None:
+            return None
+        self.heat_map_blendshape.get_target_in
         return None
 
     @property
@@ -174,6 +477,19 @@ class BlueSteelEditor(object):
     def editor_base_name(self):
         name_tokens = self.container.name.split("_")[:-1]
         return "_".join(name_tokens)
+
+    @property
+    def blendshapes(self):
+        blendshapes = {}
+        for blendshape in [self.blendshape,
+                           self.split_blendshape,
+                           self.work_blendshape,
+                           self.heat_map_blendshape]:
+            if blendshape is not None:
+                blendshapes[blendshape.name] = blendshape
+        return blendshapes
+
+
     
     def exists(self):
         """
@@ -1134,6 +1450,8 @@ class BlueSteelEditor(object):
             self.set_shape_pose(shape)
             # we need to duplicate the extraction mesh with the shape name
             extracted_shape_mesh = cmds.duplicate(extraction_mesh, name=shape_name)[0]
+            if extracted_shape_mesh[0].split("|")[-1] != shape_name:
+                extracted_shape_mesh = cmds.rename(extracted_shape_mesh, shape_name)
             extracted_meshes[shape_name] = extracted_shape_mesh
         cmds.delete(extraction_mesh)
         return extraction_group, extracted_meshes
@@ -1556,7 +1874,7 @@ class BlueSteelEditor(object):
             weight_str_value = int(round(weight_value * 100)) if weight_value < 1 else ""
             weight_names.append(f"{w}{weight_str_value}")
 
-        return self.separator.join(weight_names)
+        return self.separator.join(sorted(weight_names))
 
     def get_shape(self, shape_name: str):
         """
@@ -1624,6 +1942,29 @@ class BlueSteelEditor(object):
         # we will set the shape now
         self.set_shape_pose(shape)
         return return_value
+
+    @undoable
+    def duplicate_base_mesh_neutral_state(self, mesh_name: str):
+        """
+        Duplicate the base mesh in its neutral state.
+        Parameters:
+            mesh_name (str): The name of the duplicated mesh.
+        Returns:
+            str: The name of the duplicated mesh.
+        """
+        base_mesh = self.base_mesh
+        if base_mesh is None:
+            raise ValueError("Base mesh not found.")
+        duplicated = cmds.duplicate(base_mesh, name=mesh_name)[0]
+        # we need to remove all the intermediate objects.
+        shapes = cmds.listRelatives(duplicated, shapes=True, fullPath=True) or []
+        for shape in shapes:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                cmds.delete(shape)
+        # we need to get the base mesh points and set them to the duplicated mesh to make sure it's in the neutral state without any deformations
+        base_points = self.blendshape.get_base_points()
+        mayaUtils.set_points_from_numpy(duplicated, base_points)
+        return duplicated
 
     def duplicate_base_mesh_at_current_pose(self): 
         """
@@ -1902,7 +2243,8 @@ class BlueSteelEditor(object):
 
 
     @staticmethod
-    def add_new_blendshape_to_container(blendshape_name,mesh_name: str,
+    def add_new_blendshape_to_container(blendshape_name:str,
+                                        mesh_name: str,
                                         container: Container,
                                         message_attr: str,
                                         parent_directory_index: int = 0) -> str:
@@ -1945,6 +2287,7 @@ class BlueSteelEditor(object):
         return blendshape_node
 
     @classmethod
+    @undoable
     def create_new(cls, editor_name: str,mesh_name: str, separator: str = SEPARATOR):
         """
         Create a new Blue Steel rig
@@ -2031,8 +2374,8 @@ class BlueSteelEditor(object):
             cmds.select(stored_selection, replace=True)
         else:
             cmds.select(clear=True)
-
-        return BlueSteelEditor(container.name, separator=separator)
+        editor = BlueSteelEditor(container.name, separator=separator)
+        return editor
 
     @classmethod
     def add_shape_editor_directory(cls, group_name: str):

@@ -3,6 +3,7 @@ import maya.OpenMayaUI as omui
 from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
 from ...mmtools import smartCluster as smc
 from ...mmtools import meshTools as mt
+from ...mmtools import shape_editor_tools
 from ...mmtools import connectionTools as ct
 from ... import env
 from ..common.frameLayout import FrameLayout
@@ -161,12 +162,17 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
         connect_same_name_btn.clicked.connect(ct.connect_same_name_attributes)
         attribute_tools_frame_layout.addWidget(connect_same_name_btn)
 
-
+        # Blendshape Editor Tools frame layout
+        blendshape_editor_frame_layout = FrameLayout( 'Blendshape Editor Tools' )
+        split_selected_target_btn = QtWidgets.QPushButton( 'Split XYZ Selected Target' )
+        split_selected_target_btn.clicked.connect(shape_editor_tools.split_on_axis_selected_blendshape_targets)
+        blendshape_editor_frame_layout.addWidget(split_selected_target_btn)
         filler = QtWidgets.QSpacerItem( 20 , 40 , QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding)
 
         mainLayout.addWidget(mesh_tools_frame_layout)
         mainLayout.addWidget(clusters_frame_layout)
         mainLayout.addWidget(attribute_tools_frame_layout)
+        mainLayout.addWidget(blendshape_editor_frame_layout)
 
         mainLayout.addItem(filler)
 

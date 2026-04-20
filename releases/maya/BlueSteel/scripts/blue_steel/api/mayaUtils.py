@@ -326,3 +326,26 @@ def get_mesh_bounding_box(mesh_name: str, world = True):
     min_point = (bbox.min().x, bbox.min().y, bbox.min().z)
     max_point = (bbox.max().x, bbox.max().y, bbox.max().z)
     return min_point, max_point
+
+def disconnect_node(node):
+    """
+    Disconnect all connections to and from a node.
+    Parameters:
+        node (str): The name of the node to disconnect.
+    """
+    if not cmds.objExists(node):
+        raise RuntimeError(f"Node '{node}' does not exist")
+
+    # List all connections (plugs, not just nodes)
+    connections = cmds.listConnections(node, plugs=True, connections=True) or []
+
+    # connections comes as pairs: [src, dst, src, dst...]
+    for i in range(0, len(connections), 2):
+        src = connections[i]
+        dst = connections[i + 1]
+
+        try:
+            cmds.disconnectAttr(src, dst)
+        except RuntimeError:
+            # Some connections are locked or not disconnectable
+            pass

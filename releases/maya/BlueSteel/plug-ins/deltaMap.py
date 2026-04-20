@@ -1,37 +1,68 @@
 """
-DeltaMap node — displays a normalized displacement gradient between an
-orig mesh and a deformed mesh.
+DeltaMap deformer node.
 
-Optionally accepts a reference mesh; when connected the reference mesh
-is used as the output geometry instead of the deformed mesh.
+Computes per-vertex displacement magnitude between base and deformed meshes,
+maps that value through a color ramp, and writes vertex colors to the deformer
+output mesh.
 
-Originally based on the TensionMap plugin by Anno Schachner,
-ported by Alexander Smirnov, modified by davidlatwe.
+Node type: MPxDeformerNode (Maya API 1.0)
 """
 
 import sys
-import maya.api.OpenMaya as om2
 import maya.OpenMaya as om
+import maya.OpenMayaMPx as ompx
+import maya.OpenMayaUI as omui
 
 kPluginNodeName = "deltaMap"
-origAttrName = "orig"
-deformedAttrName = "deform"
-referenceAttrName = "reference"
-kPluginNodeClassify = "utility/general"
-kPluginNodeId = om2.MTypeId(0x001384c0)
+baseMeshAttrName = "baseMesh"
+deformedAttrName = "deformedMesh"
+maxDeltaAttrName = "maxDelta"
+avgDeltaAttrName = "avgDelta"
+forceRefreshAttrName = "forceRefresh"
+kPluginNodeClassify = "deformer"
+kPluginNodeId = om.MTypeId(0x001384c0)
 
 
-def maya_useNewAPI():
-    pass
+def _deformer_attr(name):
+    """Resolve MPxDeformerNode static attrs across Maya versions."""
+    def _is_mobject(value):
+        if value is None:
+            return False
+        try:
+            value.apiType()
+            return True
+        except Exception:
+            return False
+
+    direct = getattr(ompx.MPxDeformerNode, name, None)
+    if _is_mobject(direct):
+        return direct
+
+    cvar_name = "MPxDeformerNode_" + name
+    legacy = getattr(ompx.cvar, cvar_name, None)
+    if _is_mobject(legacy):
+        return legacy
+
+    geo_cvar_name = "MPxGeometryFilter_" + name
+    geo_legacy = getattr(ompx.cvar, geo_cvar_name, None)
+    if _is_mobject(geo_legacy):
+        return geo_legacy
+
+    raise RuntimeError("Cannot resolve MPxDeformerNode attribute: %s" % name)
 
 
-class DeltaMap(om2.MPxNode):
+class DeltaMap(ompx.MPxDeformerNode):
+    aBaseMesh = om.MObject()
+    aDeformedMesh = om.MObject()
+    aColorRamp = om.MObject()
+    aMaxDelta = om.MObject()
+    aAvgDelta = om.MObject()
+    aForceRefresh = om.MObject()
 
     def __init__(self):
-        om2.MPxNode.__init__(self)
-        self.isOrigDirty = True
-        self.isDeformedDirty = True
-        self.isReferenceDirty = True
+        ompx.MPxDeformerNode.__init__(self)
+        # Heavy delta/color evaluation is only needed when compare inputs change.
+        self._needsColorRecompute = True
 
     def initialize_ramp(self,
                         parentNode,
@@ -40,8 +71,7 @@ class DeltaMap(om2.MPxNode):
                         position,
                         value,
                         interpolation):
-
-        rampPlug = om2.MPlug(parentNode, rampObj)
+        rampPlug = om.MPlug(parentNode, rampObj)
         elementPlug = rampPlug.elementByLogicalIndex(index)
 
         positionPlug = elementPlug.child(0)
@@ -57,9 +87,11 @@ class DeltaMap(om2.MPxNode):
 
     def postConstructor(self):
         values = [
-            {"index": 0, "position": 0.0, "value": om2.MColor((0, 0, 0, 1))},
-            {"index": 1, "position": 0.5, "value": om2.MColor((1, 0, 0, 1))},
-            {"index": 2, "position": 1.0, "value": om2.MColor((1, 1, 0, 1))},
+            {"index": 0, "position": 0.0, "value": (0.0, 0.0, 1.0)},
+            {"index": 1, "position": 0.25, "value": (0.0, 1.0, 1.0)},
+            {"index": 2, "position": 0.5, "value": (0.0, 1.0, 0.0)},
+            {"index": 3, "position": 0.75, "value": (1.0, 1.0, 0.0)},
+            {"index": 4, "position": 1.0, "value": (1.0, 0.0, 0.0)},
         ]
         for kwargs in values:
             self.initialize_ramp(parentNode=self.thisMObject(),
@@ -67,88 +99,114 @@ class DeltaMap(om2.MPxNode):
                                  interpolation=1,
                                  **kwargs)
 
+    def _get_points_from_mesh_obj(self, meshObj):
+        pts = om.MPointArray()
+        meshFn = om.MFnMesh(meshObj)
+        meshFn.getPoints(pts, om.MSpace.kObject)
+        return pts, meshFn.numVertices()
+
     def setDependentsDirty(self, dirtyPlug, affectedPlugs):
-        partialName = dirtyPlug.partialName()
-        if partialName == origAttrName:
-            self.isOrigDirty = True
-        if partialName == deformedAttrName:
-            self.isDeformedDirty = True
-        if partialName == referenceAttrName:
-            self.isReferenceDirty = True
+        attrObj = dirtyPlug.attribute()
+        if attrObj == DeltaMap.aBaseMesh or attrObj == DeltaMap.aDeformedMesh or attrObj == DeltaMap.aColorRamp:
+            self._needsColorRecompute = True
 
-        if self.isOrigDirty or self.isDeformedDirty or self.isReferenceDirty:
-            outShapePlug = om2.MPlug(self.thisMObject(), self.aOutShape)
-            affectedPlugs.append(outShapePlug)
+        if attrObj == DeltaMap.aBaseMesh or attrObj == DeltaMap.aDeformedMesh or attrObj == DeltaMap.aColorRamp or attrObj == DeltaMap.aForceRefresh:
+            try:
+                outPlug = om.MPlug(self.thisMObject(), _deformer_attr("outputGeom"))
+                affectedPlugs.append(outPlug)
+            except Exception:
+                pass
 
-    def compute(self, plug, data):
-        if plug == self.aOutShape:
-            thisObj = self.thisMObject()
-            origHandle = data.inputValue(self.aOrigShape)
-            deformedHandle = data.inputValue(self.aDeformedShape)
-            refHandle = data.inputValue(self.aRefShape)
-            outHandle = data.outputValue(self.aOutShape)
-            colorRamp = om2.MRampAttribute(thisObj, self.aColorRamp)
-
-            self._computeDelta(origHandle, deformedHandle,
-                               refHandle, outHandle, colorRamp)
-
-        data.setClean(plug)
-
-    def _computeDelta(self, origHandle, deformedHandle,
-                      refHandle, outHandle, colorRamp):
-        self.isOrigDirty = False
-        self.isDeformedDirty = False
-        self.isReferenceDirty = False
-
-        origObj = origHandle.asMesh()
-        deformedObj = deformedHandle.asMesh()
-        if origObj.isNull() or deformedObj.isNull():
+    def deform(self, dataBlock, geoIter, matrix, multiIndex):
+        envelope = dataBlock.inputValue(_deformer_attr("envelope")).asFloat()
+        if envelope <= 0.0:
             return
 
-        origFn = om2.MFnMesh(origObj)
-        deformedFn = om2.MFnMesh(deformedObj)
-        numVerts = origFn.numVertices
-        if deformedFn.numVertices != numVerts:
+        # Pass-through on regular input updates; only recompute on base/deformed changes.
+        if not self._needsColorRecompute:
             return
 
-        origPts = origFn.getPoints(om2.MSpace.kObject)
-        defPts = deformedFn.getPoints(om2.MSpace.kObject)
+        thisObj = self.thisMObject()
+        colorRamp = om.MRampAttribute(thisObj, self.aColorRamp)
 
-        # Compute per-vertex displacement length
+        inputArray = dataBlock.outputArrayValue(_deformer_attr("input"))
+        inputArray.jumpToElement(multiIndex)
+        inputMeshObj = inputArray.outputValue().child(_deformer_attr("inputGeom")).asMesh()
+        if inputMeshObj.isNull():
+            return
+
+        basePlug = om.MPlug(thisObj, DeltaMap.aBaseMesh)
+        if basePlug.isConnected():
+            baseObj = dataBlock.inputValue(self.aBaseMesh).asMesh()
+        else:
+            baseObj = inputMeshObj
+
+        deformedPlug = om.MPlug(thisObj, DeltaMap.aDeformedMesh)
+        if deformedPlug.isConnected():
+            deformedObj = dataBlock.inputValue(self.aDeformedMesh).asMesh()
+        else:
+            deformedObj = inputMeshObj
+
+        if baseObj.isNull() or deformedObj.isNull():
+            return
+
+        # Write colors on the deformer output geometry to stay in DG flow.
+        outputMeshObj = om.MObject()
+        try:
+            outputGeomArray = dataBlock.outputArrayValue(_deformer_attr("outputGeom"))
+            outputGeomArray.jumpToElement(multiIndex)
+            outputMeshObj = outputGeomArray.outputValue().asMesh()
+        except Exception:
+            pass
+        if outputMeshObj.isNull():
+            outputMeshObj = inputMeshObj
+
+        outputFn = om.MFnMesh(outputMeshObj)
+        numVerts = outputFn.numVertices()
+
+        # Use direct mesh data points (object/local space) for best performance.
+        basePts, baseNumVerts = self._get_points_from_mesh_obj(baseObj)
+        defPts, defNumVerts = self._get_points_from_mesh_obj(deformedObj)
+
+        if baseNumVerts != numVerts or defNumVerts != numVerts:
+            return
+
         lengths = [0.0] * numVerts
         maxLen = 0.0
         for i in range(numVerts):
-            d = om2.MVector(defPts[i] - origPts[i])
+            d = defPts[i] - basePts[i]
             l = d.length()
             lengths[i] = l
             if l > maxLen:
                 maxLen = l
 
-        # Choose output mesh: reference if connected, else deformed
-        refPlug = om2.MPlug(self.thisMObject(), DeltaMap.aRefShape)
-        if refPlug.isConnected:
-            outHandle.copy(refHandle)
-            outHandle.setMObject(refHandle.asMesh())
-        else:
-            outHandle.copy(deformedHandle)
-            outHandle.setMObject(deformedHandle.asMesh())
+        avgLen = (sum(lengths) / float(numVerts)) if numVerts > 0 else 0.0
+        try:
+            dataBlock.outputValue(self.aMaxDelta).setFloat(maxLen)
+            dataBlock.outputValue(self.aAvgDelta).setFloat(avgLen)
+        except Exception:
+            pass
 
-        outMesh = outHandle.asMesh()
-        meshFn = om2.MFnMesh(outMesh)
-
-        vertColors = om2.MColorArray()
-        vertColors.setLength(numVerts)
+        vertColors = om.MColorArray()
         for i in range(numVerts):
             t = (lengths[i] / maxLen) if maxLen > 0.0 else 0.0
-            vertColors[i] = colorRamp.getValueAtPosition(t)
+            color = om.MColor()
+            colorRamp.getColorAtPosition(t, color)
+            vertColors.append(color)
 
-        if not self.setAndAssignColors(meshFn, vertColors):
-            self.setVertexColors(meshFn, vertColors)
+        self.setAndAssignColors(outputFn, vertColors)
+        try:
+            forceRefresh = dataBlock.inputValue(self.aForceRefresh).asBool()
+        except Exception:
+            forceRefresh = False
+        if forceRefresh:
+            self._forceConnectedShapeRefresh(multiIndex)
+
+        self._needsColorRecompute = False
 
     def setVertexColors(self, meshFn, vertColors):
-        """This cannot name a colorSet"""
-        numVerts = meshFn.numVertices
-        vertIds = om2.MIntArray()
+        numVerts = meshFn.numVertices()
+        vertIds = om.MIntArray()
         vertIds.setLength(numVerts)
 
         for i in range(numVerts):
@@ -156,62 +214,153 @@ class DeltaMap(om2.MPxNode):
 
         meshFn.setVertexColors(vertColors, vertIds)
 
-    def setAndAssignColors(self, meshFn, vertColors):
-        """This requires colorSet to be pre-existed"""
-        if "deltaCS" not in meshFn.getColorSetNames():
-            return False
+    def _forceConnectedShapeRefresh(self, multiIndex):
+        """Force viewport color refresh on downstream output shape meshes."""
+        try:
+            outGeomPlug = om.MPlug(self.thisMObject(), _deformer_attr("outputGeom"))
+            elemPlug = outGeomPlug.elementByLogicalIndex(multiIndex)
 
-        numFaceVerts = meshFn.numFaceVertices
-        colorIdsOnFaceVertex = om2.MIntArray()
+            destPlugs = om.MPlugArray()
+            elemPlug.connectedTo(destPlugs, False, True)
+            if destPlugs.length() == 0:
+                return
+
+            refreshedAny = False
+            for i in range(destPlugs.length()):
+                nodeObj = destPlugs[i].node()
+                if not nodeObj.hasFn(om.MFn.kMesh):
+                    continue
+
+                depFn = om.MFnDependencyNode(nodeObj)
+
+                # Toggle displayColors and displayColorAsGreyScale via API plugs
+                # to mimic the manual viewport refresh behavior without MEL chains.
+                try:
+                    displayPlug = depFn.findPlug("displayColors", False)
+                    displayPlug.setBool(False)
+                    displayPlug.setBool(True)
+                except Exception:
+                    pass
+
+                try:
+                    grayPlug = depFn.findPlug("displayColorAsGreyScale", False)
+                    oldGray = grayPlug.asBool()
+                    grayPlug.setBool(not oldGray)
+                    grayPlug.setBool(oldGray)
+                except Exception:
+                    pass
+
+                try:
+                    om.MFnMesh(nodeObj).updateSurface()
+                except Exception:
+                    pass
+
+                refreshedAny = True
+
+            if refreshedAny:
+                try:
+                    omui.M3dView.scheduleRefreshAllViews()
+                except Exception:
+                    # Fallback for Maya versions where scheduleRefreshAllViews
+                    # is not available in this binding.
+                    om.MGlobal.executeCommandOnIdle('refresh -f;')
+        except Exception as e:
+            print("***Skipped connected-shape refresh. Error: %s" % e)
+
+    def setAndAssignColors(self, meshFn, vertColors):
+        colorSetNames = []
+        meshFn.getColorSetNames(colorSetNames)
+        if "deltaCS" not in colorSetNames:
+            try:
+                meshFn.createColorSetWithName("deltaCS")
+            except Exception:
+                # If creation fails, fall back to per-vertex assignment on current set.
+                self.setVertexColors(meshFn, vertColors)
+                return True
+
+        numFaceVerts = meshFn.numFaceVertices()
+        colorIdsOnFaceVertex = om.MIntArray()
         colorIdsOnFaceVertex.setLength(numFaceVerts)
 
-        vtx_num_per_poly, ploy_vtx_id = meshFn.getVertices()
+        vtx_num_per_poly = om.MIntArray()
+        poly_vtx_id = om.MIntArray()
+        meshFn.getVertices(vtx_num_per_poly, poly_vtx_id)
 
-        for i, colorId in enumerate(ploy_vtx_id):
-            colorIdsOnFaceVertex[i] = colorId
+        for i in range(numFaceVerts):
+            colorIdsOnFaceVertex[i] = poly_vtx_id[i]
 
         meshFn.setColors(vertColors, "deltaCS")
         meshFn.assignColors(colorIdsOnFaceVertex, "deltaCS")
+        try:
+            meshFn.setCurrentColorSetName("deltaCS")
+            meshFn.setDisplayColors(True)
+        except Exception:
+            pass
         return True
 
 
 def nodeCreator():
-    return DeltaMap()
+    return ompx.asMPxPtr(DeltaMap())
 
 
 def initialize():
-    tAttr = om2.MFnTypedAttribute()
+    tAttr = om.MFnTypedAttribute()
+    nAttr = om.MFnNumericAttribute()
 
-    DeltaMap.aOrigShape = tAttr.create(origAttrName,
-                                       origAttrName,
-                                       om2.MFnMeshData.kMesh)
-    tAttr.storable = True
+    DeltaMap.aBaseMesh = tAttr.create(baseMeshAttrName,
+                                      baseMeshAttrName,
+                                      om.MFnData.kMesh)
+    tAttr.setStorable(True)
 
-    DeltaMap.aDeformedShape = tAttr.create(deformedAttrName,
-                                           deformedAttrName,
-                                           om2.MFnMeshData.kMesh)
-    tAttr.storable = True
+    DeltaMap.aDeformedMesh = tAttr.create(deformedAttrName,
+                                          deformedAttrName,
+                                          om.MFnData.kMesh)
+    tAttr.setStorable(True)
 
-    DeltaMap.aRefShape = tAttr.create(referenceAttrName,
-                                      referenceAttrName,
-                                      om2.MFnMeshData.kMesh)
-    tAttr.storable = True
+    DeltaMap.aColorRamp = om.MRampAttribute.createColorRamp("color", "color")
 
-    DeltaMap.aOutShape = tAttr.create("out", "out", om2.MFnMeshData.kMesh)
-    tAttr.writable = False
-    tAttr.storable = False
+    DeltaMap.aMaxDelta = nAttr.create(maxDeltaAttrName,
+                                      maxDeltaAttrName,
+                                      om.MFnNumericData.kFloat,
+                                      0.0)
+    nAttr.setWritable(False)
+    nAttr.setStorable(False)
+    nAttr.setKeyable(False)
 
-    DeltaMap.aColorRamp = om2.MRampAttribute().createColorRamp("color", "color")
+    DeltaMap.aAvgDelta = nAttr.create(avgDeltaAttrName,
+                                      avgDeltaAttrName,
+                                      om.MFnNumericData.kFloat,
+                                      0.0)
+    nAttr.setWritable(False)
+    nAttr.setStorable(False)
+    nAttr.setKeyable(False)
 
-    DeltaMap.addAttribute(DeltaMap.aOrigShape)
-    DeltaMap.addAttribute(DeltaMap.aDeformedShape)
-    DeltaMap.addAttribute(DeltaMap.aRefShape)
-    DeltaMap.addAttribute(DeltaMap.aOutShape)
+    DeltaMap.aForceRefresh = nAttr.create(forceRefreshAttrName,
+                                          forceRefreshAttrName,
+                                          om.MFnNumericData.kBoolean,
+                                          True)
+    nAttr.setWritable(True)
+    nAttr.setStorable(True)
+    nAttr.setKeyable(True)
+
+    DeltaMap.addAttribute(DeltaMap.aBaseMesh)
+    DeltaMap.addAttribute(DeltaMap.aDeformedMesh)
     DeltaMap.addAttribute(DeltaMap.aColorRamp)
-    DeltaMap.attributeAffects(DeltaMap.aOrigShape, DeltaMap.aOutShape)
-    DeltaMap.attributeAffects(DeltaMap.aDeformedShape, DeltaMap.aOutShape)
-    DeltaMap.attributeAffects(DeltaMap.aRefShape, DeltaMap.aOutShape)
-    DeltaMap.attributeAffects(DeltaMap.aColorRamp, DeltaMap.aOutShape)
+    DeltaMap.addAttribute(DeltaMap.aMaxDelta)
+    DeltaMap.addAttribute(DeltaMap.aAvgDelta)
+    DeltaMap.addAttribute(DeltaMap.aForceRefresh)
+
+    outputGeom = _deformer_attr("outputGeom")
+    DeltaMap.attributeAffects(DeltaMap.aBaseMesh, outputGeom)
+    DeltaMap.attributeAffects(DeltaMap.aDeformedMesh, outputGeom)
+    DeltaMap.attributeAffects(DeltaMap.aColorRamp, outputGeom)
+    DeltaMap.attributeAffects(DeltaMap.aBaseMesh, DeltaMap.aMaxDelta)
+    DeltaMap.attributeAffects(DeltaMap.aDeformedMesh, DeltaMap.aMaxDelta)
+    DeltaMap.attributeAffects(DeltaMap.aColorRamp, DeltaMap.aMaxDelta)
+    DeltaMap.attributeAffects(DeltaMap.aBaseMesh, DeltaMap.aAvgDelta)
+    DeltaMap.attributeAffects(DeltaMap.aDeformedMesh, DeltaMap.aAvgDelta)
+    DeltaMap.attributeAffects(DeltaMap.aColorRamp, DeltaMap.aAvgDelta)
+    DeltaMap.attributeAffects(DeltaMap.aForceRefresh, outputGeom)
 
 
 def AEtemplateString(nodeName):
@@ -221,6 +370,7 @@ def AEtemplateString(nodeName):
     templStr += 'editorTemplate -beginScrollLayout;\n'
     templStr += '   editorTemplate -beginLayout "Color Remaping" -collapse 0;\n'
     templStr += '       AEaddRampControl( $nodeName + ".color" );\n'
+    templStr += '       editorTemplate -addControl ( $nodeName + ".forceRefresh" );\n'
     templStr += '   editorTemplate -endLayout;\n'
     templStr += 'editorTemplate -addExtraControls; // add any other attributes\n'
     templStr += 'editorTemplate -endScrollLayout;\n'
@@ -230,10 +380,11 @@ def AEtemplateString(nodeName):
 
 
 def initializePlugin(mobject):
-    mplugin = om2.MFnPlugin(mobject)
+    mplugin = ompx.MFnPlugin(mobject)
     try:
         mplugin.registerNode(kPluginNodeName, kPluginNodeId,
-                             nodeCreator, initialize)
+                             nodeCreator, initialize,
+                             ompx.MPxNode.kDeformerNode)
         om.MGlobal.executeCommand(AEtemplateString(kPluginNodeName))
     except Exception:
         sys.stderr.write("Failed to register node: " + kPluginNodeName)
@@ -241,7 +392,7 @@ def initializePlugin(mobject):
 
 
 def uninitializePlugin(mobject):
-    mplugin = om2.MFnPlugin(mobject)
+    mplugin = ompx.MFnPlugin(mobject)
     try:
         mplugin.deregisterNode(kPluginNodeId)
     except Exception:

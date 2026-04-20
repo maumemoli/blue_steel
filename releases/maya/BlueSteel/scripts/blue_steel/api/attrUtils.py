@@ -118,9 +118,11 @@ def add_message_attr(node: str, attr_name: str, linked_node: str = None):
         >>> create_message_attr("pCube1", "myMessage")
         'pCube1.myMessage'
     """
-    if cmds.attributeQuery(attr_name,node = node, exists=True):
-        return None
     full_attr_name = f"{node}.{attr_name}"
+    if cmds.attributeQuery(attr_name,node = node, exists=True):
+        if linked_node:
+            cmds.connectAttr( f"{linked_node}.message",full_attr_name ,force=True)
+        return None
     cmds.addAttr(node, longName=attr_name, attributeType="message")
     if linked_node and cmds.objExists(linked_node):
         cmds.connectAttr( f"{linked_node}.message",full_attr_name ,force=True)

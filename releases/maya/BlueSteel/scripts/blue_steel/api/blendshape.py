@@ -109,12 +109,12 @@ class Blendshape(object):
         current_parent_id = self.mid_layer_parent
         layer_id = self.mid_layer_id
         # we need to check if the directory that hosts this mid layer id exists or not
-        current_parent_dir_name = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].directoryName")
-        current_parent_dir_indices = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].childIndices") or []
-        print(f"Current mid layer parent directory: {current_parent_dir_name} with child indices: {current_parent_dir_indices}")
-        if layer_id in current_parent_dir_indices:
-            # we need to remove it from the current parent directory first
-            current_parent_dir_indices.remove(layer_id)
+        if current_parent_id >= 0:
+            current_parent_dir_indices = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].childIndices") or []
+            # print(f"Current mid layer parent directory: {current_parent_dir_name} with child indices: {current_parent_dir_indices}")
+            if layer_id in current_parent_dir_indices:
+                # we need to remove it from the current parent directory first
+                current_parent_dir_indices.remove(layer_id)
             cmds.setAttr(f"shapeEditorManager.blendShapeDirectory[{current_parent_id}].childIndices", current_parent_dir_indices, type="Int32Array")
         # then we can set the new mid layer id
         new_mid_layer_parent_dir_indices = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{mid_layer_parent_id}].childIndices") or []
@@ -122,8 +122,6 @@ class Blendshape(object):
             new_mid_layer_parent_dir_indices.append(layer_id)
             cmds.setAttr(f"shapeEditorManager.blendShapeDirectory[{mid_layer_parent_id}].childIndices", new_mid_layer_parent_dir_indices, type="Int32Array")
         cmds.setAttr(f"{self.name}.midLayerParent", mid_layer_parent_id)
-
-    
 
     # ------------------------------------------------------------------
     # Creation methods
@@ -167,6 +165,29 @@ class Blendshape(object):
         """
         base = cmds.blendShape(self.name, q=True, g=True) or None
         return base if base else None
+
+    def get_original_geometry(self)-> str:
+        """
+        Returns the original base mesh of the blendShape node.
+        This is basically the intermediate object connected to the blendshape node.
+        Returns:
+            str: The name of the original base mesh, or None if not found.
+        Example:
+            >>> blendshape = Blendshape.create("myBlendshape", "pCube1")
+            >>> original_geometry = blendshape.get_original_geometry()
+            >>> print(original_geometry)
+            pCube1Orig
+        """
+        # check if the attribute is there first
+        if not cmds.attributeQuery("originalGeometry", node=self.name, exists=True):
+            return None
+        original_base = cmds.listConnections(f"{self.name}.originalGeometry[0]",
+                                             source=True,
+                                             destination=False,
+                                             plugs=True) or []
+        if original_base:
+            return original_base[0].split('.')[0]  # remove the .outMesh suffix
+        return None
 
     def get_base_vertex_count(self)-> int:
         """
@@ -273,7 +294,7 @@ class Blendshape(object):
             raise ValueError(f"Blendshape node '{self.name}'"
                              " has no base mesh connected.")
         # Get the intermediate shape of the base mesh
-        parent = cmds.listRelatives(self.base, parent=True)[0]
+        parent = cmds.listRelatives(self.base, parent=True, fullPath = True)[0]
         shapes = cmds.listRelatives(parent, shapes=True, fullPath=True) or []
         intermediate = None
         # we need to clear up the dead intermediate shapes first
@@ -505,17 +526,7 @@ class Blendshape(object):
             >>> print(plug.name())
             myBlendshape.inputTarget[0].inputTargetGroup[0].inputTargetItem[6000].inputGeom
         """
-        input_target_plug = mayaUtils.get_plug(self.name,"inputTarget")
-        target_plug = input_target_plug.elementByLogicalIndex(0)
-        target_group_plug = target_plug.child(0).elementByLogicalIndex(weight_id)
-        target_item_plug = target_group_plug.child(0).elementByLogicalIndex(target_item_id)
-        for i in range(target_item_plug.numChildren()):
-            child_plug = target_item_plug.child(i)
-            if child_plug.name().endswith("inputGeomTarget"):
-                return child_plug
-        raise RuntimeError(f"Could not find inputGeom plug for weight ID {weight_id} "
-                           f"and target item ID {target_item_id}")
-
+        return self.get_target_plug_child_plug(weight_id, "inputGeomTarget", target_item_id)
 
     def get_target_group_plug(self, weight_id: int, target_item_id:int = 6000):
         """
@@ -537,7 +548,37 @@ class Blendshape(object):
         target_item_plug = target_group_plug.child(0).elementByLogicalIndex(target_item_id)
         return target_item_plug
 
+    def get_target_plug_child_plug(self,
+                                   weight_id: int,
+                                   child_name: str,
+                                   target_item_id:int = 6000)-> om.MPlug:
+        """
+        Returns the MPlug for the specified child of the target group and item in the blendshape node.
+        Parameters:
+            weight_id (int): The ID of the target group.
+            child_name (str): The name of the child plug to retrieve. Default is "inputComponents".
+            target_item_id (int): The ID of the target item. Default is 6000.
+        Returns:
+            om.MPlug: The MPlug for the specified child of the target group and item.
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> plug = blendshape.get_target_plug_child_plug(0, "inputComponents", 6000)
+            >>> print(plug.name())
+            myBlendshape.inputTarget[0].inputTargetGroup[0].inputTargetItem[6000].inputComponents
+        """
+        target_plug = self.get_target_group_plug(weight_id, target_item_id)
+        for i in range(target_plug.numChildren()):
+            child_plug = target_plug.child(i)
+            if child_plug.name().endswith(child_name):
+                return child_plug
+        raise RuntimeError(f"Could not find {child_name} plug for weight ID {weight_id} "
+                           f"and target item ID {target_item_id}")
 
+    def get_target_group_points_plug(self, weight_id: int, target_item_id:int = 6000):
+        return self.get_target_plug_child_plug(weight_id, "inputPointsTarget", target_item_id)
+
+    def get_target_group_components_plug(self, weight_id: int, target_item_id:int = 6000):
+        return self.get_target_plug_child_plug(weight_id, "inputComponentsTarget", target_item_id)
 
     def get_target_group_logical_indices(self, weight_id: int)->list:
         """
@@ -1184,7 +1225,7 @@ class Blendshape(object):
                 current_parent_child_indices.remove(weight.id)
                 self.set_target_dir_child_indices(current_parent, current_parent_child_indices)
         # now, we can add the weight to the new parent directory
-        new_parent_child_indices = self.get_target_dir_child_indices(target_dir)
+        new_parent_child_indices = self.get_target_dir_child_indices(target_dir) or []
         # print("New parent indices before adding:", new_parent_child_indices)
         if weight.id not in new_parent_child_indices:
             new_parent_child_indices.append(weight.id)
@@ -1290,8 +1331,9 @@ class Blendshape(object):
             if cmds.isConnected(f"{target_object}.worldMesh[0]", target_geom_plug):
                 cmds.disconnectAttr(f"{target_object}.worldMesh[0]", target_geom_plug)
         w = self.get_weight_by_id(target_id)
-        if parent_directory != 0: # this is the default directory
-            self.set_weight_parent_directory(w, parent_directory)
+        if parent_directory != 0 and w is not None: # this is the default directory
+            if parent_directory is not None:
+                self.set_weight_parent_directory(w, parent_directory)
         if reset_target:
             self.reset_target(w)
         return w
@@ -1382,12 +1424,12 @@ class Blendshape(object):
             cmds.connectAttr(f"{new_mesh}.worldMesh[0]", target_item_plug, f=True)
             cmds.disconnectAttr(f"{new_mesh}.worldMesh[0]", target_item_plug)
 
-    def connect_target(self, weight: Weight, mesh:str, target_value:int = None):
+    def connect_mesh_to_target(self, weight_id: int, mesh:str, target_value:int = 6000):
         """
         Connects a target mesh to the blendshape node for the specified weight
         and target value.
         Parameters:
-            weight (Weight): The weight to connect the target mesh to.
+            weight_id (int): The ID of the weight to connect the target mesh to.
             
             mesh (str): The mesh object to connect as a target.
             
@@ -1396,16 +1438,37 @@ class Blendshape(object):
         Returns:
             True if the target was successfully connected, False otherwise.
         """
-        if target_value is None:
-            target_value = weight.target_items[0] if weight.target_items else 6000
-        weight_id = weight.id
-        if target_value not in weight.target_items:
-            return False
         mesh_shape = cmds.listRelatives(mesh, s=True)
-        mesh_output = "{}.worldMesh[0]".format(mesh_shape[0])
-        blend_input = self.get_target_group_plug(weight_id, target_value).name
+        mesh_output = f"{mesh_shape[0]}.worldMesh[0]"
+        blend_input_plug = self.get_target_input_geom_plug(weight_id, target_value)
+        if blend_input_plug is None:
+            raise ValueError(f"Could not find target group plug for weight ID {weight_id} and target value {target_value}.")
+        blend_input = blend_input_plug.name()
         if not cmds.isConnected (mesh_output, blend_input):
             cmds.connectAttr (mesh_output, blend_input , f=True)
+            return True
+        return False
+    
+    def disconnect_mesh_from_target(self, weight_id: int, target_value:int = 6000):
+        """
+        Disconnects a target mesh from the blendshape node for the specified weight
+        and target value.
+        Parameters:
+            weight_id (int): The ID of the weight to disconnect the target mesh from.
+            mesh (str): The mesh object to disconnect as a target.
+            target_value (int): The target value for the blendshape.
+                Default is 6000.
+        Returns:
+            True if the target was successfully disconnected, False otherwise.
+        """
+        blend_input_plug = self.get_target_input_geom_plug(weight_id, target_value)
+        if blend_input_plug is None:
+            raise ValueError(f"Could not find target group plug for weight ID {weight_id} and target value {target_value}.")
+        blend_input = blend_input_plug.name()
+        connections = cmds.listConnections(blend_input, source=True, destination=False, p=True) or []
+        if connections:
+            for conn in connections:
+                cmds.disconnectAttr(conn, blend_input)
             return True
         return False
 
@@ -1434,8 +1497,6 @@ class Blendshape(object):
             target_item_plug = self.get_target_group_plug(weight_id, target_value)
             cmds.removeMultiInstance(target_item_plug.name(), b=True)  # b=True means break connections
             # we need to remove the inbetween info as well
-
-        
         return False
 
     def get_target_components(self, weight: Weight, target_value: int = 6000):
@@ -1761,6 +1822,62 @@ class Blendshape(object):
             raise ValueError(f"Length of values array must be equal to the number of vertices in the base mesh ({vcount}).")
         weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{weight.id}].targetWeights[0:{vcount-1}]'
         cmds.setAttr(weightAttr, *values, size=len(values))
+
+    def connect_target_to_blendshape_target(self,
+                                            input_target_index: int,
+                                            output_blendshape_name: str,
+                                            output_target_index: int,
+                                            output_target_value: int = 6000,
+                                            input_target_value: int = 6000,
+                                            ):
+        """
+        Connects a target from this blendshape to another blendshape's target.
+        Parameters:
+        input_target (Weight): The weight of the target to connect from this blendshape.
+        input_target_value (int): The target value of the input target to connect. Default is 6000.
+        output_blendshape (Blendshape): The blendshape node to connect to.
+        output_target_index (int): The index of the target in the output blendshape. Default is 0.
+        output_target_value (int): The target value of the output target to connect. Default is 6000.
+        """
+        # we need to find the inputPointsTarget inputComponentsTarget plug of the input target
+        input_points_plug = self.get_target_group_points_plug(input_target_index, input_target_value)
+        input_components_plug = self.get_target_group_components_plug(input_target_index, input_target_value)
+
+        if output_blendshape_name == self.name:
+            output_blendshape = self
+        else:
+            output_blendshape = Blendshape(output_blendshape_name)
+        # we need to find the inputPointsTarget inputComponentsTarget plug of the output target
+        output_points_plug = output_blendshape.get_target_group_points_plug(output_target_index,
+                                                                            output_target_value)
+        output_components_plug = output_blendshape.get_target_group_components_plug(output_target_index,
+                                                                                    output_target_value)
+
+        cmds.connectAttr(input_points_plug.name(), output_points_plug.name(), f=True)
+        cmds.connectAttr(input_components_plug.name(), output_components_plug.name(), f=True)
+
+    def disconnect_target_from_blendshape_target(self,
+                                                 input_target_index: int,):
+        """
+        Disconnects a target from this blendshape to another blendshape's target.
+        Parameters:   input_target (int): The weight of the target to disconnect from this blendshape.
+        """
+        input_points_plug = self.get_target_group_points_plug(input_target_index)
+        if input_points_plug.isConnected():
+            connections = cmds.listConnections(input_points_plug.name(),
+                                               source=True,
+                                               destination=False,
+                                               p=True) or []
+            for conn in connections:
+                cmds.disconnectAttr(conn, input_points_plug.name())
+        input_components_plug = self.get_target_group_components_plug(input_target_index)
+        if input_components_plug.isConnected():
+            connections = cmds.listConnections(input_components_plug.name(),
+                                               source=True,
+                                               destination=False,
+                                               p=True) or []
+            for conn in connections:
+                cmds.disconnectAttr(conn, input_components_plug.name())
 
     # ------------------------------------------------------------------
     # Export / Import methods

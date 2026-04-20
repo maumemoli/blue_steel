@@ -1,9 +1,11 @@
+import json
 from . import env
+from packaging.version import Version
 try:
     import requests
 except ImportError:
-    print("The 'requests' library is not installed. Please install it to enable update checking.")
     requests = None
+    from urllib import request
 print("BlueSteel initialized on maya {} on python {}".format(env.MAYA_VERSION, env.PYTHON_VERSION))
 if env.MAYA_VERSION < 2022 or env.PYTHON_VERSION < 3:
     raise RuntimeError("BlueSteel requires Maya 2022 or higher with Python 3.x")
@@ -18,19 +20,28 @@ def get_latest_version()-> str:
         it returns the current version.
     """
     try:
-        response = requests.get(__url__)
-        if response.status_code == 200:
-            latest_version = response.json()["tag_name"]
-            return latest_version
+        if requests is not None:
+            response = requests.get(__url__)
+            if response.status_code == 200:
+                latest_version = response.json()["tag_name"]
+                return latest_version
+            else:
+                print("Could not check for updates. Status code: {}".format(response.status_code))
+                return None
         else:
-            print("Could not check for updates. Status code: {}".format(response.status_code))
-            return None
+            with request.urlopen(__url__) as response:
+                if response.status == 200:
+                    data = json.loads(response.read())
+                    latest_version = data["tag_name"]
+                    return latest_version
+                else:
+                    print("Could not check for updates. Status code: {}".format(response.status))
+                    return None
     except Exception as e:
         print("An error occurred while checking for updates: {}".format(e))
         return None
 
-__version__ = env.VERSION
+
+__version__ = Version(env.VERSION)
 __author__ = "Maurizio Memoli"
-__latest_version__ = get_latest_version() if requests is not None else __version__
-
-
+__latest_version__ = Version(get_latest_version() or env.VERSION)

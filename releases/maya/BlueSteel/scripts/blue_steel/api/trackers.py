@@ -283,7 +283,6 @@ class BlendShapeNodeTracker(QObject):
         self._last_aliases = []
         self._depending_weights_idxs = set()
         self._store_indices_and_aliases()
-        # print(f"Initialized BlendShapeView for node: {node_name}")
         self.chached_weights = self._get_current_weights_values()
 
     @property
@@ -545,10 +544,6 @@ class BlendShapeNodeTracker(QObject):
         self._attribute_callback_ids.add(attr_change_callback_id)
         self._attribute_callback_ids.add(dirty_plug_callback_id)
 
-        # super().start()
-        # # print("BlendShapeView started and callbacks registered.")
-
-        
     def stop(self, *args, **kwargs):
         
         for cb_id in list(self._attribute_callback_ids):
@@ -558,8 +553,7 @@ class BlendShapeNodeTracker(QObject):
                 # print(f"Failed to remove callback id: {cb_id}")
                 pass
         self._attribute_callback_ids.clear()
-        # super().stop()
-        # # print("BlendShapeView stopped and callbacks removed.")
+
 
     def get_shape_count(self):
         return self._weight_plug.numElements()
@@ -610,7 +604,6 @@ class BlendShapeNodeTracker(QObject):
         
 
     def __del__(self):
-        #print("BlendShapeView __del__ called")
         self.kill()
 
     def _get_attribute_message_string(self, msg):
@@ -646,4 +639,134 @@ class BlendShapeNodeTracker(QObject):
             flags.append("kOtherPlugSet")
         
         return " | ".join(flags) if flags else f"Unknown({msg})"
+
+
+class ControllerTracker(QObject):
+    """
+    Tracks attribute changes on a Maya node (e.g. a rig controller),
+    emitting signals when user-defined attributes are added, removed,
+    or when any attribute value changes.
+    """
+
+    attributeChanged = Signal(str, object)  # attr partial name, new value
+    attributeAdded = Signal(str)            # attr partial name
+    attributeRemoved = Signal(str)          # attr partial name
+    nodeDeleted = Signal(str)               # node name
+
+    def __init__(self, node_name: str, parent=None):
+        super().__init__(parent=parent)
+        self._mobj = self._get_mobject(node_name)
+        if self._mobj is None or self._mobj.isNull():
+            raise ValueError(f"Node '{node_name}' not found.")
+        self._fn_dep = om2.MFnDependencyNode(self._mobj)
+        self._callback_ids = set()
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def node_name(self) -> str:
+        if self._fn_dep:
+            return self._fn_dep.name()
+        return "<deleted>"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _get_mobject(self, node_name: str) -> om2.MObject:
+        """Return MObject from node name, or None if not found."""
+        sel = om2.MSelectionList()
+        try:
+            sel.add(node_name)
+            return sel.getDependNode(0)
+        except Exception:
+            return None
+
+    def _get_plug_value(self, plug: om2.MPlug):
+        """Attempt to read a plug value as a Python object."""
+        try:
+            api_type = plug.attribute().apiType()
+            if api_type in (om2.MFn.kDoubleLinearAttribute, om2.MFn.kFloatLinearAttribute,
+                            om2.MFn.kDoubleAngleAttribute, om2.MFn.kFloatAngleAttribute,
+                            om2.MFn.kDoubleAttribute, om2.MFn.kFloatAttribute):
+                return plug.asDouble()
+            elif api_type in (om2.MFn.kIntAttribute, om2.MFn.kLongAttribute, om2.MFn.kShortAttribute):
+                return plug.asInt()
+            elif api_type == om2.MFn.kBoolAttribute:
+                return plug.asBool()
+            elif api_type == om2.MFn.kEnumAttribute:
+                return plug.asInt()
+            elif api_type == om2.MFn.kStringAttribute:
+                return plug.asString()
+            else:
+                return plug.asDouble()
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Callback handlers
+    # ------------------------------------------------------------------
+
+    def _on_attribute_changed(self, message, plug: om2.MPlug, other_plug: om2.MPlug, client_data):
+        """Handles attribute change messages from MNodeMessage."""
+        if plug.isNull:
+            return
+
+        if message & om2.MNodeMessage.kAttributeAdded:
+            self.attributeAdded.emit(plug.partialName())
+            return
+
+        if message & om2.MNodeMessage.kAttributeRemoved:
+            self.attributeRemoved.emit(plug.partialName())
+            return
+
+        if message & om2.MNodeMessage.kAttributeSet:
+            if plug.isCompound:
+                return  # children fire individually; skip parent to avoid duplicates
+            value = self._get_plug_value(plug)
+            self.attributeChanged.emit(plug.partialName(), value)
+
+    def _on_node_removed(self, node_obj, client_data=None):
+        """Triggered when the tracked node is removed from the scene."""
+        if node_obj == self._mobj:
+            self.nodeDeleted.emit(self.node_name)
+            self.kill()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(self):
+        """Register attribute change and node-removed callbacks."""
+        attr_cb = om2.MNodeMessage.addAttributeChangedCallback(
+            self._mobj,
+            self._on_attribute_changed,
+            None
+        )
+        node_removed_cb = om2.MDGMessage.addNodeRemovedCallback(
+            self._on_node_removed,
+            self._fn_dep.typeName
+        )
+        self._callback_ids.add(attr_cb)
+        self._callback_ids.add(node_removed_cb)
+
+    def stop(self):
+        """Remove all registered callbacks."""
+        for cb_id in list(self._callback_ids):
+            try:
+                om2.MMessage.removeCallback(cb_id)
+            except Exception:
+                pass
+        self._callback_ids.clear()
+
+    def kill(self):
+        """Stop tracking and release all references."""
+        self.stop()
+        self._mobj = None
+        self._fn_dep = None
+
+    def __del__(self):
+        self.kill()
 
