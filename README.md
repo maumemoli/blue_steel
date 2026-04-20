@@ -12,6 +12,7 @@ It provides:
 
 ## Documentation
 
+- Latest release: [releases/latest](releases/latest)
 - Runtime package docs: [releases/README.md](releases/README.md)
 - User and workflow wiki: [releases/WIKI.md](releases/WIKI.md)
 - Logic notes: [references/design/Logic.md](references/design/Logic.md)
