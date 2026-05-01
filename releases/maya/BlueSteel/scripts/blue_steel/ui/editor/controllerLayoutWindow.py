@@ -11,6 +11,8 @@ if env.MAYA_VERSION > 2024:
     from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QTimer, Signal
     from PySide6.QtGui import QColor, QDrag, QFontMetrics, QPainter
     from PySide6.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
         QCheckBox,
         QFileDialog,
         QFormLayout,
@@ -20,6 +22,8 @@ if env.MAYA_VERSION > 2024:
         QHBoxLayout,
         QLabel,
         QLineEdit,
+        QListWidget,
+        QListWidgetItem,
         QMenu,
         QPushButton,
         QComboBox,
@@ -30,6 +34,8 @@ else:
     from PySide2.QtCore import QMimeData, QPoint, QRect, Qt, QTimer, Signal
     from PySide2.QtGui import QColor, QDrag, QFontMetrics, QPainter
     from PySide2.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
         QCheckBox,
         QFileDialog,
         QFormLayout,
@@ -39,6 +45,8 @@ else:
         QHBoxLayout,
         QLabel,
         QLineEdit,
+        QListWidget,
+        QListWidgetItem,
         QMenu,
         QPushButton,
         QComboBox,
@@ -49,6 +57,7 @@ else:
 
 LAYOUT_ATTR_NAME = "controllerLayoutJson"
 PALETTE_MIME_TYPE = "application/x-blue-steel-controller-type"
+ATTRIBUTE_MIME_TYPE = "application/x-blue-steel-primary-attr"
 
 
 class DraggablePaletteButton(QPushButton):
@@ -68,6 +77,48 @@ class DraggablePaletteButton(QPushButton):
             drag.exec(Qt.CopyAction)
         else:
             drag.exec_(Qt.CopyAction)
+
+
+class DraggableAttributeList(QListWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._drag_start_pos: Optional[QPoint] = None
+        self._drag_item_text = ""
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setDragEnabled(False)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+            self._drag_start_pos = QPoint(event.pos())
+            self._drag_item_text = item.text().strip() if item is not None else ""
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not (event.buttons() & Qt.LeftButton):
+            return super().mouseMoveEvent(event)
+        if not self._drag_item_text or self._drag_start_pos is None:
+            return super().mouseMoveEvent(event)
+
+        drag_distance = (event.pos() - self._drag_start_pos).manhattanLength()
+        if drag_distance < QApplication.startDragDistance():
+            return super().mouseMoveEvent(event)
+
+        mime = QMimeData()
+        mime.setData(ATTRIBUTE_MIME_TYPE, self._drag_item_text.encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        if hasattr(drag, "exec"):
+            drag.exec(Qt.CopyAction)
+        else:
+            drag.exec_(Qt.CopyAction)
+        self._drag_item_text = ""
+        self._drag_start_pos = None
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag_item_text = ""
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
 
 
 class AttributePopupButton(QPushButton):
@@ -127,6 +178,7 @@ class AttributePopupButton(QPushButton):
 class CanvasControllerWidget(QFrame):
     selected = Signal(object, bool)
     changed = Signal()
+    zoneSelected = Signal(str)
 
     _HANDLE_SIZE = 7
 
@@ -142,8 +194,13 @@ class CanvasControllerWidget(QFrame):
         self._drag_mode: Optional[str] = None
         self._resize_handle: Optional[str] = None
         self._interaction_active = False
+        self._drop_hover_zone: Optional[str] = None
+        self._zone_drag_start_pos: Optional[QPoint] = None
+        self._zone_drag_key: Optional[str] = None
+        self._zone_drag_attr = ""
         self.label_text = ""
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.ClickFocus)
 
     def is_interacting(self) -> bool:
@@ -218,6 +275,8 @@ class CanvasControllerWidget(QFrame):
         if not self._selected and not self._edit_mode:
             return
         painter.save()
+        if self._selected and self._edit_mode:
+            self._paint_drop_zones(painter)
         border_color = QColor(255, 166, 72) if self._selected else QColor(125, 125, 125)
         painter.setPen(border_color)
         painter.setBrush(Qt.NoBrush)
@@ -233,6 +292,47 @@ class CanvasControllerWidget(QFrame):
             painter.setPen(Qt.NoPen)
             for corner in ("tl", "tr", "bl", "br"):
                 painter.drawRect(self._corner_rect(corner))
+        painter.restore()
+
+    def _drop_zone_rects(self) -> Dict[str, QRect]:
+        return {}
+
+    def _drop_zone_title(self, zone: str) -> str:
+        return zone
+
+    def _zone_attribute(self, zone: str) -> str:
+        return ""
+
+    def _set_zone_attribute(self, zone: str, attr_name: str) -> bool:
+        return False
+
+    def _drop_zone_label_vertical(self, zone: str) -> bool:
+        return False
+
+    def _drop_zone_for_pos(self, pos: QPoint) -> Optional[str]:
+        for zone, rect in self._drop_zone_rects().items():
+            if rect.contains(pos):
+                return zone
+        return None
+
+    def _paint_drop_zones(self, painter: QPainter) -> None:
+        zone_rects = self._drop_zone_rects()
+        if not zone_rects:
+            return
+        painter.save()
+        for zone, rect in zone_rects.items():
+            is_hover = zone == self._drop_hover_zone
+            has_attr = bool(self._zone_attribute(zone))
+            fill = QColor(95, 154, 230, 70) if has_attr else QColor(90, 90, 90, 60)
+            border = QColor(120, 185, 255) if is_hover else QColor(120, 120, 120)
+            painter.setPen(border)
+            painter.setBrush(fill)
+            painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+            label = self._zone_attribute(zone) or self._drop_zone_title(zone)
+            text_rect = rect.adjusted(3, 2, -3, -2)
+            painter.setPen(QColor(225, 225, 225))
+            self._draw_fitted_text(painter, text_rect, label, vertical=self._drop_zone_label_vertical(zone))
         painter.restore()
 
     def _label_text(self) -> str:
@@ -272,10 +372,24 @@ class CanvasControllerWidget(QFrame):
             painter.translate(rect.center())
             painter.rotate(-90)
             draw_rect = QRect(-rect.height() // 2, -rect.width() // 2, rect.height(), rect.width())
+            painter.setPen(QColor(20, 20, 20, 220))
+            painter.drawText(draw_rect.translated(1, 1), Qt.AlignCenter, elided)
+            painter.setPen(QColor(225, 225, 225))
             painter.drawText(draw_rect, Qt.AlignCenter, elided)
         else:
+            painter.setPen(QColor(20, 20, 20, 220))
+            painter.drawText(rect.translated(1, 1), Qt.AlignCenter, elided)
+            painter.setPen(QColor(225, 225, 225))
             painter.drawText(rect, Qt.AlignCenter, elided)
         painter.restore()
+
+    def _format_attr_display(self, text: str, fallback: str = "") -> str:
+        value = str(text or "").strip()
+        if not value:
+            return fallback
+        value = value.split("|")[-1].split(":")[-1].split(".")[-1]
+        value = value.replace("_", " ")
+        return value
 
     def _paint_label(self, painter: QPainter, *, rect: Optional[QRect] = None, vertical: bool = False) -> None:
         painter.save()
@@ -298,6 +412,19 @@ class CanvasControllerWidget(QFrame):
             return super().mousePressEvent(event)
         was_selected = self._selected
         additive = bool(event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier))
+
+        if self._edit_mode and was_selected and not additive and self._resolve_handle(event.pos()) is None:
+            zone = self._drop_zone_for_pos(event.pos())
+            attr_name = self._zone_attribute(zone or "") if zone else ""
+            if zone:
+                self.zoneSelected.emit(attr_name)
+            if zone and attr_name:
+                self._zone_drag_start_pos = QPoint(event.pos())
+                self._zone_drag_key = zone
+                self._zone_drag_attr = attr_name
+                self.setFocus(Qt.MouseFocusReason)
+                event.accept()
+                return
 
         if additive:
             # Ctrl/Shift+click toggles membership; never starts value drag.
@@ -342,6 +469,27 @@ class CanvasControllerWidget(QFrame):
         super().keyPressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._zone_drag_key and self._zone_drag_start_pos is not None and (event.buttons() & Qt.LeftButton):
+            drag_distance = (event.pos() - self._zone_drag_start_pos).manhattanLength()
+            if drag_distance >= QApplication.startDragDistance():
+                mime = QMimeData()
+                mime.setData(ATTRIBUTE_MIME_TYPE, self._zone_drag_attr.encode("utf-8"))
+                drag = QDrag(self)
+                drag.setMimeData(mime)
+                if hasattr(drag, "exec"):
+                    result = drag.exec(Qt.MoveAction)
+                else:
+                    result = drag.exec_(Qt.MoveAction)
+                if result == Qt.IgnoreAction:
+                    if self._set_zone_attribute(self._zone_drag_key, ""):
+                        self.changed.emit()
+                        self.update()
+                self._zone_drag_start_pos = None
+                self._zone_drag_key = None
+                self._zone_drag_attr = ""
+                event.accept()
+                return
+
         if self._edit_mode and self._interaction_active and (event.buttons() & Qt.LeftButton):
             delta = event.globalPos() - self._drag_origin
             if self._drag_mode == "move":
@@ -372,6 +520,13 @@ class CanvasControllerWidget(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton and self._zone_drag_key:
+            self._zone_drag_start_pos = None
+            self._zone_drag_key = None
+            self._zone_drag_attr = ""
+            event.accept()
+            return
+
         if event.button() == Qt.LeftButton and self._interaction_active:
             if self._edit_mode:
                 self._interaction_active = False
@@ -385,6 +540,56 @@ class CanvasControllerWidget(QFrame):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._edit_mode and self._selected and event.mimeData().hasFormat(ATTRIBUTE_MIME_TYPE):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if not (self._edit_mode and self._selected and event.mimeData().hasFormat(ATTRIBUTE_MIME_TYPE)):
+            self._drop_hover_zone = None
+            self.update()
+            event.ignore()
+            return
+
+        zone = self._drop_zone_for_pos(event.pos())
+        self._drop_hover_zone = zone
+        self.update()
+        if zone:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_hover_zone = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        self._drop_hover_zone = None
+        if not (self._edit_mode and self._selected and event.mimeData().hasFormat(ATTRIBUTE_MIME_TYPE)):
+            self.update()
+            event.ignore()
+            return
+
+        zone = self._drop_zone_for_pos(event.pos())
+        if not zone:
+            self.update()
+            event.ignore()
+            return
+
+        payload = bytes(event.mimeData().data(ATTRIBUTE_MIME_TYPE)).decode("utf-8", errors="ignore")
+        attr_name = payload.strip()
+        if self._set_zone_attribute(zone, attr_name):
+            self.changed.emit()
+            self.update()
+            event.acceptProposedAction()
+            return
+
+        self.update()
+        event.ignore()
 
 
 class SliderControllerWidget(CanvasControllerWidget):
@@ -430,9 +635,10 @@ class SliderControllerWidget(CanvasControllerWidget):
             self.changed.emit()
 
     def _label_text(self) -> str:
-        primary = self.primary_attr or "Unbound"
+        primary = self._format_attr_display(self.primary_attr, "Unbound")
         if self.two_way and self.secondary_attr:
-            return f"{primary} / {self.secondary_attr}"
+            secondary = self._format_attr_display(self.secondary_attr, "")
+            return f"{secondary} / {primary}"
         return primary
 
     def _interaction_press(self, pos: QPoint) -> None:
@@ -459,6 +665,64 @@ class SliderControllerWidget(CanvasControllerWidget):
 
     def _interaction_release(self, pos: QPoint) -> None:
         super()._interaction_release(pos)
+
+    def _drop_zone_rects(self) -> Dict[str, QRect]:
+        if self.orientation == "horizontal":
+            edge = max(18, min(36, self.width() // 4))
+            return {
+                "secondary": QRect(0, 0, edge, self.height()),
+                "primary": QRect(max(0, self.width() - edge), 0, edge, self.height()),
+            }
+        edge = max(18, min(36, self.height() // 4))
+        return {
+            "primary": QRect(0, 0, self.width(), edge),
+            "secondary": QRect(0, max(0, self.height() - edge), self.width(), edge),
+        }
+
+    def _drop_zone_title(self, zone: str) -> str:
+        if zone == "primary":
+            return "Primary"
+        if zone == "secondary":
+            return "Secondary"
+        return super()._drop_zone_title(zone)
+
+    def _drop_zone_label_vertical(self, zone: str) -> bool:
+        return self.orientation == "horizontal" and zone in ("primary", "secondary")
+
+    def _zone_attribute(self, zone: str) -> str:
+        if zone == "primary":
+            return self.primary_attr
+        if zone == "secondary":
+            return self.secondary_attr
+        return ""
+
+    def _set_zone_attribute(self, zone: str, attr_name: str) -> bool:
+        normalized = str(attr_name or "").strip()
+        changed = False
+
+        if zone == "primary":
+            if normalized != self.primary_attr:
+                self.primary_attr = normalized
+                changed = True
+        elif zone == "secondary":
+            if normalized:
+                if not self.two_way:
+                    self.two_way = True
+                    changed = True
+                if normalized != self.secondary_attr:
+                    self.secondary_attr = normalized
+                    changed = True
+            else:
+                if self.secondary_attr:
+                    self.secondary_attr = ""
+                    changed = True
+                if self.two_way:
+                    self.two_way = False
+                    if self.value < 0.0:
+                        self.value = 0.0
+                    changed = True
+
+        return changed
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -525,7 +789,7 @@ class SliderControllerWidget(CanvasControllerWidget):
                     painter.fillRect(QRect(track_rect.left(), y, track_rect.width(), height), active)
                     knob_y = y
             knob = QRect(track_rect.center().x() - half, knob_y - half, knob_diameter, knob_diameter)
-            self._paint_label(painter, rect=QRect(4, 6, 16, max(10, self.height() - 12)), vertical=True)
+            self._paint_label(painter, rect=QRect(2, 6, 16, max(10, self.height() - 12)), vertical=True)
 
         painter.setPen(QColor(20, 20, 20))
         painter.setBrush(QColor(226, 226, 226))
@@ -585,6 +849,52 @@ class QuadControllerWidget(CanvasControllerWidget):
         y = 1.0 - ((float(pos.y() - rect.top()) / float(max(1, rect.height()))) * 2.0)
         self.set_xy(x, y, emit=True)
 
+    def _drop_zone_rects(self) -> Dict[str, QRect]:
+        edge = max(18, min(34, min(self.width(), self.height()) // 4))
+        return {
+            "up": QRect(0, 0, self.width(), edge),
+            "down": QRect(0, max(0, self.height() - edge), self.width(), edge),
+            "left": QRect(0, edge, edge, max(1, self.height() - (2 * edge))),
+            "right": QRect(max(0, self.width() - edge), edge, edge, max(1, self.height() - (2 * edge))),
+        }
+
+    def _drop_zone_title(self, zone: str) -> str:
+        names = {
+            "up": "Up",
+            "down": "Down",
+            "left": "Left",
+            "right": "Right",
+        }
+        return names.get(zone, zone)
+
+    def _drop_zone_label_vertical(self, zone: str) -> bool:
+        return zone in ("left", "right")
+
+    def _zone_attribute(self, zone: str) -> str:
+        mapping = {
+            "up": self.attr_up,
+            "down": self.attr_down,
+            "left": self.attr_left,
+            "right": self.attr_right,
+        }
+        return mapping.get(zone, "")
+
+    def _set_zone_attribute(self, zone: str, attr_name: str) -> bool:
+        normalized = str(attr_name or "").strip()
+        if zone == "up" and normalized != self.attr_up:
+            self.attr_up = normalized
+            return True
+        if zone == "down" and normalized != self.attr_down:
+            self.attr_down = normalized
+            return True
+        if zone == "left" and normalized != self.attr_left:
+            self.attr_left = normalized
+            return True
+        if zone == "right" and normalized != self.attr_right:
+            self.attr_right = normalized
+            return True
+        return False
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -613,21 +923,22 @@ class QuadControllerWidget(CanvasControllerWidget):
         painter.setBrush(QColor(95, 154, 230))
         painter.drawEllipse(QRect(cx - dot_half, cy - dot_half, dot_diameter, dot_diameter))
 
-        n_text = self.attr_up or "N"
-        s_text = self.attr_down or "S"
-        w_text = self.attr_left or "W"
-        e_text = self.attr_right or "E"
+        n_text = self._format_attr_display(self.attr_up, "N")
+        s_text = self._format_attr_display(self.attr_down, "S")
+        w_text = self._format_attr_display(self.attr_right, "W")
+        e_text = self._format_attr_display(self.attr_left, "E")
         self._paint_label(painter, rect=QRect(6, 4, max(10, self.width() - 12), 14), vertical=False)
         self._draw_fitted_text(painter, QRect(area.center().x() - 48, area.top() + 4, 96, 14), n_text)
         self._draw_fitted_text(painter, QRect(area.center().x() - 48, area.bottom() - 18, 96, 14), s_text)
-        self._draw_fitted_text(painter, QRect(area.left() + 4, area.center().y() - 8, 56, 16), w_text)
-        self._draw_fitted_text(painter, QRect(area.right() - 60, area.center().y() - 8, 56, 16), e_text)
+        self._draw_fitted_text(painter, QRect(area.left() + 2, area.center().y() - 28, 16, 56), w_text, vertical=True)
+        self._draw_fitted_text(painter, QRect(area.right() - 18, area.center().y() - 28, 16, 56), e_text, vertical=True)
         self._paint_overlay(painter)
 
 
 class ControllerCanvas(QWidget):
     controllerSelected = Signal(object)
     controllerChanged = Signal()
+    zoneAttributeSelected = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -797,6 +1108,9 @@ class ControllerCanvas(QWidget):
             self._last_changed_controller = sender
         self.controllerChanged.emit()
 
+    def _on_zone_selected(self, attr_name: str) -> None:
+        self.zoneAttributeSelected.emit(str(attr_name or ""))
+
     def add_controller(self, controller_type: str, pos: Optional[QPoint] = None) -> Optional[CanvasControllerWidget]:
         if controller_type == "horizontal_slider":
             controller = SliderControllerWidget(self, "horizontal", parent=self)
@@ -819,6 +1133,7 @@ class ControllerCanvas(QWidget):
 
         controller.selected.connect(self._on_controller_selected)
         controller.changed.connect(self._on_controller_changed)
+        controller.zoneSelected.connect(self._on_zone_selected)
         controller.set_edit_mode(self._edit_mode)
         controller.show()
         self._controllers.append(controller)
@@ -919,6 +1234,7 @@ class ControllerLayoutWindow(QWidget):
         self._edit_snapshot: List[Dict] = []
         self._edit_session_active = False
         self._selected_controller: Optional[CanvasControllerWidget] = None
+        self._suspend_attr_push = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -960,6 +1276,16 @@ class ControllerLayoutWindow(QWidget):
         palette_layout.addWidget(DraggablePaletteButton("Quad Controller", "quad_controller"))
         sidebar_layout.addWidget(palette_group)
 
+        self.primary_group = QGroupBox("Primaries")
+        primary_layout = QVBoxLayout(self.primary_group)
+        self.primary_search_edit = QLineEdit()
+        self.primary_attr_list = DraggableAttributeList()
+        self.primary_search_edit.setPlaceholderText("Search primary attributes...")
+        self.primary_attr_list.setMinimumHeight(140)
+        primary_layout.addWidget(self.primary_search_edit)
+        primary_layout.addWidget(self.primary_attr_list)
+        sidebar_layout.addWidget(self.primary_group)
+
         self.slider_group = QGroupBox("Slider Settings")
         slider_form = QFormLayout(self.slider_group)
         self.slider_label_edit = QLineEdit()
@@ -983,30 +1309,11 @@ class ControllerLayoutWindow(QWidget):
         self.quad_left_combo = AttributePopupButton()
         self.quad_right_combo = AttributePopupButton()
         quad_label_form.addRow("Label", self.quad_label_edit)
+        quad_label_form.addRow("Up", self.quad_up_combo)
+        quad_label_form.addRow("Down", self.quad_down_combo)
+        quad_label_form.addRow("Left", self.quad_left_combo)
+        quad_label_form.addRow("Right", self.quad_right_combo)
         quad_layout.addLayout(quad_label_form)
-
-        quad_cross_widget = QFrame(self.quad_group)
-        quad_cross_widget.setFixedSize(250, 250)
-        quad_cross_widget.setStyleSheet(
-            "QFrame { background-color: #3a3a3a; border: 1px solid #707070; border-radius: 2px; }"
-        )
-        quad_cross = QGridLayout(quad_cross_widget)
-        quad_cross.setContentsMargins(10, 10, 10, 10)
-        quad_cross.setHorizontalSpacing(8)
-        quad_cross.setVerticalSpacing(8)
-
-        for popup in (self.quad_up_combo, self.quad_down_combo, self.quad_left_combo, self.quad_right_combo):
-            popup.setMinimumWidth(100)
-            popup.setMaximumWidth(120)
-
-        quad_cross.addWidget(self.quad_up_combo, 0, 1, Qt.AlignCenter)
-        quad_cross.addWidget(self.quad_left_combo, 1, 0, Qt.AlignCenter)
-        quad_cross.addWidget(self.quad_right_combo, 1, 2, Qt.AlignCenter)
-        quad_cross.addWidget(self.quad_down_combo, 2, 1, Qt.AlignCenter)
-
-        quad_cross.setRowStretch(1, 1)
-        quad_cross.setColumnStretch(1, 1)
-        quad_layout.addWidget(quad_cross_widget, 0, Qt.AlignCenter)
         sidebar_layout.addWidget(self.quad_group)
 
         io_group = QGroupBox("Layout")
@@ -1023,12 +1330,14 @@ class ControllerLayoutWindow(QWidget):
         self.snap_button.toggled.connect(self.canvas.set_snap_enabled)
         self.canvas.controllerSelected.connect(self._on_controller_selected)
         self.canvas.controllerChanged.connect(self._on_canvas_changed)
+        self.canvas.zoneAttributeSelected.connect(self._on_zone_attribute_selected)
 
         self.slider_label_edit.textChanged.connect(self._on_slider_ui_changed)
         self.slider_primary_combo.currentTextChanged.connect(self._on_slider_ui_changed)
         self.slider_secondary_combo.currentTextChanged.connect(self._on_slider_ui_changed)
         self.slider_two_way_check.toggled.connect(self._on_slider_ui_changed)
         self.slider_invert_check.toggled.connect(self._on_slider_ui_changed)
+        self.primary_search_edit.textChanged.connect(self._filter_primary_attr_list)
         self.quad_label_edit.textChanged.connect(self._on_quad_ui_changed)
         self.quad_up_combo.currentTextChanged.connect(self._on_quad_ui_changed)
         self.quad_down_combo.currentTextChanged.connect(self._on_quad_ui_changed)
@@ -1088,6 +1397,7 @@ class ControllerLayoutWindow(QWidget):
 
     def _populate_attr_combos(self) -> None:
         attrs = self._controller_attr_names()
+        self._populate_primary_attr_list(attrs)
         for combo in (
             self.slider_primary_combo,
             self.slider_secondary_combo,
@@ -1097,6 +1407,54 @@ class ControllerLayoutWindow(QWidget):
             self.quad_right_combo,
         ):
             self._populate_combo_with_attrs(combo, attrs)
+
+    def _populate_primary_attr_list(self, attrs: Sequence[str]) -> None:
+        query = self.primary_search_edit.text().strip().lower()
+        self.primary_attr_list.blockSignals(True)
+        self.primary_attr_list.clear()
+        for attr_name in attrs:
+            text = str(attr_name)
+            if query and query not in text.lower():
+                continue
+            self.primary_attr_list.addItem(QListWidgetItem(text))
+        self.primary_attr_list.blockSignals(False)
+
+    def _filter_primary_attr_list(self, _text: str) -> None:
+        self._populate_primary_attr_list(self._controller_attr_names())
+
+    def _select_primary_attr_in_list(self, attr_name: str) -> None:
+        target = str(attr_name or "").strip()
+        if not target:
+            self.primary_attr_list.clearSelection()
+            self.primary_attr_list.setCurrentItem(None)
+            return
+
+        query = self.primary_search_edit.text().strip()
+        if query:
+            self.primary_search_edit.blockSignals(True)
+            self.primary_search_edit.setText("")
+            self.primary_search_edit.blockSignals(False)
+            self._populate_primary_attr_list(self._controller_attr_names())
+
+        self.primary_attr_list.blockSignals(True)
+        try:
+            matched = False
+            for idx in range(self.primary_attr_list.count()):
+                item = self.primary_attr_list.item(idx)
+                is_match = item.text().strip() == target
+                item.setSelected(is_match)
+                if is_match:
+                    matched = True
+                    self.primary_attr_list.setCurrentItem(item)
+                    self.primary_attr_list.scrollToItem(item)
+            if not matched:
+                self.primary_attr_list.clearSelection()
+                self.primary_attr_list.setCurrentItem(None)
+        finally:
+            self.primary_attr_list.blockSignals(False)
+
+    def _on_zone_attribute_selected(self, attr_name: str) -> None:
+        self._select_primary_attr_in_list(attr_name)
 
     def _on_edit_toggled(self, checked: bool) -> None:
         self._edit_mode = bool(checked)
@@ -1114,6 +1472,7 @@ class ControllerLayoutWindow(QWidget):
                 self._set_status("Controller layout saved on editor container.")
             self._edit_session_active = False
             self._rebuild_attr_script_jobs()
+            self._refresh_controller_values_from_attrs()
 
     def _on_controller_selected(self, controller: Optional[CanvasControllerWidget]) -> None:
         self._selected_controller = controller
@@ -1144,6 +1503,7 @@ class ControllerLayoutWindow(QWidget):
             self.slider_secondary_combo.blockSignals(False)
             self.slider_two_way_check.blockSignals(False)
             self.slider_invert_check.blockSignals(False)
+            self._select_primary_attr_in_list(slider.primary_attr)
 
         if is_quad:
             quad = controller
@@ -1159,6 +1519,9 @@ class ControllerLayoutWindow(QWidget):
                 combo.blockSignals(True)
                 combo.setCurrentText(value)
                 combo.blockSignals(False)
+
+        if not is_slider and not is_quad:
+            self._select_primary_attr_in_list("")
 
     def _on_slider_ui_changed(self, _value) -> None:
         controller = self._selected_controller
@@ -1228,8 +1591,8 @@ class ControllerLayoutWindow(QWidget):
             return
 
         if isinstance(controller, QuadControllerWidget):
-            self._set_attr_value(controller.attr_right, max(0.0, controller.x))
-            self._set_attr_value(controller.attr_left, max(0.0, -controller.x))
+            self._set_attr_value(controller.attr_right, max(0.0, -controller.x))
+            self._set_attr_value(controller.attr_left, max(0.0, controller.x))
             self._set_attr_value(controller.attr_up, max(0.0, controller.y))
             self._set_attr_value(controller.attr_down, max(0.0, -controller.y))
 
@@ -1251,7 +1614,7 @@ class ControllerLayoutWindow(QWidget):
                 left = self._get_attr_value(controller.attr_left) or 0.0
                 up = self._get_attr_value(controller.attr_up) or 0.0
                 down = self._get_attr_value(controller.attr_down) or 0.0
-                controller.set_xy(right - left, up - down, emit=False)
+                controller.set_xy(left - right, up - down, emit=False)
 
     def _bound_attr_names(self) -> Set[str]:
         attrs: Set[str] = set()
@@ -1334,7 +1697,11 @@ class ControllerLayoutWindow(QWidget):
                 return
             data = json.loads(payload)
             if isinstance(data, list):
-                self.canvas.deserialize(data)
+                self._suspend_attr_push = True
+                try:
+                    self.canvas.deserialize(data)
+                finally:
+                    self._suspend_attr_push = False
                 self._refresh_controller_values_from_attrs()
                 self._rebuild_attr_script_jobs()
                 self._set_status("Loaded controller layout from editor container.")
@@ -1361,7 +1728,11 @@ class ControllerLayoutWindow(QWidget):
                 data = json.load(handle)
             if not isinstance(data, list):
                 raise ValueError("JSON root must be a list.")
-            self.canvas.deserialize(data)
+            self._suspend_attr_push = True
+            try:
+                self.canvas.deserialize(data)
+            finally:
+                self._suspend_attr_push = False
             self._refresh_controller_values_from_attrs()
             self._rebuild_attr_script_jobs()
             self._set_status(f"Loaded controller layout from '{path}'. Toggle Edit off to store it.")
@@ -1371,7 +1742,11 @@ class ControllerLayoutWindow(QWidget):
     def _on_cancel_edit(self) -> None:
         if not self._edit_mode:
             return
-        self.canvas.deserialize(self._edit_snapshot)
+        self._suspend_attr_push = True
+        try:
+            self.canvas.deserialize(self._edit_snapshot)
+        finally:
+            self._suspend_attr_push = False
         self._refresh_settings_panel_from_selected()
         self._refresh_controller_values_from_attrs()
         self._rebuild_attr_script_jobs()
@@ -1380,6 +1755,15 @@ class ControllerLayoutWindow(QWidget):
         self._set_status("Edit cancelled. Restored previous controller layout.")
 
     def _on_canvas_changed(self) -> None:
+        if self._edit_mode:
+            self._refresh_settings_panel_from_selected()
+            self._rebuild_attr_script_jobs()
+            return
+
+        if self._suspend_attr_push:
+            self._refresh_settings_panel_from_selected()
+            return
+
         controller = self.canvas.last_changed_controller() or self.canvas.selected_controller()
         if controller is not None and not self._edit_mode:
             selected = self.canvas.selected_controllers()

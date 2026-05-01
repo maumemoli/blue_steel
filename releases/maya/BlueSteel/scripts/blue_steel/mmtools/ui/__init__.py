@@ -1,13 +1,13 @@
 from maya import cmds
 import maya.OpenMayaUI as omui
 from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
-from ...mmtools import smartCluster as smc
-from ...mmtools import meshTools as mt
-from ...mmtools import shape_editor_tools
-from ...mmtools import connectionTools as ct
+from .. import smartCluster as smc
+from .. import meshTools as mt
+from .. import shape_editor_tools
+from .. import connectionTools as ct
 from ... import env
-from ..common.frameLayout import FrameLayout
-from ..common.icons import *
+from ...ui.common.frameLayout import FrameLayout
+from ...ui.common.icons import *
 from ...env import MAYA_VERSION
 import os
 import sys

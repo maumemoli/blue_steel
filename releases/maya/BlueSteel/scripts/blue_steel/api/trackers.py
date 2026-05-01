@@ -263,6 +263,7 @@ class BlendShapeNodeTracker(QObject):
     # connectedShapeValueChanged = Signal(int, str) # return index and name from input connection
     targetVisibilityChanged = Signal(int, str, bool) # return index and visibility state
     nodeDeleted = Signal(str)
+    target_connection_changed = Signal(int, bool) # return index and connection state
 
     def __init__(self, node_name, parent=None):
         super().__init__(parent=parent)
@@ -300,6 +301,42 @@ class BlendShapeNodeTracker(QObject):
             current_weights[i] = weight_plug.asFloat()
         return current_weights
 
+    def _get_inputTarget_index_from_geomTarget(self, plug: om2.MPlug):
+        """
+        Given an MPlug, detect if it's an inputGeomTarget and
+        return the corresponding inputTarget logical index.
+        
+        Returns:
+            int or None
+        """
+
+        if plug.isNull:
+            return None
+
+        # Step 1 — make sure this is inputGeomTarget
+        plug_attr_name = om2.MFnAttribute(plug.attribute()).name
+        if plug_attr_name != "inputGeomTarget":
+            return None
+
+        current = plug
+        print(f"Starting walk up from plug: {current.name()}")
+        # Walk up until we find inputTarget
+        i =0
+        current_logical_index = -1
+        while current.isChild:
+            i+=1
+            if i > 10:
+                break
+            parent = current.parent()
+            if parent.isElement:
+                current_logical_index = parent.logicalIndex()
+                parent = parent.array()
+            current = parent
+            attr_name = om2.MFnAttribute(current.attribute()).name
+            if attr_name == "inputTarget":
+                return current_logical_index
+
+        return None
 
     def _track_other_affected_weight_plugs(self, plug: om2.MPlug):
         """Track other weight plugs that may be affected by input connections."""
@@ -409,16 +446,20 @@ class BlendShapeNodeTracker(QObject):
     def _on_attribute_changed(self, message, plugChanged: om2.MPlug, otherPlugChanged, clentData):
 
 
-        # if message & om2.MNodeMessage.kConnectionMade:
-        #     print(f"Connection made: {plugChanged.name()} -> {otherPlugChanged.name()}")
+        if message & om2.MNodeMessage.kConnectionMade:
+            input_target_index = self._get_inputTarget_index_from_geomTarget(plugChanged)
+            if input_target_index is not None:
+                self.target_connection_changed.emit(input_target_index, True)
+                return
         
-        # elif message & om2.MNodeMessage.kConnectionBroken:
-        #     print(f"Connection broken: {plugChanged.name()} -X- {otherPlugChanged.name()}")
-
-        # print(f"_on_attribute_changed called for plug: {plugChanged.name()}, message: {message}")
+        elif message & om2.MNodeMessage.kConnectionBroken:
+            input_target_index = self._get_inputTarget_index_from_geomTarget(plugChanged)
+            if input_target_index is not None:
+                self.target_connection_changed.emit(input_target_index, False)
+                return
+        #print(f"_on_attribute_changed called for plug: {plugChanged.name()}, message: {message}")
         # Only process weight array element changes
-
-        
+      
         # check if the plug is the sculptTarget plug
         if plugChanged == self._sculpt_target_plug:
             # let's get the value of the attribute of the plug
@@ -428,23 +469,19 @@ class BlendShapeNodeTracker(QObject):
             #print(f"SCULPT TARGET CHANGED: {message}, target id {target_id} shape name {shape_name}")
             return
 
-        
-
-
-
         if not plugChanged.isElement:
-            #print(f"EXIT not array plug: {plugChanged.name()}")
+            # print(f"EXIT not array plug: {plugChanged.name()}")
             return
 
         try:
             if plugChanged not in  [self._weight_plug,
                                     self._target_visibility_plug,
                                     self._out_geometry_plug]:
-                #print("Wrong plug EXIT", plugChanged.name())
+                # print("Wrong plug EXIT", plugChanged.name())
                 return
         except Exception as e:
             # If we can't even check the array, bail
-            #print("Exception EXIT:", e)
+            # print("Exception EXIT:", e)
 
             return
 
@@ -515,6 +552,7 @@ class BlendShapeNodeTracker(QObject):
         elif message == 18433 and self._weight_plug == plugChanged:  # INPUT CONNECTION MADE
             #print(f"INPUT CONNECTION MADE: {message}, logical {index} {plugChanged} last count {self._last_count} current count {current_count}")
             self.shapeInputConnected.emit(index, True)
+
         elif message == 18434 and self._weight_plug == plugChanged:  # INPUT CONNECTION BROKEN
             #print(f"INPUT CONNECTION BROKEN: {message}, logical {index} {plugChanged} last count {self._last_count} current count {current_count}")
             self.shapeInputConnected.emit(index, False)

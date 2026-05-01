@@ -1,5 +1,5 @@
 from maya import  cmds
-from ..ui import mmtools
+from . import ui
 SHELF_NAME = "mmtools"
 COMMANDS = [
         "MMToolsUI,import blue_steel\nblue_steel.ui.mmtools.show(),Launch MMTools",

@@ -5,6 +5,8 @@ from blue_steel.api.blendshape import Blendshape
 def split_on_axis_selected_blendshape_targets():
     """Split the selected blendshape targets based on their axis."""
     # TODO: add support for inbetweens
+    axis = ["X", "Y", "Z"]
+    orientations = ["Positive", "Negative"]
     selected_targets = mel.eval("getShapeEditorTreeviewSelection(4);")
     if not selected_targets:
         cmds.warning("Please select a blendshape target to split.")
@@ -26,10 +28,14 @@ def split_on_axis_selected_blendshape_targets():
 
             # Use full delta so vertex/component indexing is preserved while splitting.
             target_delta = blendshape.get_target_delta(weight)
-            axes = ["X", "Y", "Z"]
-            orientations = ["Positive", "Negative"]
-
-            for axis_index, current_axis in enumerate(axes):
+            # we need to create target dir to containt the split targets.
+            target_dir_name = f"{weight}_split"
+            target_dirs = blendshape.get_target_dirs_by_name(target_dir_name)
+            if not target_dirs:
+                target_dir = blendshape.add_target_dir(target_dir_name)
+            else:
+                target_dir = target_dirs[0]
+            for axis_index, current_axis in enumerate(axis):
                 axis_values = target_delta[:, axis_index]
                 for current_orientation in orientations:
                     new_target_delta = np.zeros_like(target_delta)
@@ -46,6 +52,7 @@ def split_on_axis_selected_blendshape_targets():
                     split_target_weight = blendshape.get_weight_by_name(split_target_name)
                     if split_target_weight is None:
                         split_target_weight = blendshape.add_target(split_target_name)
+                        blendshape.set_weight_parent_directory(split_target_weight, target_dir)
 
                     blendshape.set_target_delta(split_target_weight, new_target_delta)
 

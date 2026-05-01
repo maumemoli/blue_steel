@@ -246,7 +246,7 @@ class Blendshape(object):
             >>> blendshape = Blendshape.create("myBlendshape", "pCube1")
             >>> sculpt_ids = blendshape.get_sculpt_target_indices()
             >>> print(sculpt_ids)
-            [1, -1, 2]
+            [-1]
         """
         sculpt_ids = []
         sculpt_target_group = mayaUtils.get_plug(self.name,"inputTarget")
@@ -381,6 +381,28 @@ class Blendshape(object):
         """
         visibility = cmds.getAttr(f"{self.name}.targetVisibility[{weight.id}]")
         return visibility == 0
+
+    def get_connected_targets(self)->dict:
+        """
+        Returns a dictionary with all the targets groups with an incoming connection to the inputGeomTarget
+        plug.
+        The key of the dictionary is the target group while the keys are the target items.
+        {0: [6000, 5500], 1: [6000]}
+            Returns:
+                dict: A dictionary where the keys are the target group IDs and the values are lists of target
+                item IDs that have an incoming connection to the inputGeomTarget plug.
+        """
+        connected_targets = {}
+        for weight in self.weights:
+            for target_item_id in weight.target_items:
+                input_geom_target_plug = self.get_target_input_geom_plug(weight.id, target_item_id)
+                # print(f"Checking target item ID: {target_item_id} with plug: {input_geom_target_plug.name()}")
+                if input_geom_target_plug.isDestination():
+                    if weight.id not in connected_targets:
+                        connected_targets[weight.id] = []
+                    connected_targets[weight.id].append(target_item_id)
+        return connected_targets
+
 
     def get_muted_targets(self)->list:
         """
@@ -1423,6 +1445,26 @@ class Blendshape(object):
         if target_item_plug is not None:
             cmds.connectAttr(f"{new_mesh}.worldMesh[0]", target_item_plug, f=True)
             cmds.disconnectAttr(f"{new_mesh}.worldMesh[0]", target_item_plug)
+
+    def get_mesh_connected_to_target(self, weight_id: int, target_value: int = 6000):
+        """
+        Returns the name of the mesh connected to the specified weight and target value.
+        Parameters:
+            weight_id (int): The ID of the weight to check for connections.
+            target_value (int): The target value for which to check connections. Default is 6000.
+        Returns:
+            str or None: The name of the connected mesh, or None if no mesh is connected.
+        """
+        blend_input_plug = self.get_target_input_geom_plug(weight_id, target_value)
+        if blend_input_plug is None:
+            raise ValueError(f"Could not find target group plug for weight ID {weight_id} and target value {target_value}.")
+        blend_input = blend_input_plug.name()
+        connections = cmds.listConnections(blend_input, source=True, destination=False) or []
+        if connections:
+            # Assuming the connected attribute is in the format "meshShape.worldMesh[0]"
+            mesh_name = connections[0]
+            return mesh_name
+        return None
 
     def connect_mesh_to_target(self, weight_id: int, mesh:str, target_value:int = 6000):
         """

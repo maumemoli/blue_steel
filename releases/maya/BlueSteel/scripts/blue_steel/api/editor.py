@@ -98,10 +98,6 @@ class BlueSteelEditor(object):
             self.work_blendshape = Blendshape(self.work_blendshape_name)
         else:
             raise ValueError(f"Editor '{container}' does not have a work blendshape linked.")
-        # if self.heat_map_blendshape_name:
-        #     self.heat_map_blendshape = Blendshape(self.heat_map_blendshape_name)
-        # else:
-        #     print(f"Warning: Editor '{container}' does not have a heat map blendshape linked.")
         if self.node_network_container is None:
             raise ValueError(f"Editor '{container}' does not have a node network container linked.")
         if self.split_attr_grp is None:
@@ -112,7 +108,16 @@ class BlueSteelEditor(object):
             raise ValueError(f"shapeEditorManager node does not exist in the scene.")
         self.copied_weight_map_values = None
         # Clean up in case the scene was saved with display heat maps.
-
+        if not self._are_blendshapes_ordered():
+            # we need to prompt if the user wants to reorder the blendshapes in the deformation history to fix the heat map visualization. This is necessary because the heat map setup relies on the main blendshape being above the work blendshape in the deformation history.
+            result = cmds.confirmDialog(title="Reorder Blendshapes",
+                                        message="The blendshapes are not ordered correctly. Do you want to reorder them?",
+                                        button=["Yes", "No"],
+                                        defaultButton="Yes",
+                                        cancelButton="No",
+                                        dismissString="No")
+            if result == "Yes":
+                self.reorder_blendshapes_deformation_history()
         # setting up the network
         self.build_network()
         self.sync_up_muted_shapes()
@@ -218,22 +223,43 @@ class BlueSteelEditor(object):
                                                         output_blendshape_name=output_blendshape_name,
                                                         output_target_index=output_weight_id)
 
-    # def _create_heat_map_blendshape(self):
-    #     """
-    #     Check if the heat map blendshape and mesh exist, and create them if they don't.
-    #     """
-    #     if self.heat_map_blendshape or self.heat_map_mesh:
-    #         # cleaning up existing nodes if they exist before creating new ones to avoid duplicates
-    #         if self.heat_map_blendshape:
-    #             cmds.delete(self.heat_map_blendshape_name)
-    #         if self.heat_map_mesh:
-    #             cmds.delete(self.heat_map_mesh)
-    #         self._create_heat_map_blendshape()
-    #     # just making sure the heat map target weight exists.
-    #     heat_weight = self.heat_map_blendshape.get_weight_by_name("heatMapTarget")
-    #     if heat_weight is None:
-    #         heat_weight = self.heat_map_blendshape.add_target("heatMapTarget")
-    #         self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
+    def reorder_blendshapes_deformation_history(self):
+        """
+        Reorder the blendshapes in the deformers history of the base mesh so that the main blendshape is above the work blendshape.
+        This is necessary for the heat map visualization to work correctly since it relies on the main blendshape to drive the heat map target weight.
+        """
+        if self._are_blendshapes_ordered():
+            return
+        shape = cmds.listRelatives(self.base_mesh, shapes=True, fullPath=True)[0]
+        deformers = self.get_deformers()
+        if self.work_blendshape_name not in deformers or self.main_blendshape_name not in deformers:
+            raise ValueError("Work blendshape or main blendshape not found in the deformers history.")
+        cmds.reorderDeformers(self.main_blendshape_name, self.work_blendshape_name, shape)
+
+    def _are_blendshapes_ordered(self):
+        """Check if the blendshapes are in the correct order in the deformers history."""
+        deformers = self.get_deformers()
+        if self.work_blendshape_name not in deformers or self.main_blendshape_name not in deformers:
+            raise ValueError("Work blendshape or main blendshape not found in the deformers history.")
+        work_blendshape_index = deformers.index(self.work_blendshape_name)
+        main_blendshape_index = deformers.index(self.main_blendshape_name)
+        if main_blendshape_index > work_blendshape_index:
+            return False
+        return True
+    
+    def get_deformers(self):
+        """Get the deformers in the history of the base mesh in the order they are applied."""
+        shapes = cmds.listRelatives(self.base_mesh, shapes=True, fullPath=True) or None
+        if shapes is None:
+            raise ValueError(f"Base mesh '{self.base_mesh}' does not have any shapes.")
+        shape = shapes[0]
+        history = cmds.listHistory(shape, pruneDagObjects=True) or []
+        deformers = []
+        for node in history:
+            if cmds.nodeType(node) in cmds.listNodeTypes('deformer'):
+                deformers.append(node)
+        
+        return deformers
 
     def _delete_dga_heat_maps_node_network(self):
         """
@@ -254,8 +280,6 @@ class BlueSteelEditor(object):
                 cmds.disconnectAttr(f"{self.dga_visualizer}.og", output_connection[0])
                 cmds.connectAttr(input_connection[0], output_connection[0], force=True)
             cmds.delete(self.dga_visualizer)
-
-
 
     def _create_dga_heat_maps_node_network(self):
         """
@@ -372,7 +396,6 @@ class BlueSteelEditor(object):
         heat_weight = self.heat_map_blendshape.add_target("heatMapTarget")
         self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
 
-
     @property
     def locked_shapes(self):
         if not cmds.attributeQuery("lockedShapes", node=self.container.name, exists=True):
@@ -488,6 +511,18 @@ class BlueSteelEditor(object):
             if blendshape is not None:
                 blendshapes[blendshape.name] = blendshape
         return blendshapes
+
+    @property
+    def work_blendshape_connected_weights(self):
+        connected_weights = []
+        if self.work_blendshape is None:
+            return connected_weights
+        connected_targets = self.work_blendshape.get_connected_targets()
+        for connected_target in connected_targets:
+            weight = self.work_blendshape.get_weight_by_id(connected_target)
+            if weight is not None and weight not in connected_weights:
+                connected_weights.append(weight)
+        return connected_weights
 
 
     
@@ -656,6 +691,32 @@ class BlueSteelEditor(object):
         for work_shape_name in work_shape_names:
             self.delete_work_shape(work_shape_name)
 
+    def get_work_shape_edit_mesh(self, weight:Weight)->str:
+        """
+        Get the name of the shape connected to a work blendshape weight.
+        Parameters:
+            weight (Weight): The weight to get the connected shape for
+        Returns:
+            str: The name of the connected shape, or None if no shape is connected
+        """
+        if self.work_blendshape is None:
+            raise ValueError("Work blendshape not found.")
+        edit_mesh = None
+        extraction_mesh = self.work_blendshape.get_mesh_connected_to_target(weight.id)
+        if extraction_mesh is not None:
+            # we need to get the blendshape deformer on this mesh
+            history = cmds.listHistory(extraction_mesh, pruneDagObjects=True) or []
+            blendshape_deformers = [node for node in history if cmds.nodeType(node) == "blendShape"]
+            if not blendshape_deformers:
+                return edit_mesh
+            # if there is more than one blendshape deformer in the history of the extraction mesh, we cannot be sure which one is the correct one to get the edit mesh connected to, so we will return None and print a warning.
+            if len(blendshape_deformers) > 1:
+                return edit_mesh
+            extraction_blendshape = Blendshape(blendshape_deformers[0])
+            # we need to get the mesh connected at weight 0.
+            edit_mesh = extraction_blendshape.get_mesh_connected_to_target(0)
+            
+        return edit_mesh
 
     def add_shape_to_locked_shapes(self, shape_name: str):
         """
@@ -669,6 +730,54 @@ class BlueSteelEditor(object):
         locked = self.locked_shapes
         locked.add(shape)
         self.locked_shapes = locked
+
+    @undoable
+    def extract_work_shape(self, work_shape_name: str):
+        """
+        Extract the work shape to a geometry retaining the current pose.
+        that pose will be used as a negative shape to extract the delta.
+        """
+        current_sculpt_target = self.work_blendshape.get_sculpt_target_indices()[0]
+        work_weight = self.work_blendshape.get_weight_by_name(work_shape_name)
+        if work_weight is None:
+            raise ValueError(f"Work shape '{work_shape_name}' not found in blendshape.")
+        # let's get the value of the weight of the work shape to extract the current pose
+        work_value = self.work_blendshape.get_weight_value(work_weight)
+        if work_value != 1.0:
+            raise ValueError(f"Work shape '{work_shape_name}' weight value is {work_value}. Please set it to 1.0 before extracting.")
+        # we need to disable the work shape.
+        current_mute_state = self.get_work_shape_muted_state(work_weight)
+        edit_mesh = cmds.duplicate(self.base_mesh, name=f"{work_shape_name}_editMesh")[0]
+        self.set_work_shape_mute_state(work_weight, True)
+        # we need to create an extraction mesh
+        negative_mesh = cmds.duplicate(self.base_mesh, name=f"{work_shape_name}_negativeMesh")[0]
+        extracted_mesh = self.duplicate_base_mesh_neutral_state(f"{work_shape_name}_extractionMesh")
+        # we need to create a blendshape to extract the delta between the current pose and the neutral pose
+        extraction_blendshape = cmds.blendShape(edit_mesh,
+                                                negative_mesh,
+                                                extracted_mesh,
+                                                name=f"{work_shape_name}_extractionBlendshape",
+                                                weight =[(0, 1.0),(1, -1.0)])[0]
+        # we need to set the edit mesh as sculpt target
+        if current_sculpt_target == work_weight.id:
+            # if the current sculpt target is the same as the work shape we are extracting, we need to set it to another target to avoid issues with the extraction blendshape
+            cmds.sculptTarget(self.work_blendshape.name, e=True, t=-1)
+        # we need to connect the extracted mesh to the work blendshape target
+        self.work_blendshape.connect_mesh_to_target(work_weight.id, extracted_mesh)
+        # we can delete the negative mesh and hide the extracted mesh.
+        cmds.delete(negative_mesh)
+        # we will parent these shapes under the edit mesh.
+        extracted_shapes = cmds.listRelatives(extracted_mesh, shapes=True, fullPath=True)
+        cmds.setAttr(f"{extracted_shapes[0]}.intermediateObject", 1)
+        cmds.parent(extracted_shapes, edit_mesh, s=True)
+        cmds.delete(extracted_mesh)
+        # we need to re enable the work shape to the current state
+        self.set_work_shape_mute_state(work_weight, current_mute_state)
+        # we can translate the group to the side for better visibility
+        bbox = mayaUtils.get_mesh_bounding_box(self.base_mesh)
+        offset = (bbox[1][0] - bbox[0][0]) * 1.1
+        cmds.move(offset, 0, 0, edit_mesh, relative=True, worldSpace=True)
+
 
 
     def remove_shape_from_locked_shapes(self, shape_name: str):
@@ -1410,24 +1519,24 @@ class BlueSteelEditor(object):
         parent_dir_value = self.work_blendshape.get_target_dir_weight_value(parent_dir)
         return bool(parent_dir_value == 0)
 
-    def create_extraction_mesh(self):
-        """
-        Create an extraction mesh by duplicating the base mesh. and connecting it to self.blendshape.
-        This will allow to extract pure shape deltas without any influence from other deformers.
-        """
-        base_mesh = self.base_mesh
-        if base_mesh is None:
-            raise ValueError("Base mesh not found.")
-        extraction_mesh_name = f"{self.editor_base_name}_extractionMesh"
-        extraction_group_name = f"{self.editor_base_name}_extractedShapes_GRP"
-        if not cmds.objExists(extraction_group_name):
-            cmds.createNode("transform", name=extraction_group_name)
+    # def create_extraction_mesh(self):
+    #     """
+    #     Create an extraction mesh by duplicating the base mesh. and connecting it to self.blendshape.
+    #     This will allow to extract pure shape deltas without any influence from other deformers.
+    #     """
+    #     base_mesh = self.base_mesh
+    #     if base_mesh is None:
+    #         raise ValueError("Base mesh not found.")
+    #     extraction_mesh_name = f"{self.editor_base_name}_extractionMesh"
+    #     extraction_group_name = f"{self.editor_base_name}_extractedShapes_GRP"
+    #     if not cmds.objExists(extraction_group_name):
+    #         cmds.createNode("transform", name=extraction_group_name)
         
-        extraction_mesh = cmds.duplicate(base_mesh, name=extraction_mesh_name)[0]
-        extraction_mesh = cmds.parent(extraction_mesh, extraction_group_name)[0] #making sure name does not change
-        # we need to connect the extraction mesh to the blendshape
-        cmds.connectAttr(f"{self.blendshape.name}.outputGeometry[0]", f"{extraction_mesh}.inMesh", force=True)
-        return extraction_mesh
+    #     extraction_mesh = cmds.duplicate(base_mesh, name=extraction_mesh_name)[0]
+    #     extraction_mesh = cmds.parent(extraction_mesh, extraction_group_name)[0] #making sure name does not change
+    #     # we need to connect the extraction mesh to the blendshape
+    #     cmds.connectAttr(f"{self.blendshape.name}.outputGeometry[0]", f"{extraction_mesh}.inMesh", force=True)
+    #     return extraction_mesh
 
     @undoable
     def extract_shapes_to_mesh(self, shape_names: list):
@@ -1439,9 +1548,22 @@ class BlueSteelEditor(object):
         Returns:
              dict: A dictionary of shape names and their corresponding extracted mesh names
         """
+        deformers = self.get_deformers()
+        deformers_node_states = dict()
+        for deformer in deformers:
+            # we need to check if there is a nodeState attribute on the deformer and if it's not 0 we need to set it to 0 and store the original value to restore it later
+            if cmds.attributeQuery("nodeState", node=deformer, exists=True):
+                if deformer == self.blendshape.name:
+                    continue
+                node_state_value = cmds.getAttr(f"{deformer}.nodeState")
+                try:
+                    cmds.setAttr(f"{deformer}.nodeState", 1)
+                    deformers_node_states[deformer] = node_state_value
+                except Exception as e:
+                    print(f"Warning: Could not set nodeState for deformer '{deformer}'. Error: {e}")
         extracted_meshes = {}
-        extraction_mesh = self.create_extraction_mesh()
-        extraction_group = cmds.listRelatives(extraction_mesh, parent=True, fullPath=True)[0]
+        extraction_mesh = self.base_mesh
+        extraction_group = cmds.createNode("transform", name=f"{self.editor_base_name}_extractedShapes_GRP")
         for shape_name in shape_names:
             shape = self.network.get_shape(shape_name)
             if shape is None:
@@ -1450,10 +1572,17 @@ class BlueSteelEditor(object):
             self.set_shape_pose(shape)
             # we need to duplicate the extraction mesh with the shape name
             extracted_shape_mesh = cmds.duplicate(extraction_mesh, name=shape_name)[0]
-            if extracted_shape_mesh[0].split("|")[-1] != shape_name:
-                extracted_shape_mesh = cmds.rename(extracted_shape_mesh, shape_name)
+            parented = cmds.parent(extracted_shape_mesh, extraction_group)[0] #making sure name does not change
+            if parented.split("|")[-1] != shape_name:
+                extracted_shape_mesh = cmds.rename(parented, shape_name)
             extracted_meshes[shape_name] = extracted_shape_mesh
-        cmds.delete(extraction_mesh)
+        # restore the original envelope values
+        for deformer, node_state in deformers_node_states.items():
+            print(f"Restoring nodeState for deformer '{deformer}' to {node_state}.")
+            try:
+                cmds.setAttr(f"{deformer}.nodeState", node_state)
+            except Exception as e:
+                print(f"Warning: Could not restore nodeState for deformer '{deformer}'. Error: {e}")
         return extraction_group, extracted_meshes
     
     #############################################################################################
@@ -1944,7 +2073,7 @@ class BlueSteelEditor(object):
         return return_value
 
     @undoable
-    def duplicate_base_mesh_neutral_state(self, mesh_name: str):
+    def duplicate_base_mesh_neutral_state(self, mesh_name: str)->str:
         """
         Duplicate the base mesh in its neutral state.
         Parameters:
@@ -1966,7 +2095,7 @@ class BlueSteelEditor(object):
         mayaUtils.set_points_from_numpy(duplicated, base_points)
         return duplicated
 
-    def duplicate_base_mesh_at_current_pose(self): 
+    def duplicate_base_mesh_at_current_pose(self)->str: 
         """
         Duplicate the base mesh at the current pose.
         Returns:
@@ -2321,10 +2450,10 @@ class BlueSteelEditor(object):
         editor_group_name = f"{editor_name}_Blendshapes_GRP"
         editor_grp_id = cls.add_shape_editor_directory(editor_group_name)
 
-        blendshape_names_suffices = ["splitBlendshape", "workBlendshape", "mainBlendshape"]
-        message_attributeds = [SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
-                               WORK_BLENDSHAPE_STRING_IDENTIFIER,
-                               MAIN_BLENDSHAPE_STRING_IDENTIFIER]
+        blendshape_names_suffices = ["mainBlendshape","splitBlendshape", "workBlendshape"]
+        message_attributeds = [MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+                               SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
+                               WORK_BLENDSHAPE_STRING_IDENTIFIER]
         # create the blendshape node blendshape.
         for suffix, message_attr in zip(blendshape_names_suffices, message_attributeds):
             blendshape_name = f"{editor_name}_{suffix}"
