@@ -511,20 +511,6 @@ class BlueSteelEditor(object):
             if blendshape is not None:
                 blendshapes[blendshape.name] = blendshape
         return blendshapes
-
-    # @property
-    # def work_blendshape_connected_weights(self):
-    #     connected_weights = []
-    #     if self.work_blendshape is None:
-    #         return connected_weights
-    #     connected_targets = self.work_blendshape.get_connected_targets()
-    #     for connected_target in connected_targets:
-    #         weight = self.work_blendshape.get_weight_by_id(connected_target)
-    #         if weight is not None and weight not in connected_weights:
-    #             connected_weights.append(weight)
-    #     return connected_weights
-
-
     
     def exists(self):
         """
@@ -534,7 +520,6 @@ class BlueSteelEditor(object):
         """
         return cmds.objExists(self.container.name)
 
-
     def unlock_all_shapes(self):
         """
         Unlock all shapes in the Blue Steel rig.
@@ -542,7 +527,6 @@ class BlueSteelEditor(object):
             None
         """
         self.locked_shapes = set()
-
 
     def fix_mid_layer_blendshapes_indices_position(self):
         """

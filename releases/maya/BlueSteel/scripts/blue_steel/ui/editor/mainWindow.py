@@ -876,6 +876,7 @@ class WorkShapeItemsModel(QAbstractListModel):
 	LockIconVisibleRole = ShapeItemsModel.LockIconVisibleRole
 	InEditModeRole = Qt.UserRole + 50
 	ConnectedRole = Qt.UserRole + 51
+	DriverConnectedRole = Qt.UserRole + 52
 
 	valueCommitted = Signal(str, float)
 
@@ -923,6 +924,8 @@ class WorkShapeItemsModel(QAbstractListModel):
 			return str(row["name"]) == str(self._edit_shape_name)
 		if role == self.ConnectedRole:
 			return bool(row.get("connected", False))
+		if role == self.DriverConnectedRole:
+			return bool(row.get("driver_connected", False))
 		if role == Qt.ToolTipRole:
 			return row.get("tooltip", None)
 		return None
@@ -980,9 +983,17 @@ class WorkShapeItemsModel(QAbstractListModel):
 				name = str(weight)
 				value = float(editor.work_blendshape.get_weight_value(weight))
 				muted = bool(editor.get_work_shape_muted_state(name))
+				driver_connected = bool(editor.get_work_shape_driver(weight))
 				connected = int(weight.id) in connected_weight_ids
 				self._row_by_name[name] = len(self._rows)
-				row = {"name": name, "type": "WorkShape", "value": value, "muted": muted, "connected": connected}
+				row = {
+					"name": name,
+					"type": "WorkShape",
+					"value": value,
+					"muted": muted,
+					"connected": connected,
+					"driver_connected": driver_connected,
+				}
 				if connected:
 					row["tooltip"] = "Connected extraction mesh"
 				self._rows.append(row)
@@ -1049,6 +1060,18 @@ class WorkShapeItemsModel(QAbstractListModel):
 			row.pop("tooltip", None)
 		model_index = self.index(row_index, 0)
 		self.dataChanged.emit(model_index, model_index, [self.ConnectedRole, Qt.ToolTipRole, Qt.DisplayRole])
+
+	def set_driver_connected_state_local(self, shape_name: str, connected: bool) -> None:
+		row_index = self._row_by_name.get(shape_name)
+		if row_index is None:
+			return
+		row = self._rows[row_index]
+		target_connected = bool(connected)
+		if bool(row.get("driver_connected", False)) == target_connected:
+			return
+		row["driver_connected"] = target_connected
+		model_index = self.index(row_index, 0)
+		self.dataChanged.emit(model_index, model_index, [self.DriverConnectedRole, Qt.DisplayRole])
 
 	def refresh_values_from_editor(self) -> List[tuple]:
 		"""Pull current work-blendshape values and update rows without rebuilding.
@@ -1465,6 +1488,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		shape_type = str(model.data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
 		is_connected_work_shape = bool(model.data(index, WorkShapeItemsModel.ConnectedRole)) if is_work_shape else False
+		is_driver_connected_work_shape = bool(model.data(index, WorkShapeItemsModel.DriverConnectedRole)) if is_work_shape else False
 		is_upstream_related = bool(model.data(index, ShapeItemsModel.UpstreamRelatedRole))
 		is_downstream_related = bool(model.data(index, ShapeItemsModel.DownstreamRelatedRole))
 
@@ -1491,7 +1515,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 		indicator_rect = QRect(option.rect.left() + 1, option.rect.top() + 3, 4, max(6, option.rect.height() - 6))
 		indicator_color = QColor(0, 0, 0, 0)
-		if is_connected_work_shape:
+		if is_driver_connected_work_shape:
 			# Maya-like driven-key cue for linked work shapes.
 			indicator_color = QColor(102, 153, 255)
 		elif shape_type in {"InbetweenShape", "ComboShape", "ComboInbetweenShape"}:
@@ -1506,7 +1530,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		value_bg = QColor(57, 57, 57)
 		track_border = QColor(83, 83, 83)
 		fill_color = QColor(109, 109, 109)
-		if is_connected_work_shape:
+		if is_driver_connected_work_shape:
 			fill_color = option.palette.highlight().color()
 
 		painter.fillRect(track_rect, value_bg)
@@ -5353,14 +5377,15 @@ class MainWindow(QMainWindow):
 		if work_weight is None:
 			return
 		work_shape_name = str(work_weight)
-		self._work_shape_model.set_connected_state_local(work_shape_name, bool(connected))
-		if connected and self._work_shape_model.edit_shape_name() == work_shape_name:
+		self._work_shape_model.set_driver_connected_state_local(work_shape_name, bool(connected))
+		if self._work_shape_model.is_shape_connected(work_shape_name) and self._work_shape_model.edit_shape_name() == work_shape_name:
 			try:
 				cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
 			except Exception:
 				pass
 			self._work_shape_model.set_edit_shape(None)
-		self._update_work_shape_button_panel()
+		if self._work_shape_model.is_shape_connected(work_shape_name):
+			self._update_work_shape_button_panel()
 		
 
 	def _on_shape_renamed(self, *_args) -> None:
