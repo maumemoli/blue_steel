@@ -740,7 +740,6 @@ class BlueSteelEditor(object):
         extracted_mesh = self.duplicate_base_mesh_neutral_state(f"{work_shape_name}_extractionMesh")
         extracted_shape = cmds.listRelatives(extracted_mesh, shapes=True, fullPath=True)[0]
         extracted_shape = cmds.parent(extracted_shape, edit_mesh, shape=True, relative=True)[0]
-        
         # we need to create a blendshape to extract the delta between the current pose and the neutral pose
         extraction_blendshape = cmds.blendShape(edit_mesh_shape,
                                                 negative_mesh,
@@ -762,6 +761,7 @@ class BlueSteelEditor(object):
         bbox = mayaUtils.get_mesh_bounding_box(self.base_mesh)
         offset = (bbox[1][0] - bbox[0][0]) * 1.1
         cmds.move(offset, 0, 0, edit_mesh, relative=True, worldSpace=True)
+        cmds.setAttr(f"{extracted_shape}.visibility", 0)
 
 
 
@@ -800,7 +800,7 @@ class BlueSteelEditor(object):
         self.work_blendshape.remove_target(w)
 
     @undoable
-    def disconnect_work_shape(self, work_shape_name: str):
+    def disconnect_work_blendshape_weight(self, work_shape_name: str):
         """
         Disconnect a work shape from the face control.
         Parameters:
@@ -848,7 +848,7 @@ class BlueSteelEditor(object):
         return connected_work_shapes
 
     @undoable
-    def connect_work_shape_to_shape(self,work_shape_name: str, shape_name: str):
+    def connect_work_blendshape_weight_to_blendshape_weight(self,work_shape_name: str, shape_name: str):
         """
         Connect a work shape to the face control for direct manipulation.
         Parameters:

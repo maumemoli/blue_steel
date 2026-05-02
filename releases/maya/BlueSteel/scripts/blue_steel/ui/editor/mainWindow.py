@@ -976,15 +976,15 @@ class WorkShapeItemsModel(QAbstractListModel):
 		self._row_by_name = {}
 		self._edit_shape_name = None
 		if editor is not None and editor.work_blendshape is not None:
-			connected_weight_ids = {int(weight.id) for weight in (editor.get_work_blendshape_connected_targets_weights() or [])}
+			connected_weights = set(editor.get_work_blendshape_connected_targets_weights() or [])
 			sculpt_target_indices = set(editor.work_blendshape.get_sculpt_target_indices() or [])
 			weights = sorted(editor.get_work_blendshape_weights() or [], key=lambda w: str(w).lower())
 			for weight in weights:
 				name = str(weight)
 				value = float(editor.work_blendshape.get_weight_value(weight))
 				muted = bool(editor.get_work_shape_muted_state(name))
+				connected = weight in connected_weights
 				driver_connected = bool(editor.get_work_shape_driver(weight))
-				connected = int(weight.id) in connected_weight_ids
 				self._row_by_name[name] = len(self._rows)
 				row = {
 					"name": name,
@@ -4653,13 +4653,15 @@ class MainWindow(QMainWindow):
 			return
 		try:
 			self._stop_active_blendshape_trackers()
-			self.current_editor.connect_work_shape_to_shape(work_shape_name, source_shape_name)
+			self.current_editor.connect_work_blendshape_weight_to_blendshape_weight(work_shape_name,
+																		   source_shape_name)
 		except Exception as exc:
 			self._set_status(f"Error connecting work shape '{work_shape_name}': {exc}", error=True)
 			return
 		finally:
 			self._start_active_blendshape_trackers()
 		self._reload_work_shapes_from_editor()
+		self._work_shape_model.set_driver_connected_state_local(work_shape_name, True)
 		self._select_work_shape(work_shape_name)
 		self._set_status(f"Connected work shape '{work_shape_name}' to '{source_shape_name}'.")
 
@@ -4669,13 +4671,14 @@ class MainWindow(QMainWindow):
 			return
 		try:
 			self._stop_active_blendshape_trackers()
-			self.current_editor.disconnect_work_shape(work_shape_name)
+			self.current_editor.disconnect_work_blendshape_weight(work_shape_name)
 		except Exception as exc:
 			self._set_status(f"Error breaking link for '{work_shape_name}': {exc}", error=True)
 			return
 		finally:
 			self._start_active_blendshape_trackers()
 		self._reload_work_shapes_from_editor()
+		self._work_shape_model.set_driver_connected_state_local(work_shape_name, False)
 		self._select_work_shape(work_shape_name)
 		self._set_status(f"Broke link for work shape '{work_shape_name}'.")
 
@@ -4716,8 +4719,7 @@ class MainWindow(QMainWindow):
 		if self.current_editor is not None and self.current_editor.work_blendshape is not None:
 			weight = self.current_editor.work_blendshape.get_weight_by_name(work_shape_name)
 			if weight is not None:
-				connected_ids = {int(w.id) for w in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])}
-				self._work_shape_model.set_connected_state_local(work_shape_name, int(weight.id) in connected_ids)
+				self._work_shape_model.set_connected_state_local(work_shape_name, bool(weight in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])))
 		self._select_work_shape(work_shape_name)
 		self._set_status(f"Extracted shape '{new_shape_name}' from work shape '{work_shape_name}'.")
 
@@ -5234,12 +5236,7 @@ class MainWindow(QMainWindow):
 			self._update_work_shape_button_panel()
 			return
 		weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
-		weight_name = str(weight) if weight is not None else None
-		if weight_name and self._work_shape_model.is_shape_connected(weight_name):
-			self._work_shape_model.set_edit_shape(None)
-			self._update_work_shape_button_panel()
-			return
-		self._work_shape_model.set_edit_shape(weight_name)
+		self._work_shape_model.set_edit_shape(str(weight) if weight is not None else None)
 		self._update_work_shape_button_panel()
 
 	def _on_shapes_mute_toggle_requested(self, shape_name: str, state: bool) -> None:
@@ -5377,15 +5374,14 @@ class MainWindow(QMainWindow):
 		if work_weight is None:
 			return
 		work_shape_name = str(work_weight)
-		self._work_shape_model.set_driver_connected_state_local(work_shape_name, bool(connected))
-		if self._work_shape_model.is_shape_connected(work_shape_name) and self._work_shape_model.edit_shape_name() == work_shape_name:
+		self._work_shape_model.set_connected_state_local(work_shape_name, bool(connected))
+		if connected and self._work_shape_model.edit_shape_name() == work_shape_name:
 			try:
 				cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
 			except Exception:
 				pass
 			self._work_shape_model.set_edit_shape(None)
-		if self._work_shape_model.is_shape_connected(work_shape_name):
-			self._update_work_shape_button_panel()
+		self._update_work_shape_button_panel()
 		
 
 	def _on_shape_renamed(self, *_args) -> None:
