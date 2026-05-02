@@ -319,7 +319,6 @@ class BlendShapeNodeTracker(QObject):
             return None
 
         current = plug
-        print(f"Starting walk up from plug: {current.name()}")
         # Walk up until we find inputTarget
         i =0
         current_logical_index = -1

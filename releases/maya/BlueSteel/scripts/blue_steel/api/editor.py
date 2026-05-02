@@ -512,17 +512,17 @@ class BlueSteelEditor(object):
                 blendshapes[blendshape.name] = blendshape
         return blendshapes
 
-    @property
-    def work_blendshape_connected_weights(self):
-        connected_weights = []
-        if self.work_blendshape is None:
-            return connected_weights
-        connected_targets = self.work_blendshape.get_connected_targets()
-        for connected_target in connected_targets:
-            weight = self.work_blendshape.get_weight_by_id(connected_target)
-            if weight is not None and weight not in connected_weights:
-                connected_weights.append(weight)
-        return connected_weights
+    # @property
+    # def work_blendshape_connected_weights(self):
+    #     connected_weights = []
+    #     if self.work_blendshape is None:
+    #         return connected_weights
+    #     connected_targets = self.work_blendshape.get_connected_targets()
+    #     for connected_target in connected_targets:
+    #         weight = self.work_blendshape.get_weight_by_id(connected_target)
+    #         if weight is not None and weight not in connected_weights:
+    #             connected_weights.append(weight)
+    #     return connected_weights
 
 
     
@@ -691,6 +691,22 @@ class BlueSteelEditor(object):
         for work_shape_name in work_shape_names:
             self.delete_work_shape(work_shape_name)
 
+    def get_work_blendshape_connected_targets_weights(self):
+        """
+        Get the weights of the targets connected to the work blendshape.
+        Returns:             
+        list: A list of weights of the targets connected to the work blendshape
+        """
+        connected_weights = []
+        if self.work_blendshape is None:
+            return connected_weights
+        connected_targets = self.work_blendshape.get_connected_targets()
+        for connected_target in connected_targets:
+            weight = self.work_blendshape.get_weight_by_id(connected_target)
+            if weight is not None and weight not in connected_weights:
+                connected_weights.append(weight)
+        return connected_weights
+
     def get_work_shape_edit_mesh(self, weight:Weight)->str:
         """
         Get the name of the shape connected to a work blendshape weight.
@@ -703,19 +719,18 @@ class BlueSteelEditor(object):
             raise ValueError("Work blendshape not found.")
         edit_mesh = None
         extraction_mesh = self.work_blendshape.get_mesh_connected_to_target(weight.id)
-        if extraction_mesh is not None:
-            # we need to get the blendshape deformer on this mesh
-            history = cmds.listHistory(extraction_mesh, pruneDagObjects=True) or []
-            blendshape_deformers = [node for node in history if cmds.nodeType(node) == "blendShape"]
-            if not blendshape_deformers:
-                return edit_mesh
-            # if there is more than one blendshape deformer in the history of the extraction mesh, we cannot be sure which one is the correct one to get the edit mesh connected to, so we will return None and print a warning.
-            if len(blendshape_deformers) > 1:
-                return edit_mesh
-            extraction_blendshape = Blendshape(blendshape_deformers[0])
-            # we need to get the mesh connected at weight 0.
-            edit_mesh = extraction_blendshape.get_mesh_connected_to_target(0)
-            
+        extraction_mesh_shapes = cmds.listRelatives(extraction_mesh, shapes=True, fullPath=True) or None
+        if extraction_mesh_shapes is None:
+            return edit_mesh
+        shape = extraction_mesh_shapes[0]
+        print(f"Found shape '{shape}' in extraction mesh '{extraction_mesh}'.")
+        history = cmds.listHistory(shape, pruneDagObjects=True) or []
+        blendshape_deformers = [node for node in history if cmds.nodeType(node) == "blendShape"]
+        if not blendshape_deformers or len(blendshape_deformers) > 1:
+            return edit_mesh
+        extraction_blendshape = Blendshape(blendshape_deformers[0])
+        # we need to get the mesh connected at weight 0.
+        edit_mesh = extraction_blendshape.get_mesh_connected_to_target(0)
         return edit_mesh
 
     def add_shape_to_locked_shapes(self, shape_name: str):

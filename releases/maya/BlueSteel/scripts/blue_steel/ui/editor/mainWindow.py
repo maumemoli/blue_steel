@@ -50,6 +50,8 @@ from ..common.icons import (
 	HIGHLIGHT_ICON,
 	HEAT_MAP_ICON,
 	CONTROLLER_LAYOUT_ICON,
+	CONNECTED_MESH_ENABLED_ICON,
+	CONNECTED_MESH_DISABLED_ICON,
 
 )
 from ...mmtools import ui
@@ -4998,6 +5000,7 @@ class MainWindow(QMainWindow):
 			self.work_blendshape_tracker.shapeRenamed.connect(self._on_work_shape_structure_changed)
 			self.work_blendshape_tracker.sculptTargetChanged.connect(self._on_work_sculpt_target_changed, Qt.QueuedConnection)
 			self.work_blendshape_tracker.nodeDeleted.connect(self._on_work_blendshape_deleted)
+			self.work_blendshape_tracker.target_connection_changed.connect(self._on_work_blendshape_target_connection_changed)
 			self.work_blendshape_tracker.start()
 
 	def _clear_blendshape_tracker(self) -> None:
@@ -5214,6 +5217,15 @@ class MainWindow(QMainWindow):
 		finally:
 			if self.work_blendshape_tracker is not None:
 				self.work_blendshape_tracker.start()
+
+	def _on_work_blendshape_target_connection_changed(self, _target_id: int, connected: bool) -> None:
+		if self.current_editor is None or self.current_editor.work_blendshape is None:
+			return
+		work_weight = self.current_editor.work_blendshape.get_weight_by_id(_target_id) 
+		# TODO: this callback should disable the edit in the workshape panel when the work_shape has
+		# an incoming connection and re enable it when the connection is removed.
+		# it should also update the 
+		
 
 	def _on_shape_renamed(self, *_args) -> None:
 		self._clear_related_shapes_cache()
