@@ -973,18 +973,18 @@ class WorkShapeItemsModel(QAbstractListModel):
 		self._row_by_name = {}
 		self._edit_shape_name = None
 		if editor is not None and editor.work_blendshape is not None:
+			connected_weight_ids = {int(weight.id) for weight in (editor.get_work_blendshape_connected_targets_weights() or [])}
 			sculpt_target_indices = set(editor.work_blendshape.get_sculpt_target_indices() or [])
 			weights = sorted(editor.get_work_blendshape_weights() or [], key=lambda w: str(w).lower())
 			for weight in weights:
 				name = str(weight)
 				value = float(editor.work_blendshape.get_weight_value(weight))
 				muted = bool(editor.get_work_shape_muted_state(name))
-				driver_name = editor.get_work_shape_driver(weight)
-				connected = bool(driver_name)
+				connected = int(weight.id) in connected_weight_ids
 				self._row_by_name[name] = len(self._rows)
 				row = {"name": name, "type": "WorkShape", "value": value, "muted": muted, "connected": connected}
-				if driver_name:
-					row["tooltip"] = f"Driven by {driver_name}"
+				if connected:
+					row["tooltip"] = "Connected extraction mesh"
 				self._rows.append(row)
 				if self._edit_shape_name is None and int(weight.id) in sculpt_target_indices:
 					self._edit_shape_name = name
@@ -1027,6 +1027,28 @@ class WorkShapeItemsModel(QAbstractListModel):
 		row["muted"] = target
 		model_index = self.index(row_index, 0)
 		self.dataChanged.emit(model_index, model_index, [self.MutedRole, Qt.DisplayRole])
+
+	def is_shape_connected(self, shape_name: str) -> bool:
+		row_index = self._row_by_name.get(shape_name)
+		if row_index is None:
+			return False
+		return bool(self._rows[row_index].get("connected", False))
+
+	def set_connected_state_local(self, shape_name: str, connected: bool) -> None:
+		row_index = self._row_by_name.get(shape_name)
+		if row_index is None:
+			return
+		row = self._rows[row_index]
+		target_connected = bool(connected)
+		if bool(row.get("connected", False)) == target_connected:
+			return
+		row["connected"] = target_connected
+		if target_connected:
+			row["tooltip"] = "Connected extraction mesh"
+		else:
+			row.pop("tooltip", None)
+		model_index = self.index(row_index, 0)
+		self.dataChanged.emit(model_index, model_index, [self.ConnectedRole, Qt.ToolTipRole, Qt.DisplayRole])
 
 	def refresh_values_from_editor(self) -> List[tuple]:
 		"""Pull current work-blendshape values and update rows without rebuilding.
@@ -1289,6 +1311,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 	valueDragSelectionContext = Signal(bool)
 	muteToggleRequested = Signal(str, bool)
 	lockToggleRequested = Signal(str, bool)
+	connectedMeshRequested = Signal(str)
 
 	def sizeHint(self, option, index):  # noqa: N802
 		if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
@@ -1338,14 +1361,15 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 	def _area_rects(self, option, index):
 		rect = option.rect
-		value = float(index.model().data(index, ShapeItemsModel.ValueRole) or 0.0)
+		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+		is_work_shape = shape_type == "WorkShape"
 		left_margin = 6
 		column_gap = 12
 		icon_size = 22
 		icon_gap = 8
 		right_margin = 4
 		value_w = min(self._value_column_width, max(40, rect.width() - 40))
-		icon_slots = 1 + (1 if self._is_lock_icon_visible(index) else 0)
+		icon_slots = 1 + (1 if self._is_lock_icon_visible(index) else 0) + (1 if is_work_shape else 0)
 
 		value_left = rect.left() + left_margin
 		value_rect = QRect(value_left, rect.top(), value_w, rect.height())
@@ -1356,10 +1380,25 @@ class SliderItemDelegate(QStyledItemDelegate):
 		text_rect = QRect(text_left, rect.top(), text_width, rect.height())
 		return value_rect, text_rect
 
+	def _connected_mesh_icon_rect(self, option, index) -> QRect:
+		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+		if shape_type != "WorkShape":
+			return QRect()
+		value_rect, _ = self._area_rects(option, index)
+		icon_size = 22
+		column_gap = 12
+		x = value_rect.right() + 1 + column_gap
+		y = option.rect.top() + (option.rect.height() - icon_size) // 2
+		return QRect(x, y, icon_size, icon_size)
+
 	def _is_lock_icon_visible(self, index) -> bool:
 		return bool(index.model().data(index, ShapeItemsModel.LockIconVisibleRole))
 
 	def _mute_icon_rect(self, option, index) -> QRect:
+		connected_rect = self._connected_mesh_icon_rect(option, index)
+		if not connected_rect.isNull():
+			icon_gap = 8
+			return QRect(connected_rect.right() + 1 + icon_gap, connected_rect.top(), connected_rect.width(), connected_rect.height())
 		value_rect, _ = self._area_rects(option, index)
 		icon_size = 22
 		column_gap = 12
@@ -1495,6 +1534,12 @@ class SliderItemDelegate(QStyledItemDelegate):
 		mute_icon = MUTE_ON_ICON if muted else MUTE_OFF_ICON
 		if not mute_icon.isNull():
 			self._draw_icon_pixmap(painter, icon_rect, mute_icon)
+
+		connected_icon_rect = self._connected_mesh_icon_rect(option, index)
+		if not connected_icon_rect.isNull():
+			connected_icon = CONNECTED_MESH_ENABLED_ICON if is_connected_work_shape else CONNECTED_MESH_DISABLED_ICON
+			if not connected_icon.isNull():
+				self._draw_icon_pixmap(painter, connected_icon_rect, connected_icon)
 
 		lock_rect = self._lock_icon_rect(option, index)
 		if not lock_rect.isNull():
@@ -1676,6 +1721,13 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return super().editorEvent(event, model, option, index)
 
 		if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+			connected_mesh_rect = self._connected_mesh_icon_rect(option, index)
+			if not connected_mesh_rect.isNull() and connected_mesh_rect.contains(event.pos()):
+				shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
+				is_connected = bool(model.data(index, WorkShapeItemsModel.ConnectedRole))
+				if shape_name and is_connected:
+					self.connectedMeshRequested.emit(shape_name)
+				return True
 			icon_rect = self._mute_icon_rect(option, index)
 			if icon_rect.contains(event.pos()):
 				shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
@@ -1797,6 +1849,35 @@ class SliderListView(QListView):
 		current_muted = bool(index.data(ShapeItemsModel.MutedRole))
 		return shape_name, (not current_muted)
 
+	def _resolve_connected_mesh_icon_click(self, event_pos) -> Optional[str]:
+		"""Return shape name if event is on enabled connected-mesh icon, else None."""
+		delegate = self.itemDelegate()
+		if not isinstance(delegate, SliderItemDelegate):
+			return None
+
+		index = self.indexAt(event_pos)
+		if not index.isValid():
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		icon_rect = delegate._connected_mesh_icon_rect(option, index)
+		if icon_rect.isNull() or not icon_rect.contains(event_pos):
+			return None
+
+		if not bool(index.data(WorkShapeItemsModel.ConnectedRole)):
+			return None
+
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+		return shape_name
+
 	def _resolve_lock_icon_click(self, event_pos) -> Optional[tuple]:
 		"""Return (shape_name, next_state) if event is on lock icon, else None."""
 		delegate = self.itemDelegate()
@@ -1827,6 +1908,14 @@ class SliderListView(QListView):
 
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
+			connected_shape_name = self._resolve_connected_mesh_icon_click(event.pos())
+			if connected_shape_name is not None:
+				delegate = self.itemDelegate()
+				if isinstance(delegate, SliderItemDelegate):
+					delegate.connectedMeshRequested.emit(connected_shape_name)
+					self._icon_click_active = True
+					event.accept()
+					return
 			mute_payload = self._resolve_mute_icon_click(event.pos())
 			if mute_payload is not None:
 				delegate = self.itemDelegate()
@@ -1870,6 +1959,8 @@ class SliderListView(QListView):
 
 	def mouseDoubleClickEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton and (
+			self._resolve_connected_mesh_icon_click(event.pos()) is not None
+			or
 			self._resolve_mute_icon_click(event.pos()) is not None
 			or self._resolve_lock_icon_click(event.pos()) is not None
 		):
@@ -2974,6 +3065,7 @@ class MainWindow(QMainWindow):
 		self._primary_drop_delegate.muteToggleRequested.connect(self._on_primary_drop_mute_toggle_requested)
 		self._primary_drop_delegate.lockToggleRequested.connect(self._on_primary_drop_lock_toggle_requested)
 		self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
+		self._work_shapes_delegate.connectedMeshRequested.connect(self._on_work_shape_connected_mesh_requested)
 		self.primaries_search.textChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
@@ -4385,12 +4477,14 @@ class MainWindow(QMainWindow):
 
 	def _update_work_shape_button_panel(self) -> None:
 		has_editor = self.current_editor is not None and self.current_editor.work_blendshape is not None
-		has_selection = bool(self._selected_work_shape_names())
+		selected_shape_name = self._first_selected_work_shape_name()
+		has_selection = bool(selected_shape_name)
+		selected_has_connection = bool(selected_shape_name and self._work_shape_model.is_shape_connected(selected_shape_name))
 		has_active_edit = bool(self._work_shape_model.edit_shape_name())
 		self.work_add_button.setEnabled(has_editor)
 		self.work_remove_button.setEnabled(has_editor and has_selection)
 		self.work_paint_button.setEnabled(has_editor and has_selection)
-		self.work_edit_mode_button.setEnabled(has_editor and (has_selection or has_active_edit))
+		self.work_edit_mode_button.setEnabled(has_editor and ((has_selection and not selected_has_connection) or has_active_edit))
 
 	def _stop_active_blendshape_trackers(self) -> None:
 		for tracker in (self.blendshape_tracker, self.work_blendshape_tracker):
@@ -4509,6 +4603,11 @@ class MainWindow(QMainWindow):
 			self._update_work_shape_button_panel()
 			return
 
+		if self._work_shape_model.is_shape_connected(shape_name):
+			self._set_status(f"Cannot enable edit mode for '{shape_name}' because it has a connected mesh.", warning=True)
+			self._update_work_shape_button_panel()
+			return
+
 		try:
 			self.current_editor.set_work_shape_editable(shape_name)
 		except Exception as exc:
@@ -4590,8 +4689,32 @@ class MainWindow(QMainWindow):
 		finally:
 			self._start_active_blendshape_trackers()
 		self._reload_work_shapes_from_editor()
+		if self.current_editor is not None and self.current_editor.work_blendshape is not None:
+			weight = self.current_editor.work_blendshape.get_weight_by_name(work_shape_name)
+			if weight is not None:
+				connected_ids = {int(w.id) for w in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])}
+				self._work_shape_model.set_connected_state_local(work_shape_name, int(weight.id) in connected_ids)
 		self._select_work_shape(work_shape_name)
 		self._set_status(f"Extracted shape '{new_shape_name}' from work shape '{work_shape_name}'.")
+
+	def _on_work_shape_connected_mesh_requested(self, work_shape_name: str) -> None:
+		if self.current_editor is None or self.current_editor.work_blendshape is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		weight = self.current_editor.work_blendshape.get_weight_by_name(work_shape_name)
+		if weight is None:
+			self._set_status(f"Work shape '{work_shape_name}' not found.", warning=True)
+			return
+		try:
+			edit_mesh = self.current_editor.get_work_shape_edit_mesh(weight)
+		except Exception as exc:
+			self._set_status(f"Error finding connected mesh for '{work_shape_name}': {exc}", error=True)
+			return
+		if not edit_mesh or not cmds.objExists(edit_mesh):
+			self._set_status(f"No connected mesh found for '{work_shape_name}'.", warning=True)
+			return
+		cmds.select(edit_mesh, replace=True)
+		self._set_status(f"Selected connected mesh '{edit_mesh}' for '{work_shape_name}'.")
 
 	def _on_work_shape_copy_weights_requested(self, work_shape_name: str) -> None:
 		if self.current_editor is None:
@@ -5087,7 +5210,12 @@ class MainWindow(QMainWindow):
 			self._update_work_shape_button_panel()
 			return
 		weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
-		self._work_shape_model.set_edit_shape(str(weight) if weight is not None else None)
+		weight_name = str(weight) if weight is not None else None
+		if weight_name and self._work_shape_model.is_shape_connected(weight_name):
+			self._work_shape_model.set_edit_shape(None)
+			self._update_work_shape_button_panel()
+			return
+		self._work_shape_model.set_edit_shape(weight_name)
 		self._update_work_shape_button_panel()
 
 	def _on_shapes_mute_toggle_requested(self, shape_name: str, state: bool) -> None:
@@ -5221,10 +5349,18 @@ class MainWindow(QMainWindow):
 	def _on_work_blendshape_target_connection_changed(self, _target_id: int, connected: bool) -> None:
 		if self.current_editor is None or self.current_editor.work_blendshape is None:
 			return
-		work_weight = self.current_editor.work_blendshape.get_weight_by_id(_target_id) 
-		# TODO: this callback should disable the edit in the workshape panel when the work_shape has
-		# an incoming connection and re enable it when the connection is removed.
-		# it should also update the 
+		work_weight = self.current_editor.work_blendshape.get_weight_by_id(_target_id)
+		if work_weight is None:
+			return
+		work_shape_name = str(work_weight)
+		self._work_shape_model.set_connected_state_local(work_shape_name, bool(connected))
+		if connected and self._work_shape_model.edit_shape_name() == work_shape_name:
+			try:
+				cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
+			except Exception:
+				pass
+			self._work_shape_model.set_edit_shape(None)
+		self._update_work_shape_button_panel()
 		
 
 	def _on_shape_renamed(self, *_args) -> None:

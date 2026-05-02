@@ -1480,8 +1480,13 @@ class Blendshape(object):
         Returns:
             True if the target was successfully connected, False otherwise.
         """
-        mesh_shape = cmds.listRelatives(mesh, s=True)
-        mesh_output = f"{mesh_shape[0]}.worldMesh[0]"
+        if cmds.nodeType(mesh) == "transform":
+            mesh_shape = cmds.listRelatives(mesh, s=True)
+            mesh_output = f"{mesh_shape[0]}.worldMesh[0]"
+        elif cmds.nodeType(mesh) == "mesh":
+            mesh_output = f"{mesh}.worldMesh[0]"
+        else:
+            raise ValueError(f"Invalid mesh '{mesh}'. Must be a transform or mesh node.")
         blend_input_plug = self.get_target_input_geom_plug(weight_id, target_value)
         if blend_input_plug is None:
             raise ValueError(f"Could not find target group plug for weight ID {weight_id} and target value {target_value}.")

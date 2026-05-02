@@ -13,7 +13,6 @@ class FrameLayout (QtWidgets.QWidget):
     """
     Custom FrameLayout class to create collapsible frames with a title."""
     def __init__(self , label , parent=None):
-        print(f"Parent: {parent}")
         super().__init__(parent)
 
         self.label = label

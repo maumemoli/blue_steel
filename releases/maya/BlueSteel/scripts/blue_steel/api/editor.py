@@ -717,21 +717,7 @@ class BlueSteelEditor(object):
         """
         if self.work_blendshape is None:
             raise ValueError("Work blendshape not found.")
-        edit_mesh = None
-        extraction_mesh = self.work_blendshape.get_mesh_connected_to_target(weight.id)
-        extraction_mesh_shapes = cmds.listRelatives(extraction_mesh, shapes=True, fullPath=True) or None
-        if extraction_mesh_shapes is None:
-            return edit_mesh
-        shape = extraction_mesh_shapes[0]
-        print(f"Found shape '{shape}' in extraction mesh '{extraction_mesh}'.")
-        history = cmds.listHistory(shape, pruneDagObjects=True) or []
-        blendshape_deformers = [node for node in history if cmds.nodeType(node) == "blendShape"]
-        if not blendshape_deformers or len(blendshape_deformers) > 1:
-            return edit_mesh
-        extraction_blendshape = Blendshape(blendshape_deformers[0])
-        # we need to get the mesh connected at weight 0.
-        edit_mesh = extraction_blendshape.get_mesh_connected_to_target(0)
-        return edit_mesh
+        return self.work_blendshape.get_mesh_connected_to_target(weight.id)
 
     def add_shape_to_locked_shapes(self, shape_name: str):
         """
@@ -763,30 +749,30 @@ class BlueSteelEditor(object):
         # we need to disable the work shape.
         current_mute_state = self.get_work_shape_muted_state(work_weight)
         edit_mesh = cmds.duplicate(self.base_mesh, name=f"{work_shape_name}_editMesh")[0]
+        edit_mesh_shape = cmds.listRelatives(edit_mesh, shapes=True, fullPath=True)[0]
         self.set_work_shape_mute_state(work_weight, True)
         # we need to create an extraction mesh
         negative_mesh = cmds.duplicate(self.base_mesh, name=f"{work_shape_name}_negativeMesh")[0]
         extracted_mesh = self.duplicate_base_mesh_neutral_state(f"{work_shape_name}_extractionMesh")
+        extracted_shape = cmds.listRelatives(extracted_mesh, shapes=True, fullPath=True)[0]
+        extracted_shape = cmds.parent(extracted_shape, edit_mesh, shape=True, relative=True)[0]
+        
         # we need to create a blendshape to extract the delta between the current pose and the neutral pose
-        extraction_blendshape = cmds.blendShape(edit_mesh,
+        extraction_blendshape = cmds.blendShape(edit_mesh_shape,
                                                 negative_mesh,
-                                                extracted_mesh,
+                                                extracted_shape,
                                                 name=f"{work_shape_name}_extractionBlendshape",
                                                 weight =[(0, 1.0),(1, -1.0)])[0]
         # we need to set the edit mesh as sculpt target
+        
         if current_sculpt_target == work_weight.id:
             # if the current sculpt target is the same as the work shape we are extracting, we need to set it to another target to avoid issues with the extraction blendshape
             cmds.sculptTarget(self.work_blendshape.name, e=True, t=-1)
         # we need to connect the extracted mesh to the work blendshape target
-        self.work_blendshape.connect_mesh_to_target(work_weight.id, extracted_mesh)
-        # we can delete the negative mesh and hide the extracted mesh.
-        cmds.delete(negative_mesh)
-        # we will parent these shapes under the edit mesh.
-        extracted_shapes = cmds.listRelatives(extracted_mesh, shapes=True, fullPath=True)
-        cmds.setAttr(f"{extracted_shapes[0]}.intermediateObject", 1)
-        cmds.parent(extracted_shapes, edit_mesh, s=True)
+        self.work_blendshape.connect_mesh_to_target(work_weight.id, extracted_shape)
+        # we can delete the negative mesh and the extracted mesh empty transform.
         cmds.delete(extracted_mesh)
-        # we need to re enable the work shape to the current state
+        cmds.delete(negative_mesh)
         self.set_work_shape_mute_state(work_weight, current_mute_state)
         # we can translate the group to the side for better visibility
         bbox = mayaUtils.get_mesh_bounding_box(self.base_mesh)
