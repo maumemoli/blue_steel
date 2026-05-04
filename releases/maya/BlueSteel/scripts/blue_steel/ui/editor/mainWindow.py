@@ -2775,6 +2775,9 @@ class MainWindow(QMainWindow):
 
 		active_shapes_section = QGroupBox("Active Shapes")
 		active_shapes_layout = QVBoxLayout(active_shapes_section)
+		self.active_shapes_search = QLineEdit()
+		self.active_shapes_search.setPlaceholderText("Filter active shapes...")
+		active_shapes_layout.addWidget(self.active_shapes_search)
 		self.active_shapes_view = SliderListView()
 		self.active_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.active_shapes_view.setDragEnabled(True)
@@ -3092,6 +3095,7 @@ class MainWindow(QMainWindow):
 		self._work_shapes_delegate.connectedMeshRequested.connect(self._on_work_shape_connected_mesh_requested)
 		self.primaries_search.textChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
+		self.active_shapes_search.textChanged.connect(self._on_active_shapes_search_changed)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
 		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
 		self.shapes_highlight_related_button.toggled.connect(lambda _: self._update_related_shape_highlights_from_selection())
@@ -3877,9 +3881,6 @@ class MainWindow(QMainWindow):
 		self._shapes_proxy.set_search_text("")
 		self._shapes_proxy.set_selected_primaries(tuple())
 		self._shapes_proxy.set_visible_names(None)
-		self._active_shapes_proxy.set_search_text("")
-		self._active_shapes_proxy.set_selected_primaries(tuple())
-		self._active_shapes_proxy.set_visible_names(None)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 		if rebuild_ui:
 			self._apply_shapes_name_sort()
@@ -3896,8 +3897,12 @@ class MainWindow(QMainWindow):
 
 	def _on_shapes_search_changed(self, text: str) -> None:
 		self._shapes_proxy.set_search_text(text)
-		self._active_shapes_proxy.set_search_text(text)
 		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
+		self._update_info_labels()
+
+	def _on_active_shapes_search_changed(self, text: str) -> None:
+		self._active_shapes_proxy.set_search_text(text)
 		self._update_delegate_name_columns()
 		self._update_info_labels()
 
