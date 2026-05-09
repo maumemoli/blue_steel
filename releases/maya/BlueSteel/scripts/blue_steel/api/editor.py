@@ -889,6 +889,19 @@ class BlueSteelEditor(object):
         cmds.keyTangent(driver, index =(0, 0), inTangentType="linear", outTangentType="linear")
         cmds.keyTangent(driver, index =(1, 1), inTangentType="linear", outTangentType="linear")
         print("Driven key connection created successfully.")
+        work_shape_name_base = f"{shape_name}_WS_"
+        if work_shape_name.startswith(work_shape_name_base):
+            return # we don't need to rename this.
+
+        work_weights = self.work_blendshape.get_weights() or []
+        index = 1
+        while True:
+            new_work_shape_name = f"{work_shape_name_base}{str(index).zfill(3)}"
+            if new_work_shape_name not in work_weights:
+                break
+            index += 1
+
+        self.rename_work_shape(work_shape_name, new_work_shape_name)
 
     def copy_work_weight_map_values(self, shape_name: str):
         """
