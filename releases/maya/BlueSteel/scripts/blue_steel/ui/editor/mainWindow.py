@@ -29,6 +29,7 @@ from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from .controllerLayoutWindow import ControllerLayoutWindow
 from ..common import frameLayout
+from ...api.mayaUtils import undoable
 from ..common.icons import (
 	ADD_ICON,
 	COMMIT_ICON,
@@ -3221,6 +3222,7 @@ class MainWindow(QMainWindow):
 		self.shapes_view.scrollToItem(item)
 		return True
 
+	@undoable
 	def commit_selected(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
@@ -3233,10 +3235,21 @@ class MainWindow(QMainWindow):
 
 		selected_components = cmds.filterExpand(selected, selectionMask=(31, 32, 34)) or None
 		if selected_components:
-			poly_meshes = [selected_components[0].split(".")[0]]
+			selected_transfom = selected_components[0].split(".")[0]
+			if cmds.nodeType(selected_transfom) == "mesh":
+				selected_transfom = cmds.listRelatives(selected_transfom, parent=True, fullPath=True)[0] or []
+			
+			selected_meshes = [selected_transfom] or []
+			
 		else:
-			poly_meshes = cmds.filterExpand(selected, sm=12) or []
-		if not poly_meshes:
+			# we need to check if the selected transforms have shape nodes under them, otherwise we might end up committing the transform instead of the shape
+			selected_meshes = []
+			for transform in selected:
+				shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
+				for shape in shapes:
+					if cmds.nodeType(shape) == "mesh":
+						selected_meshes.append(transform)
+		if not selected_meshes:
 			self._set_status("No polygon meshes found in selection.", warning=True)
 			return
 
@@ -3244,7 +3257,7 @@ class MainWindow(QMainWindow):
 		try:
 			if self.blendshape_tracker is not None:
 				self.blendshape_tracker.stop()
-			failed_shapes = self.current_editor.commit_shapes(poly_meshes)
+			failed_shapes = self.current_editor.commit_shapes(selected_meshes)
 		except Exception as exc:
 			self._set_status(f"Error committing shapes: {exc}", error=True)
 			return
@@ -3252,9 +3265,11 @@ class MainWindow(QMainWindow):
 			if self.blendshape_tracker is not None:
 				self.blendshape_tracker.start()
 			self._reload_shapes_from_editor()
+			if selected_components:
+				cmds.select(selected_components, replace=True)
 
-		committed_count = len(poly_meshes) - len(failed_shapes)
-		meshes_label = "poly mesh" if len(poly_meshes) == 1 else "poly meshes"
+		committed_count = len(selected_meshes) - len(failed_shapes)
+		meshes_label = "poly mesh" if len(selected_meshes) == 1 else "poly meshes"
 		self._set_status(f"Committed {committed_count} {meshes_label} to '{self.current_editor.name}'.")
 
 	def add_selected_at_current_pose(self) -> None:

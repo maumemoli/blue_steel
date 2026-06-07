@@ -82,6 +82,7 @@ class BlueSteelEditor(object):
         self.split_blendshape = None
         self.work_blendshape = None
         self.heat_map_blendshape = None
+        self.deformers_node_states = {}
         # Signals
         self.signals_connected = False
         # getting the blendshape nodes
@@ -1339,6 +1340,7 @@ class BlueSteelEditor(object):
             None
         """
         start = time.time()
+        self.disable_all_deformers()
         # we need to sync the network first
         self.sync_network()
         # let's check if there is any muted shape.
@@ -1412,6 +1414,7 @@ class BlueSteelEditor(object):
             print(f"Finished committing {len(valid_meshes)} shapes on {len(selected)} Restored: {len(extracted_locked_meshes) if extracted_locked_meshes else 0} locked shapes in {time.time() - start:.2f} seconds.")
         cmds.select(clear=True)
         cmds.select(self.container.name, replace=True)
+        self.enable_all_deformers()
         return invalid_shapes
 
     @undoable
@@ -1536,15 +1539,12 @@ class BlueSteelEditor(object):
     #     cmds.connectAttr(f"{self.blendshape.name}.outputGeometry[0]", f"{extraction_mesh}.inMesh", force=True)
     #     return extraction_mesh
 
-    @undoable
-    def extract_shapes_to_mesh(self, shape_names: list):
+    def disable_all_deformers(self):
         """
-        Create an extration mesh, set the pose for each shape and duplicate the extraction mesh with the
-        shape name.
-        Parameters:
-            shape_names (list): A list of shapes to extract
+        Disable all deformers that can affect the shape extraction 
+        or commit of shapes excluding the main blendshape.
         Returns:
-             dict: A dictionary of shape names and their corresponding extracted mesh names
+            dict: A dictionary of deformer names and their original envelope or nodeState values
         """
         deformers = self.get_deformers()
         deformers_node_states = dict()
@@ -1559,6 +1559,31 @@ class BlueSteelEditor(object):
                     deformers_node_states[deformer] = node_state_value
                 except Exception as e:
                     print(f"Warning: Could not set nodeState for deformer '{deformer}'. Error: {e}")
+        self.deformers_node_states = deformers_node_states
+
+    def enable_all_deformers(self):
+        """
+        Restore the original envelope or nodeState values of the deformers that were disabled for shape extraction or commit.
+        """
+        for deformer, node_state in self.deformers_node_states.items():
+            #print(f"Restoring nodeState for deformer '{deformer}' to {node_state}.")
+            try:
+                cmds.setAttr(f"{deformer}.nodeState", node_state)
+            except Exception as e:
+                print(f"Warning: Could not restore nodeState for deformer '{deformer}'. Error: {e}")
+        self.deformers_node_states = {}
+
+    @undoable
+    def extract_shapes_to_mesh(self, shape_names: list):
+        """
+        Create an extration mesh, set the pose for each shape and duplicate the extraction mesh with the
+        shape name.
+        Parameters:
+            shape_names (list): A list of shapes to extract
+        Returns:
+             dict: A dictionary of shape names and their corresponding extracted mesh names
+        """
+        self.disable_all_deformers()
         extracted_meshes = {}
         extraction_mesh = self.base_mesh
         extraction_group = cmds.createNode("transform", name=f"{self.editor_base_name}_extractedShapes_GRP")
@@ -1575,12 +1600,7 @@ class BlueSteelEditor(object):
                 extracted_shape_mesh = cmds.rename(parented, shape_name)
             extracted_meshes[shape_name] = extracted_shape_mesh
         # restore the original envelope values
-        for deformer, node_state in deformers_node_states.items():
-            print(f"Restoring nodeState for deformer '{deformer}' to {node_state}.")
-            try:
-                cmds.setAttr(f"{deformer}.nodeState", node_state)
-            except Exception as e:
-                print(f"Warning: Could not restore nodeState for deformer '{deformer}'. Error: {e}")
+        self.enable_all_deformers()
         return extraction_group, extracted_meshes
     
     #############################################################################################
@@ -2057,17 +2077,23 @@ class BlueSteelEditor(object):
                                                                parent_index=primary_dir.index)
             # let's parent the weight to the primary shape dir
             self.blendshape.set_weight_parent_directory(w, primary_shape_dir)
+            self.set_shape_pose(shape)
 
         else:
             w = self.blendshape.get_weight_by_name(shape)
-            self.blendshape.update_target(weight=w, new_mesh=mesh)
+                    # we need to reset the delta of the shape before extracting the combo shape
+            self.blendshape.reset_target(weight=w)
+            self.set_shape_pose(shape)
+            # extracting the combo shape
+            delta = self.blendshape.get_delta_from_mesh(mesh)
+            self.blendshape.set_target_delta(weight=w, delta=delta)
             if VERBOSE:
                 print(f"Updating existing {shape.type} shape {shape}")
             return_value = "UPDATED"
         shape.weight_id = w.id
         self.network.add_shape(shape)
         # we will set the shape now
-        self.set_shape_pose(shape)
+        
         return return_value
 
     @undoable
