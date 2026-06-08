@@ -3945,6 +3945,7 @@ class MainWindow(QMainWindow):
 		self._update_info_labels()
 
 	def _on_shapes_selection_changed(self) -> None:
+		self._update_info_labels()
 		self._update_related_shape_highlights_from_selection()
 		self._update_heat_map_target_from_shapes_selection()
 		if self.current_editor is None or not self.shapes_auto_pose_button.isChecked():
