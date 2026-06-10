@@ -1,7 +1,6 @@
 from maya import cmds, mel
 import numpy as np
 from dataclasses import dataclass, field
-import re
 from . import mayaUtils
 from .targetDirectory import TargetDirectory
 from maya import OpenMaya as om
@@ -1043,11 +1042,14 @@ class Blendshape(object):
         if not aliases:
             return set()
 
-        # Parse all alias pairs into {weight_id: name} in one pass
+        # Parse alias pairs into {weight_id: name} in one pass.
+        # This avoids regex overhead when extracting indices from weight plugs.
         id_to_name = {}
         for i in range(0, len(aliases), 2):
             name = aliases[i]
-            weight_id = int(re.search(r'\d+', aliases[i + 1]).group())
+            plug_name = aliases[i + 1]
+            # Example plug names: blendShape1.w[12] / blendShape1.weight[12]
+            weight_id = int(plug_name.rsplit('[', 1)[-1][:-1])
             id_to_name[weight_id] = name
 
         # Resolve the inputTarget[0].inputTargetGroup plug ONCE via the API,
@@ -1108,12 +1110,19 @@ class Blendshape(object):
             >>> print(weight)
             Weight: (name: 'Smile' id: 0)
         """
-        weights = self.get_weights()
-        if weights:
-            for weight in weights:
-                if weight.id == weight_id:
-                    return weight
-        return None
+        # Query alias directly from the specific weight plug instead of
+        # rebuilding all Weight objects.
+        alias = cmds.aliasAttr(f"{self.name}.w[{weight_id}]", q=True)
+        if not alias:
+            return None
+        try:
+            target_items = self.get_target_group_logical_indices(weight_id)
+        except Exception:
+            target_items = []
+        return Weight(name=alias,
+                      id=weight_id,
+                      target_items=target_items,
+                      blend_shape=self.name)
 
     def get_weight_by_name(self, name):
         """
@@ -1129,12 +1138,31 @@ class Blendshape(object):
             >>> print(weight)
             Weight: (name: 'Smile' id: 0)
         """
-        weights = self.get_weights()
-        if weights:
-            for weight in weights:
-                if weight == name:
-                    return weight
-        return None
+        # Resolve just the requested alias instead of traversing all targets.
+        aliases = cmds.aliasAttr(self.name, q=True) or []
+        if not aliases:
+            return None
+
+        weight_id = None
+        for i in range(0, len(aliases), 2):
+            if aliases[i] != name:
+                continue
+            plug_name = aliases[i + 1]
+            weight_id = int(plug_name.rsplit('[', 1)[-1][:-1])
+            break
+
+        if weight_id is None:
+            return None
+
+        try:
+            target_items = self.get_target_group_logical_indices(weight_id)
+        except Exception:
+            target_items = []
+
+        return Weight(name=name,
+                      id=weight_id,
+                      target_items=target_items,
+                      blend_shape=self.name)
 
     def rename_weight(self , old_name: str , new_name: str):
         """
