@@ -1038,47 +1038,32 @@ class Blendshape(object):
             Weight Name: Frown, Weight ID: 1
             Weight Name: Blink, Weight ID: 2
         """
-        aliases = cmds.aliasAttr(self.name, q=True) or []
-        if not aliases:
-            return set()
+        sel = om2.MSelectionList()
+        sel.add(self.name)
 
-        # Parse alias pairs into {weight_id: name} in one pass.
-        # This avoids regex overhead when extracting indices from weight plugs.
-        id_to_name = {}
-        for i in range(0, len(aliases), 2):
-            name = aliases[i]
-            plug_name = aliases[i + 1]
-            # Example plug names: blendShape1.w[12] / blendShape1.weight[12]
-            weight_id = int(plug_name.rsplit('[', 1)[-1][:-1])
-            id_to_name[weight_id] = name
+        obj = sel.getDependNode(0)
+        fn = om2.MFnDependencyNode(obj)
 
-        # Resolve the inputTarget[0].inputTargetGroup plug ONCE via the API,
-        # then collect all target-item logical indices per weight in a single
-        # traversal instead of re-resolving the plug chain per weight.
-        input_target_plug = mayaUtils.get_plug(self.name, "inputTarget")
+        weight_plug = fn.findPlug("weight", False)
+        input_target_plug = fn.findPlug("inputTarget", False)
         target_plug = input_target_plug.elementByLogicalIndex(0)
-        target_group_plug = target_plug.child(0)  # .inputTargetGroup
-
-        # Build a map of weight_id -> [target_item logical indices]
-        target_items_map = {}
-        for i in range(target_group_plug.numElements()):
-            group_element = target_group_plug.elementByPhysicalIndex(i)
-            wid = group_element.logicalIndex()
-            if wid not in id_to_name:
-                continue  # skip groups that have no alias (shouldn't happen normally)
-            target_item_plug = group_element.child(0)  # .inputTargetItem
-            indices = []
-            for j in range(target_item_plug.numElements()):
-                indices.append(target_item_plug.elementByPhysicalIndex(j).logicalIndex())
-            target_items_map[wid] = indices[::-1]  # reversed to have 6000 first
-
-        # Assemble Weight objects
         weights = set()
-        for weight_id, name in id_to_name.items():
-            weights.add(Weight(name=name,
-                               id=weight_id,
-                               target_items=target_items_map.get(weight_id, []),
-                               blend_shape=self.name))
+        for i in range(weight_plug.numElements()):
+            element = weight_plug.elementByPhysicalIndex(i)
+            idx = element.logicalIndex()
+            target_group_plug = target_plug.child(0).elementByLogicalIndex(idx)
+            target_item_plug = target_group_plug.child(0)
+            target_items = list()
+            alias = fn.plugsAlias(element)
+            for j in range(target_item_plug.numElements()):
+                target_items.append(target_item_plug.elementByPhysicalIndex(j).logicalIndex())
+            target_items = target_items[::-1]
+            weight = Weight(name=alias,
+                            id=idx,
+                            target_items=target_items,
+                            blend_shape=self.name)
+            weights.add(weight)
+        #aliases = dict(fn.getAliasList())
         return weights
 
     def get_highest_weight_id(self) -> int:
