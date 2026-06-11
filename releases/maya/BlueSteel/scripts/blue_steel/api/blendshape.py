@@ -1593,14 +1593,47 @@ class Blendshape(object):
 
         if input_components_plug is None:
             raise RuntimeError("Could not find inputComponentsTarget plug")
-        # Collect component indices from array elements
-        component_indices = [0]
+        # Collect component indices from all component list entries.
+        component_indices = []
         component_list = om2.MFnComponentListData(input_components_plug.asMObject())
-        if component_list.length() > 0:
-            fn_comp = om2.MFnSingleIndexedComponent(component_list.get(0))
-            component_indices = fn_comp.getElements()
+        for i in range(component_list.length()):
+            comp_obj = component_list.get(i)
+            if comp_obj.apiType() == om2.MFn.kMeshVertComponent:
+                fn_comp = om2.MFnSingleIndexedComponent(comp_obj)
+                component_indices.extend(fn_comp.getElements())
+
+        # Keep Maya's "vtx[0]" sentinel behavior when no components are stored.
+        if not component_indices:
+            component_indices = [0]
+
         np_array = np.array(component_indices, dtype=np.int32)
         return np_array
+
+    def apply_weight_map_to_target(self, weight: Weight):
+        """
+        Applies the weight map to the target geometry for the specified weight.
+        This method is used to apply the weight map to the target geometry
+        when the weight map is updated or when a new target is added.
+        Parameters:
+            weight (Weight): The weight to apply the weight map for.
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> weight = blendshape.get_weight_by_name("Smile")
+            >>> blendshape.apply_weight_map_to_target(weight)
+        """
+        target_id = weight.id
+        target_items = weight.target_items
+        weight_map_values = np.array(self.get_weight_map_values(weight))
+        for target_value in target_items:
+            delta = self.get_target_delta(weight, target_value)
+            weighted_delta = delta * weight_map_values[:, np.newaxis]
+            self.set_target_delta(weight = weight, 
+                                  delta = weighted_delta,
+                                  use_api=False,
+                                  target_value=target_value)
+        # we need to clear the weight map after applying it to the target
+        weight_map_values = [1.0] * len(weight_map_values)
+        self.set_weight_map_values(weight, weight_map_values)
 
     def get_target_points(self, weight: Weight, target_value: int = 6000):
         """
@@ -1772,6 +1805,18 @@ class Blendshape(object):
         components = self.get_target_components(weight, target_value)
         base_vertex_count = self.get_base_vertex_count()
         delta_array = np.zeros((base_vertex_count, 3), dtype=np.float64)
+
+        if len(points) != len(components):
+            # Some targets may store full-mesh points while components collapse
+            # to the vtx[0] sentinel.
+            if len(components) == 1 and components[0] == 0 and len(points) == base_vertex_count:
+                delta_array[:] = points
+                return delta_array
+            raise ValueError(
+                f"Target data mismatch for '{weight}' at target {target_value}: "
+                f"{len(points)} points for {len(components)} components."
+            )
+
         # place the points at the indices specified in components
         delta_array[components] = points
 
