@@ -27,7 +27,7 @@ def split_on_axis_selected_blendshape_targets():
                 continue
 
             # Use full delta so vertex/component indexing is preserved while splitting.
-            target_delta = blendshape.get_target_delta(weight)
+            target_delta = blendshape.get_target_delta(weight.id)
             # we need to create target dir to containt the split targets.
             target_dir_name = f"{weight}_split"
             target_dirs = blendshape.get_target_dirs_by_name(target_dir_name)
@@ -54,6 +54,6 @@ def split_on_axis_selected_blendshape_targets():
                         split_target_weight = blendshape.add_target(split_target_name)
                         blendshape.set_weight_parent_directory(split_target_weight, target_dir)
 
-                    blendshape.set_target_delta(split_target_weight, new_target_delta)
+                    blendshape.set_target_delta(split_target_weight.id, new_target_delta)
 
 

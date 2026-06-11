@@ -1309,14 +1309,14 @@ class Blendshape(object):
             if lower_target == 5000:
                 lower_delta = np.zeros((self.get_base_vertex_count(), 3), dtype=np.float64)
             else:
-                lower_delta = self.get_target_delta(weight, lower_target)
+                lower_delta = self.get_target_delta(weight.id, lower_target)
             if upper_target == 5000:
                 upper_delta = np.zeros((self.get_base_vertex_count(), 3), dtype=np.float64)
             else:
-                upper_delta = self.get_target_delta(weight, upper_target)
+                upper_delta = self.get_target_delta(weight.id, upper_target)
             return lower_delta + (upper_delta - lower_delta) * t
         else:
-            return self.get_target_delta(weight, target_value)
+            return self.get_target_delta(weight.id, target_value)
 
     def add_target(self,
                    weight_name: str,
@@ -1433,7 +1433,7 @@ class Blendshape(object):
                 cmds.disconnectAttr(f"{target_object}.worldMesh[0]", target_geom_plug)
             if interpolated_delta is not None:
                 w = self.get_weight_by_id(target_id)
-                self.set_target_delta(weight=w,
+                self.set_target_delta(input_target_index=target_id,
                                       target_value=target_item_index,
                                       delta=interpolated_delta,
                                       use_api=False
@@ -1559,12 +1559,12 @@ class Blendshape(object):
             # we need to remove the inbetween info as well
         return False
 
-    def get_target_components(self, weight: Weight, target_value: int = 6000):
+    def get_target_components(self, input_target_index: int, target_value: int = 6000):
         """
         Returns the list of component indices for the specified target value
         of the given weight.
         Parameters:
-            weight (Weight): The weight to get the target components for.
+            input_target_index (int): The index of the target to get the components for.
             
             target_value (int): The target value for which to retrieve
                 the component indices. Default is 6000.
@@ -1573,12 +1573,11 @@ class Blendshape(object):
                 the specified target value of the given weight.
         Example:
             >>> blendshape = Blendshape("myBlendshape")
-            >>> weight = blendshape.get_weight_by_name("Smile")
-            >>> component_indices = blendshape.get_target_components(weight, 6000)
+            >>> component_indices = blendshape.get_target_components(0, 6000)
             >>> print(component_indices)
             [0, 1, 2, 3, 4, ...]
         """
-        target_item_plug = self.get_target_group_plug(weight.id, target_value).name()
+        target_item_plug = self.get_target_group_plug(input_target_index, target_value).name()
         # maybe there is a better way to get the plug from its name
         sel_list = om2.MSelectionList()
         sel_list.add(target_item_plug)
@@ -1621,26 +1620,25 @@ class Blendshape(object):
             >>> weight = blendshape.get_weight_by_name("Smile")
             >>> blendshape.apply_weight_map_to_target(weight)
         """
-        target_id = weight.id
         target_items = weight.target_items
-        weight_map_values = np.array(self.get_weight_map_values(weight))
+        weight_map_values = np.array(self.get_weight_map_values(weight.id))
         for target_value in target_items:
-            delta = self.get_target_delta(weight, target_value)
+            delta = self.get_target_delta(weight.id, target_value)
             weighted_delta = delta * weight_map_values[:, np.newaxis]
-            self.set_target_delta(weight = weight, 
+            self.set_target_delta(input_target_index=weight.id, 
                                   delta = weighted_delta,
                                   use_api=False,
                                   target_value=target_value)
         # we need to clear the weight map after applying it to the target
         weight_map_values = [1.0] * len(weight_map_values)
-        self.set_weight_map_values(weight, weight_map_values)
+        self.set_weight_map_values(weight.id, weight_map_values)
 
-    def get_target_points(self, weight: Weight, target_value: int = 6000):
+    def get_target_points(self, input_target_index: int, target_value: int = 6000):
         """
         Returns the list of points for the specified target value
         of the given weight.
         Parameters:
-            weight (Weight): The weight to get the target points for.
+            input_target_index (int): The index of the target to get the points for.
         
             target_value (int): The target value for which to retrieve
                 the points. Default is 6000.
@@ -1649,12 +1647,11 @@ class Blendshape(object):
                 value of the given weight.
         Example:
             >>> blendshape = Blendshape("myBlendshape")
-            >>> weight = blendshape.get_weight_by_name("Smile")
-            >>> points = blendshape.get_target_points(weight, 6000)
+            >>> points = blendshape.get_target_points(0, 6000)
             >>> print(points)
             [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), ...]
         """
-        target_item_plug_name = self.get_target_group_plug(weight.id, target_value).name()
+        target_item_plug_name = self.get_target_group_plug(input_target_index, target_value).name()
         # maybe there is a better way to get the plug from its name
                 # Convert OpenMaya 2 plug to OpenMaya 1 plug using MSelectionList
         #plug_name = input_points_plug.name()
@@ -1686,7 +1683,7 @@ class Blendshape(object):
         return np_array
 
     def set_target_points(self,
-                          weight: Weight,
+                          input_target_index: int,
                           points:np.ndarray,
                           target_value: int = 6000,
                           use_api:bool = False):
@@ -1697,22 +1694,22 @@ class Blendshape(object):
         ****************************************************************
         Parameters:
             points (numpy.ndarray): A (N, 3) array of points to set.
-                target_value (int): The target value for
-                which to set the points.Default is 6000.
+            input_target_index (int): The index of the target to set the points for.
+            target_value (int): The target value for
+                 which to set the points.Default is 6000.
                 use_api (bool): Whether to use the Maya API for setting points.
                 Default is False.
         Example:
             >>> blendshape = Blendshape("myBlendshape")
-            >>> weight = blendshape.get_weight_by_name("Smile")
             >>> points = np.array([(1.0, 2.0, 3.0),
                                    (4.0, 5.0, 6.0),
                                    (7.0, 8.0, 9.0)])
-            >>> blendshape.set_target_points(weight, points)
+            >>> blendshape.set_target_points(0, points)
         """
         # we need to add the fourrth row with 1.0
         ones = np.ones((points.shape[0], 1), dtype=points.dtype)
         points = np.hstack([points, ones])  # shape (N, 4)
-        target_item_plug = self.get_target_group_plug(weight.id, target_value)
+        target_item_plug = self.get_target_group_plug(input_target_index, target_value)
         # Find inputPointsTarget plugs
         input_points_plug = None
         for i in range(target_item_plug.numChildren()):
@@ -1735,7 +1732,7 @@ class Blendshape(object):
 
 
     def set_target_components(self,
-                              weight: Weight,
+                              input_target_index: int,
                               components: np.ndarray,
                               target_value: int = 6000,
                               use_api: bool = False):
@@ -1751,11 +1748,10 @@ class Blendshape(object):
                             Default is False (undoable cmds path).
         Example:
             >>> blendshape = Blendshape("myBlendshape")
-            >>> weight = blendshape.get_weight_by_name("Smile")
             >>> components = np.array([0, 1, 2, 3, 4])
-            >>> blendshape.set_target_components(weight, components)
+            >>> blendshape.set_target_components(0, components)
         """
-        target_item_plug = self.get_target_group_plug(weight.id, target_value)
+        target_item_plug = self.get_target_group_plug(input_target_index, target_value)
 
         # Find inputComponentsTarget and inputPointsTarget plugs
         input_components_plug = None
@@ -1786,12 +1782,12 @@ class Blendshape(object):
         component_tokens = [f"vtx[{int(index)}]" for index in np.asarray(components).flatten().tolist()]
         cmds.setAttr(input_components_plug.name(), len(component_tokens), *component_tokens, type="componentList")
 
-    def get_target_delta(self, weight: Weight, target_value: int = 6000)-> np.ndarray:
+    def get_target_delta(self, input_target_index: int, target_value: int = 6000)-> np.ndarray:
         """
         Returns a numpy array of the same length as the base mesh vertices,
         where each entry corresponds to the delta point for that vertex.
         Parameters:
-            weight (Weight): The weight to get the target delta for.
+            input_target (int): The weight of the target to disconnect from this blendshape.
             use_api (bool): Whether to use the Maya API for retrieving points.
                     Default is False.
             target_value (int): The target value for which to retrieve
@@ -1801,8 +1797,8 @@ class Blendshape(object):
                            is the number of vertices in the base mesh.
         """
         # time_start = time.time()
-        points = self.get_target_points(weight, target_value)
-        components = self.get_target_components(weight, target_value)
+        points = self.get_target_points(input_target_index, target_value)
+        components = self.get_target_components(input_target_index, target_value)
         base_vertex_count = self.get_base_vertex_count()
         delta_array = np.zeros((base_vertex_count, 3), dtype=np.float64)
 
@@ -1813,7 +1809,7 @@ class Blendshape(object):
                 delta_array[:] = points
                 return delta_array
             raise ValueError(
-                f"Target data mismatch for '{weight}' at target {target_value}: "
+                f"Target data mismatch for '{input_target_index}' at target {target_value}: "
                 f"{len(points)} points for {len(components)} components."
             )
 
@@ -1826,7 +1822,7 @@ class Blendshape(object):
         return delta_array
 
     def set_target_delta (self,
-                          weight: Weight,
+                          input_target_index: int,
                           delta:np.ndarray,
                           use_api:bool = False,
                           target_value: int = 6000):
@@ -1843,9 +1839,8 @@ class Blendshape(object):
             points. Default is 6000.
         Example:
             >>> blendshape = Blendshape("myBlendshape")
-            >>> weight = blendshape.get_weight_by_name("Smile")
             >>> delta = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (7.0, 8.0, 9.0)]
-            >>> blendshape.set_target_delta(weight, delta)
+            >>> blendshape.set_target_delta(input_target_index, delta)
         """
         # generate components and points from delta
         if delta.ndim != 2 or delta.shape[1] != 3:
@@ -1858,8 +1853,8 @@ class Blendshape(object):
         if 0 not in components:
             components = np.insert(components, 0, 0)
             points = np.vstack([np.array([[0.0, 0.0, 0.0]]), points])
-        self.set_target_points(weight, points, target_value, use_api)
-        self.set_target_components(weight, components, target_value, use_api=use_api)
+        self.set_target_points(input_target_index, points, target_value, use_api)
+        self.set_target_components(input_target_index, components, target_value, use_api=use_api)
         return
 
 
@@ -1895,37 +1890,37 @@ class Blendshape(object):
             Default is 6000.
         """
         delta =  np.zeros((0, 3))
-        self.set_target_delta(weight=weight,
-                                delta=delta,
-                                target_value=target_value,
-                                use_api=use_api)
+        self.set_target_delta(input_target_index=weight.id,
+                              delta=delta,
+                              target_value=target_value,
+                              use_api=use_api)
 
 
-    def get_weight_map_values(self, weight: Weight)-> list:
+    def get_weight_map_values(self, input_target_index: int)-> list:
         """
         Returns a weight map for the specified weight, where each entry corresponds
         to the weight value for that vertex.
         Parameters:
-            weight (Weight): The weight to get the weight map for.
+            input_target_index (int): The index of the weight to get the weight map for.
         Returns:
             list: A list of weight values where each entry corresponds to a vertex in the base mesh.
         """
         vcount = self.get_base_vertex_count()
-        weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{weight.id}].targetWeights[0:{vcount-1}]'
+        weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{input_target_index}].targetWeights[0:{vcount-1}]'
         return cmds.getAttr(weightAttr) or [1.0]*vcount
 
-    def set_weight_map_values(self, weight: Weight, values: list):
+    def set_weight_map_values(self, input_target_index: int, values: list):
         """
         Sets the weight map for the specified weight, where each entry corresponds
         to the weight value for that vertex.
         Parameters:
-            weight (Weight): The weight to set the weight map for.
+            input_target_index (int): The index of the weight to set the weight map for.
             values (list): A list of weight values where each entry corresponds to a vertex in the base mesh.
         """
         vcount = self.get_base_vertex_count()
         if len(values) != vcount:
             raise ValueError(f"Length of values array must be equal to the number of vertices in the base mesh ({vcount}).")
-        weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{weight.id}].targetWeights[0:{vcount-1}]'
+        weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{input_target_index}].targetWeights[0:{vcount-1}]'
         cmds.setAttr(weightAttr, *values, size=len(values))
 
     def connect_target_to_blendshape_target(self,
@@ -1962,28 +1957,42 @@ class Blendshape(object):
         cmds.connectAttr(input_components_plug.name(), output_components_plug.name(), f=True)
 
     def disconnect_target_from_blendshape_target(self,
-                                                 input_target_index: int,):
+                                                 input_target_index: int,
+                                                 apply_delta: bool = False,
+                                                 input_target_value: int = 6000):
         """
         Disconnects a target from this blendshape to another blendshape's target.
-        Parameters:   input_target (int): The weight of the target to disconnect from this blendshape.
+        Parameters:  
+            input_target (int): The weight of the target to disconnect from this blendshape.
+            input_target_value (int): The target value of the input target to disconnect. Default is 6000.
+            apply_delta (bool): Whether to apply the delta values into the target before disconnecting.
+            Default is False.
         """
+        delta = None
+        input_components_plug = self.get_target_group_components_plug(input_target_index, input_target_value)
         input_points_plug = self.get_target_group_points_plug(input_target_index)
-        if input_points_plug.isConnected():
-            connections = cmds.listConnections(input_points_plug.name(),
-                                               source=True,
-                                               destination=False,
-                                               p=True) or []
-            for conn in connections:
-                cmds.disconnectAttr(conn, input_points_plug.name())
-        input_components_plug = self.get_target_group_components_plug(input_target_index)
-        if input_components_plug.isConnected():
-            connections = cmds.listConnections(input_components_plug.name(),
-                                               source=True,
-                                               destination=False,
-                                               p=True) or []
-            for conn in connections:
-                cmds.disconnectAttr(conn, input_components_plug.name())
-
+        if not input_points_plug.isConnected() and not input_components_plug.isConnected():
+            # if there are no connections we don't need to do anything
+            return
+        if apply_delta:
+            delta = self.get_target_delta(input_target_index, input_target_value)
+        # disconnecting point connections
+        connections = cmds.listConnections(input_points_plug.name(),
+                                            source=True,
+                                            destination=False,
+                                            p=True) or []
+        for conn in connections:
+            cmds.disconnectAttr(conn, input_points_plug.name())
+        # disconnecting component connections
+        connections = cmds.listConnections(input_components_plug.name(),
+                                            source=True,
+                                            destination=False,
+                                            p=True) or []
+        for conn in connections:
+            cmds.disconnectAttr(conn, input_components_plug.name())
+        if apply_delta:
+            self.set_target_delta(input_target_index, delta, use_api=False, target_value=input_target_value)
+        
     # ------------------------------------------------------------------
     # Export / Import methods
     # ------------------------------------------------------------------
@@ -2000,8 +2009,8 @@ class Blendshape(object):
         for weight in self.get_weights():
             target_values = self.get_target_group_logical_indices(weight.id)
             for target_value in target_values:
-                points = self.get_target_points(weight, target_value)
-                components = self.get_target_components(weight, target_value)
+                points = self.get_target_points(weight.id, target_value)
+                components = self.get_target_components(weight.id, target_value)
                 key = f"{weight}_{target_value}"
                 export_data[f"{key}_points"] = points
                 export_data[f"{key}_components"] = components
@@ -2040,11 +2049,11 @@ class Blendshape(object):
                     components = data[f"{weight_name}_{target_value}_components"]
                     print(f"Importing target '{weight}' "
                           f"with value {target_value}, {len(points)} points, {len(components)} components")
-                    self.set_target_points(weight=weight,
+                    self.set_target_points(input_target_index=weight.id,
                                            points=points,
                                            target_value=target_value,
                                            use_api=True)
-                    self.set_target_components(weight=weight,
+                    self.set_target_components(input_target_index=weight.id,
                                                components=components,
                                                target_value=target_value,
                                                use_api=True)

@@ -914,7 +914,7 @@ class BlueSteelEditor(object):
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
 
-        self.copied_weight_map_values = self.work_blendshape.get_weight_map_values(weight)
+        self.copied_weight_map_values = self.work_blendshape.get_weight_map_values(weight.id)
 
     def paste_work_weight_map_values_to_shape(self, shape_name: str):
         """
@@ -927,7 +927,7 @@ class BlueSteelEditor(object):
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        self.work_blendshape.set_weight_map_values(weight, self.copied_weight_map_values)
+        self.work_blendshape.set_weight_map_values(weight.id, self.copied_weight_map_values)
 
     def paste_inverted_work_weight_map_values(self, shape_name: str):
         """
@@ -941,7 +941,7 @@ class BlueSteelEditor(object):
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
         inverted_values = 1 -np.array(self.copied_weight_map_values) 
-        self.work_blendshape.set_weight_map_values(weight, inverted_values.tolist())
+        self.work_blendshape.set_weight_map_values(weight.id, inverted_values.tolist())
 
     def add_work_weight_map_values(self, shape_name: str):
         """
@@ -954,9 +954,9 @@ class BlueSteelEditor(object):
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        existing_values = self.work_blendshape.get_weight_map_values(weight)
+        existing_values = self.work_blendshape.get_weight_map_values(weight.id)
         new_values = np.array(existing_values) + np.array(self.copied_weight_map_values)
-        self.work_blendshape.set_weight_map_values(weight, new_values.tolist())
+        self.work_blendshape.set_weight_map_values(weight.id, new_values.tolist())
     
     def subtract_work_weight_map_values(self, shape_name: str):
         """
@@ -969,9 +969,9 @@ class BlueSteelEditor(object):
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        existing_values = self.work_blendshape.get_weight_map_values(weight)
+        existing_values = self.work_blendshape.get_weight_map_values(weight.id)
         new_values = np.array(existing_values) - np.array(self.copied_weight_map_values)
-        self.work_blendshape.set_weight_map_values(weight, new_values.tolist()) 
+        self.work_blendshape.set_weight_map_values(weight.id, new_values.tolist()) 
 
     def normalize_work_weight_map_values(self, shape_names: list):
         """
@@ -1004,7 +1004,7 @@ class BlueSteelEditor(object):
             if weight is None:
                 raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
             weights.append(weight)
-            maps.append(np.asarray(self.work_blendshape.get_weight_map_values(weight), dtype=np.float64))
+            maps.append(np.asarray(self.work_blendshape.get_weight_map_values(weight.id), dtype=np.float64))
 
         stacked_maps = np.vstack(maps)
         per_vertex_sum = stacked_maps.sum(axis=0)
@@ -1013,7 +1013,7 @@ class BlueSteelEditor(object):
         normalized_maps = stacked_maps * scale
 
         for weight, normalized_values in zip(weights, normalized_maps):
-            self.work_blendshape.set_weight_map_values(weight, normalized_values.tolist())
+            self.work_blendshape.set_weight_map_values(weight.id, normalized_values.tolist())
 
     def paste_work_weight_map_values(self, shape_name: str):
         """
@@ -1026,7 +1026,7 @@ class BlueSteelEditor(object):
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        self.work_blendshape.set_weight_map_values(weight, self.copied_weight_map_values)
+        self.work_blendshape.set_weight_map_values(weight.id, self.copied_weight_map_values)
 
     def set_shape_pose(self, shape: Shape):
         """
@@ -1487,10 +1487,10 @@ class BlueSteelEditor(object):
         new_shape_name = f"{shape_name}_copy"
         duplicated_weight = self.add_work_shape(new_shape_name)
         # we need to copy the delta from the original shape to the duplicated shape
-        weight_map_values = self.work_blendshape.get_weight_map_values(weight)
-        self.work_blendshape.set_weight_map_values(duplicated_weight, weight_map_values)
-        deltas = self.work_blendshape.get_target_delta(weight)
-        self.work_blendshape.set_target_delta(duplicated_weight, deltas)
+        weight_map_values = self.work_blendshape.get_weight_map_values(weight.id)
+        self.work_blendshape.set_weight_map_values(duplicated_weight.id, weight_map_values)
+        deltas = self.work_blendshape.get_target_delta(weight.id)
+        self.work_blendshape.set_target_delta(duplicated_weight.id, deltas)
         return duplicated_weight
 
     def paint_work_blendshape_target(self, weight_name: str) -> int:
@@ -2086,7 +2086,7 @@ class BlueSteelEditor(object):
             self.set_shape_pose(shape)
             # extracting the combo shape
             delta = self.blendshape.get_delta_from_mesh(mesh)
-            self.blendshape.set_target_delta(weight=w, delta=delta)
+            self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
             if VERBOSE:
                 print(f"Updating existing {shape.type} shape {shape}")
             return_value = "UPDATED"
@@ -2294,7 +2294,7 @@ class BlueSteelEditor(object):
         # extracting the inbetween shape
         delta = self.blendshape.get_delta_from_mesh(mesh)
 
-        self.blendshape.set_target_delta(weight=w, delta=delta)
+        self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
         return return_value
 
     def add_combo_shape(self, mesh: str, shape: Shape):
@@ -2342,7 +2342,7 @@ class BlueSteelEditor(object):
         self.blendshape.reset_target(weight=w)
         # extracting the combo shape
         delta = self.blendshape.get_delta_from_mesh(mesh)
-        self.blendshape.set_target_delta(weight=w, delta=delta)
+        self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
         return return_value
 
     def add_split_map_attribute_group(self, group_name: str):
@@ -2373,7 +2373,7 @@ class BlueSteelEditor(object):
         self.sync_network() # just rebuilding the network to make sure it's up to date
         zero_delta_shapes = ShapeList([], self.separator)
         for w in self.blendshape.get_weights():
-            delta = self.blendshape.get_target_delta(w)
+            delta = self.blendshape.get_target_delta(w.id)
             if np.allclose(delta, 0.0, rtol=1e-03, atol=1e-05):
                 print(f"Shape '{w}' has zero delta.")
                 shape = self.network.get_shape(w)
