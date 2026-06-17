@@ -4031,7 +4031,6 @@ class MainWindow(QMainWindow):
 			finally:
 				if self.blendshape_tracker is not None:
 					self.blendshape_tracker.start()
-			self._reload_shapes_from_editor()
 			self._set_status(f"Reset deltas for {len(selected_shapes)} shape(s).")
 
 	def _on_shapes_item_expanded(self, item: QTreeWidgetItem) -> None:
