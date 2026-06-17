@@ -2784,6 +2784,7 @@ class MainWindow(QMainWindow):
 		self.active_shapes_view.setDragEnabled(True)
 		self.active_shapes_view.setDragDropMode(QAbstractItemView.DragOnly)
 		self.active_shapes_view.setModel(self._active_shapes_proxy)
+		self.active_shapes_view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self._active_shapes_delegate = SliderItemDelegate(self.active_shapes_view)
 		self.active_shapes_view.setItemDelegate(self._active_shapes_delegate)
 		active_shapes_layout.addWidget(self.active_shapes_view, 1)
@@ -3110,6 +3111,7 @@ class MainWindow(QMainWindow):
 		self.shapes_view.customContextMenuRequested.connect(self._show_shapes_context_menu)
 		if self.shapes_view.model() is not None:
 			self.shapes_view.model().dataChanged.connect(self._on_shapes_tree_data_changed)
+		self.active_shapes_view.customContextMenuRequested.connect(self._show_shapes_context_menu)
 		self.active_shapes_view.clicked.connect(self._on_active_shapes_item_clicked)
 		self.active_shapes_view.doubleClicked.connect(self._on_active_shapes_double_clicked)
 		self.work_shapes_view.doubleClicked.connect(self._on_work_shapes_double_clicked)
@@ -3203,6 +3205,15 @@ class MainWindow(QMainWindow):
 			if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
 				continue
 			shape_name = item.data(0, ShapeItemsModel.NameRole)
+			if shape_name:
+				names.append(shape_name)
+		return names
+
+	def _selected_shape_names_from_active_shapes_view(self) -> List[str]:
+		names: List[str] = []
+		selected_indexes = self.active_shapes_view.selectedIndexes()
+		for index in selected_indexes:
+			shape_name = index.data(ShapeItemsModel.NameRole)
 			if shape_name:
 				names.append(shape_name)
 		return names
@@ -4005,19 +4016,26 @@ class MainWindow(QMainWindow):
 		self._set_shape_pose_by_name(shape_name)
 
 	def _show_shapes_context_menu(self, pos) -> None:
+		sender = self.sender()
+
 		if self.current_editor is None:
 			return
-		selected_shapes = self._selected_shape_names_from_shapes_view()
+		if sender == self.shapes_view:
+			selected_shapes = self._selected_shape_names_from_shapes_view()
+		elif sender == self.active_shapes_view:
+			selected_shapes = self._selected_shape_names_from_active_shapes_view()
+		else:
+			return
 		if not selected_shapes:
 			return
 
-		menu = QMenu(self.shapes_view)
+		menu = QMenu(sender)
 		extract_action = menu.addAction("Extract Selected")
 		reset_deltas_action = menu.addAction("Reset Deltas")
 		if hasattr(menu, "exec"):
-			selected_action = menu.exec(self.shapes_view.viewport().mapToGlobal(pos))
+			selected_action = menu.exec(sender.mapToGlobal(pos))
 		else:
-			selected_action = menu.exec_(self.shapes_view.viewport().mapToGlobal(pos))
+			selected_action = menu.exec_(sender.mapToGlobal(pos))
 		if selected_action == extract_action:
 			self.extract_selected()
 		elif selected_action == reset_deltas_action:
