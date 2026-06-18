@@ -1340,7 +1340,6 @@ class BlueSteelEditor(object):
             None
         """
         start = time.time()
-        self.disable_all_deformers()
         # we need to sync the network first
         self.sync_network()
         # let's check if there is any muted shape.
@@ -1362,60 +1361,75 @@ class BlueSteelEditor(object):
         invalid_shapes = []
         skip_all_locked = False
         related_downstream_shapes = set()
-        for mesh in selected:
-            shape_name = mesh.split("|")[-1]
-            if utilities.is_valid(shape_name, self.separator):
-                related_downstream_shapes.update(self.get_related_shapes_downstream(shape_name))
-                if shape_name in self.locked_shapes:
-                    # we need a prompt to ask the user if they want to unlock the shape and continue or skip this shape
-                    if skip_all_locked == True:
-                        continue
-                    result = cmds.confirmDialog(title='Locked Shape Detected',
-                                            message=f'Shape "{shape_name}" is locked. Do you want to unlock it and continue?',
-                                            button=['Unlock', 'Skip', 'Unlock All', 'Skip All', 'Cancel'],
-                                            defaultButton='Unlock',
-                                            cancelButton='Cancel',
-                                            dismissString='Cancel')
-                    if result == 'Unlock':
-                        self.unlock_shape(shape_name)
-                    elif result == 'Cancel':
-                        raise ValueError(f"Operation cancelled by the user. No shapes have been committed.")
-                    elif result == 'Unlock All':
-                        self.unlock_all_shapes()
-                    elif result == 'Skip All':
-                        skip_all_locked = True
-                    else:
-                        continue
-                valid_meshes[shape_name] = mesh
-            else:
-                invalid_shapes.append(mesh)
+        self.disable_all_deformers()
+        try:
+            for mesh in selected:
+                shape_name = mesh.split("|")[-1]
+                if utilities.is_valid(shape_name, self.separator):
+                    print(f"Committing shape: {shape_name} from mesh: {mesh}")
+                    related_downstream_shapes.update(self.get_related_shapes_downstream(shape_name))
+                    if shape_name in self.locked_shapes:
+                        # we need a prompt to ask the user if they want to unlock the shape and continue or skip this shape
+                        if skip_all_locked == True:
+                            continue
+                        result = cmds.confirmDialog(title='Locked Shape Detected',
+                                                message=f'Shape "{shape_name}" is locked. Do you want to unlock it and continue?',
+                                                button=['Unlock', 'Skip', 'Unlock All', 'Skip All', 'Cancel'],
+                                                defaultButton='Unlock',
+                                                cancelButton='Cancel',
+                                                dismissString='Cancel')
+                        if result == 'Unlock':
+                            self.unlock_shape(shape_name)
+                        elif result == 'Cancel':
+                            raise ValueError(f"Operation cancelled by the user. No shapes have been committed.")
+                        elif result == 'Unlock All':
+                            self.unlock_all_shapes()
+                        elif result == 'Skip All':
+                            skip_all_locked = True
+                        else:
+                            continue
+                    valid_meshes[shape_name] = mesh
+                else:
+                    print(f"Invalid shape name: {shape_name}. Skipping mesh: {mesh}")
+                    invalid_shapes.append(mesh)
 
-        related_downstream_locked_shapes = related_downstream_shapes.intersection(self.locked_shapes)
-        extracted_locked_meshes = None
-        extraction_group = None
-        if related_downstream_locked_shapes:
-            extraction_group, extracted_locked_meshes = self.extract_shapes_to_mesh(related_downstream_locked_shapes)
+            related_downstream_locked_shapes = related_downstream_shapes.intersection(self.locked_shapes)
+            extracted_locked_meshes = None
+            extraction_group = None
+            if related_downstream_locked_shapes:
+                extraction_group, extracted_locked_meshes = self.extract_shapes_to_mesh(related_downstream_locked_shapes)
 
-        # we need to get the downstream shapes for the selected shapes.
-        # close the shape editor if it's open
-        shape_editor_exists = cmds.window(self.SHAPE_EDITOR_PANEL, exists=True)
-        if shape_editor_exists and close_shape_editor:
-            cmds.deleteUI(self.SHAPE_EDITOR_PANEL)
-        self._commit_batch_shapes_with_progress_bar(valid_meshes, progress_bar_message="Committing {0} shapes...")
-        # after all shapes have been added we need to update the remap nodes for the primaries that had new inbetweens added
-        # now we need to commit the locked
-        if extracted_locked_meshes:
-            self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes, progress_bar_message="Restoring locked {0} shapes...")
-            if extraction_group:
-                cmds.delete(extraction_group)
-        if shape_editor_exists and close_shape_editor:
-            cmds.ShapeEditor()
-        if TIMED:
-            print(f"Finished committing {len(valid_meshes)} shapes on {len(selected)} Restored: {len(extracted_locked_meshes) if extracted_locked_meshes else 0} locked shapes in {time.time() - start:.2f} seconds.")
-        cmds.select(clear=True)
-        cmds.select(self.container.name, replace=True)
-        self.enable_all_deformers()
-        return invalid_shapes
+            # we need to get the downstream shapes for the selected shapes.
+            # close the shape editor if it's open
+            shape_editor_exists = cmds.window(self.SHAPE_EDITOR_PANEL, exists=True)
+            if shape_editor_exists and close_shape_editor:
+                cmds.deleteUI(self.SHAPE_EDITOR_PANEL)
+            if not valid_meshes:
+                raise ValueError("No valid shapes to commit. Please check the selected meshes and ensure they have valid names.")
+
+            self._commit_batch_shapes_with_progress_bar(valid_meshes, progress_bar_message="Committing {0} shapes...")
+            # after all shapes have been added we need to update the remap nodes for the primaries that had new inbetweens added
+            # now we need to commit the locked
+            if extracted_locked_meshes:
+                self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes, progress_bar_message="Restoring locked {0} shapes...")
+                if extraction_group:
+                    cmds.delete(extraction_group)
+            if shape_editor_exists and close_shape_editor:
+                cmds.ShapeEditor()
+            if TIMED:
+                print(f"Finished committing {len(valid_meshes)} shapes on {len(selected)} Restored: {len(extracted_locked_meshes) if extracted_locked_meshes else 0} locked shapes in {time.time() - start:.2f} seconds.")
+            cmds.select(clear=True)
+            cmds.select(self.container.name, replace=True)
+        except Exception as e:
+            print("="*60)
+            print(f"Error committing shape selected meshes:")
+            traceback.print_exc()
+            print("="*60)
+        finally:
+            if invalid_shapes:
+                cmds.warning(f"Could not commit the following shapes because the naming was invalid: {', '.join(set(invalid_shapes))}")
+            self.enable_all_deformers()
+            return invalid_shapes
 
     @undoable
     def rename_work_shape(self, old_name: str, new_name: str):

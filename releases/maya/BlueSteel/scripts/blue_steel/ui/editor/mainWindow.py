@@ -3260,6 +3260,7 @@ class MainWindow(QMainWindow):
 				for shape in shapes:
 					if cmds.nodeType(shape) == "mesh":
 						selected_meshes.append(transform)
+						break
 		if not selected_meshes:
 			self._set_status("No polygon meshes found in selection.", warning=True)
 			return
