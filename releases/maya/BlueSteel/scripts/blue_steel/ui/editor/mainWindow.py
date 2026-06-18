@@ -2008,6 +2008,8 @@ class WorkShapesListView(SliderListView):
 		paste_inverted_weights_callback: Optional[Callable[[str], None]] = None,
 		add_copied_weights_callback: Optional[Callable[[str], None]] = None,
 		subtract_copied_weights_callback: Optional[Callable[[str], None]] = None,
+		normalize_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
+		clear_weights_callback: Optional[Callable[[str], None]] = None,
 		can_paste_weights_callback: Optional[Callable[[], bool]] = None,
 		parent=None,
 	) -> None:
@@ -2021,6 +2023,8 @@ class WorkShapesListView(SliderListView):
 		self._paste_inverted_weights_callback = paste_inverted_weights_callback
 		self._add_copied_weights_callback = add_copied_weights_callback
 		self._subtract_copied_weights_callback = subtract_copied_weights_callback
+		self._normalize_weights_callback = normalize_weights_callback
+		self._clear_weights_callback = clear_weights_callback
 		self._can_paste_weights_callback = can_paste_weights_callback
 		self.setAcceptDrops(True)
 		self.setDragDropMode(QAbstractItemView.DropOnly)
@@ -2079,6 +2083,8 @@ class WorkShapesListView(SliderListView):
 		receiver_name = self._receiver_name_at_pos(pos)
 		if not receiver_name:
 			return
+		selected_shape_names = self._selected_draggable_shape_names()
+		normalize_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
 		menu = QMenu(self)
 		duplicate_action = menu.addAction(f"Duplicate")
 		extract_work_shape_mesh_action = menu.addAction("Extract Mesh")
@@ -2091,6 +2097,9 @@ class WorkShapesListView(SliderListView):
 		paste_inverted_weights_action = weight_maps_menu.addAction("Paste Inverted Weights")
 		add_copied_weights_action = weight_maps_menu.addAction("Add Copied Weights")
 		subtract_copied_weights_action = weight_maps_menu.addAction("Subtract Copied Weights")
+		normalize_selected_weights_action = weight_maps_menu.addAction("Normalize Selected Weights")
+		weight_maps_menu.addSeparator()
+		clear_weights_action = weight_maps_menu.addAction("Clear Weights")
 
 		can_paste_weights = True
 		if self._can_paste_weights_callback is not None:
@@ -2099,6 +2108,8 @@ class WorkShapesListView(SliderListView):
 		paste_inverted_weights_action.setEnabled(can_paste_weights)
 		add_copied_weights_action.setEnabled(can_paste_weights)
 		subtract_copied_weights_action.setEnabled(can_paste_weights)
+		normalize_selected_weights_action.setEnabled(bool(normalize_targets) and self._normalize_weights_callback is not None)
+		clear_weights_action.setEnabled(self._clear_weights_callback is not None)
 
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(self.viewport().mapToGlobal(pos))
@@ -2120,6 +2131,10 @@ class WorkShapesListView(SliderListView):
 			self._add_copied_weights_callback(receiver_name)
 		elif selected_action == subtract_copied_weights_action and self._subtract_copied_weights_callback is not None:
 			self._subtract_copied_weights_callback(receiver_name)
+		elif selected_action == normalize_selected_weights_action and self._normalize_weights_callback is not None:
+			self._normalize_weights_callback(normalize_targets)
+		elif selected_action == clear_weights_action and self._clear_weights_callback is not None:
+			self._clear_weights_callback(receiver_name)
 
 
 class ShapeTreeWidget(QTreeWidget):
@@ -2766,6 +2781,8 @@ class MainWindow(QMainWindow):
 			self._on_work_shape_paste_inverted_weights_requested,
 			self._on_work_shape_add_copied_weights_requested,
 			self._on_work_shape_subtract_copied_weights_requested,
+			self._on_work_shapes_normalize_weights_requested,
+			self._on_work_shape_clear_weights_requested,
 			self._has_copied_work_weight_map_values,
 		)
 		self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -4835,6 +4852,36 @@ class MainWindow(QMainWindow):
 			self._set_status(f"Error subtracting copied weight map values from '{work_shape_name}': {exc}", error=True)
 			return
 		self._set_status(f"Subtracted copied weight map values from '{work_shape_name}'.")
+
+	def _on_work_shapes_normalize_weights_requested(self, work_shape_names: Sequence[str]) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		shape_names = [str(name) for name in (work_shape_names or []) if str(name)]
+		if not shape_names:
+			self._set_status("No work shapes selected.", warning=True)
+			return
+		if len(shape_names) == 1:
+			self._set_status(f"Cannot Normalize Only One Work Shape", warning=True)
+			return
+		try:
+			self.current_editor.normalize_work_weight_map_values(shape_names)
+		except Exception as exc:
+			self._set_status(f"Error normalizing work-shape weight maps: {exc}", error=True)
+			return
+		self._set_status(f"Normalized weight maps for {len(shape_names)} work shape(s).")
+
+	def _on_work_shape_clear_weights_requested(self, work_shape_name: str) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		try:
+			print(f"Clearing weight map values for '{work_shape_name}'...")
+			self.current_editor.clear_work_weight_map_values(work_shape_name)
+		except Exception as exc:
+			self._set_status(f"Error clearing weight map values for '{work_shape_name}': {exc}", error=True)
+			return
+		self._set_status(f"Cleared weight map values for '{work_shape_name}'.")
 
 	def _begin_inline_workshape_rename(self, model_index: QModelIndex) -> None:
 		if self.current_editor is None or not model_index.isValid():

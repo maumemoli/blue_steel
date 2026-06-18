@@ -973,6 +973,19 @@ class BlueSteelEditor(object):
         new_values = np.array(existing_values) - np.array(self.copied_weight_map_values)
         self.work_blendshape.set_weight_map_values(weight.id, new_values.tolist()) 
 
+    def clear_work_weight_map_values(self, shape_name: str):
+        """
+        Clear the weight map values of a shape by setting them all to 0.
+        Parameters:
+            shape_name (str): The name of the shape to clear the weight values for
+        """
+        weight = self.work_blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+        num_vertices = len(self.work_blendshape.get_weight_map_values(weight.id))
+        zero_values = [1.0] * num_vertices
+        self.work_blendshape.set_weight_map_values(weight.id, zero_values)
+
     def normalize_work_weight_map_values(self, shape_names: list):
         """
         Normalize the weight values of the given shapes so that the maximum value of the sum of all weight value for each vertex is always 1.0.
