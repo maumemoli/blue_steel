@@ -9,6 +9,7 @@ from ... import env
 from ...ui.common.frameLayout import FrameLayout
 from ...ui.common.icons import *
 from ...env import MAYA_VERSION
+from ...api.mayaUtils import undoable
 import os
 import sys
 
@@ -169,9 +170,66 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
         blendshape_editor_frame_layout.addWidget(split_selected_target_btn)
         filler = QtWidgets.QSpacerItem( 20 , 40 , QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding)
 
+        bake_shapes_frame_layout = FrameLayout( 'Duplicate On Timeline Range' )
+        # we need to create a layout with a frame range and a number of steps
+        duplicate_on_timeline_range_widget = QtWidgets.QWidget()
+        duplicate_on_timeline_range_layout = QtWidgets.QVBoxLayout()
+        duplicate_on_timeline_range_layout.setContentsMargins(0, 0, 0, 0)
+        duplicate_on_timeline_range_widget.setLayout(duplicate_on_timeline_range_layout)
+        time_range_layout = QtWidgets.QHBoxLayout()
+        time_range_layout.setContentsMargins(0, 0, 0, 0)
+        start_frame_label = QtWidgets.QLabel( 'Start:' )
+        self.start_frame_spinbox = QtWidgets.QSpinBox()
+        self.start_frame_spinbox.setMinimum(-100000)
+        self.start_frame_spinbox.setMaximum(100000)
+        self.start_frame_spinbox.setValue(int(cmds.playbackOptions(q=True, min=True)))
+        self.duplicate_num_label = QtWidgets.QLabel( '#' )
+        self.duplicate_num_spinbox = QtWidgets.QSpinBox()
+        self.duplicate_num_spinbox.setMinimum(1)
+        self.duplicate_num_spinbox.setMaximum(10)
+        self.duplicate_num_spinbox.setValue(3)
+        end_frame_label = QtWidgets.QLabel( 'End:' )
+        self.end_frame_spinbox = QtWidgets.QSpinBox()
+        self.end_frame_spinbox.setMinimum(-100000)
+        self.end_frame_spinbox.setMaximum(100000)
+        self.end_frame_spinbox.setValue(int(cmds.playbackOptions(q=True, max=True)))
+        time_range_layout.addWidget(start_frame_label)
+        time_range_layout.addWidget(self.start_frame_spinbox)
+        time_range_layout.addWidget(self.duplicate_num_label)
+        time_range_layout.addWidget(self.duplicate_num_spinbox)
+        time_range_layout.addWidget(end_frame_label)
+        time_range_layout.addWidget(self.end_frame_spinbox)
+        
+        bake_shapes_frame_layout.addWidget(duplicate_on_timeline_range_widget)
+        set_time_range_btn = QtWidgets.QPushButton( 'Set Time Line Range' )
+        set_time_range_btn.clicked.connect(self._on_set_time_range_clicked)
+        set_time_range_btn.setToolTip( 'Set the time line range to the values in the spinboxes' )
+        get_time_range_btn = QtWidgets.QPushButton( 'Get Time Line Range' )
+        get_time_range_btn.clicked.connect(self._on_get_time_range_clicked)
+        get_time_range_btn.setToolTip( 'Get the time line range and set the values in the spinboxes' )
+
+        # we need to add a text field for the duplicate name
+        duplicate_name_layout = QtWidgets.QHBoxLayout()
+        duplicate_name_layout.setContentsMargins(0, 0, 0, 0)
+        duplicate_name_label = QtWidgets.QLabel( 'Duplicate Name:' )
+        self.duplicate_name_line_edit = QtWidgets.QLineEdit()
+        self.duplicate_name_line_edit.setPlaceholderText( 'Enter a name for the duplicate' )
+        duplicate_name_layout.addWidget(duplicate_name_label)
+        duplicate_name_layout.addWidget(self.duplicate_name_line_edit)
+        # finally we need to add a button to duplicate the selected shapes on the timeline range
+        duplicate_on_timeline_range_btn = QtWidgets.QPushButton( 'Duplicate On Timeline Range' )
+        duplicate_on_timeline_range_btn.clicked.connect(self._duplicate_on_timeline_range)
+
+        duplicate_on_timeline_range_layout.addLayout(duplicate_name_layout)
+        duplicate_on_timeline_range_layout.addWidget(set_time_range_btn)
+        duplicate_on_timeline_range_layout.addLayout(time_range_layout)
+        duplicate_on_timeline_range_layout.addWidget(get_time_range_btn)
+        duplicate_on_timeline_range_layout.addWidget(duplicate_on_timeline_range_btn)
+
         mainLayout.addWidget(mesh_tools_frame_layout)
         mainLayout.addWidget(clusters_frame_layout)
         mainLayout.addWidget(attribute_tools_frame_layout)
+        mainLayout.addWidget(bake_shapes_frame_layout)
         mainLayout.addWidget(blendshape_editor_frame_layout)
 
         mainLayout.addItem(filler)
@@ -209,173 +267,46 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
             cmds.deleteUI(control, control=True)
 
 
-# class FrameLayout (QtWidgets.QWidget):
-#     def __init__(self , label , parent=None):
-#         super (FrameLayout , self).__init__ (parent)
+    def _on_set_time_range_clicked(self):
+        start_frame = self.start_frame_spinbox.value()
+        end_frame = self.end_frame_spinbox.value()
+        cmds.playbackOptions(min=start_frame, max=end_frame)
 
-#         self.label = label
-#         # self.setCheckable( True )
-#         # self.setChecked( True )
-#         # creating the main layout
-#         self.layout = QtWidgets.QVBoxLayout ()
-#         self.setLayout (self.layout)
-#         self.layout.setSpacing (0)
-#         self.layout.setMargin (0)
-#         # adding widgets
-#         self.init_widget ()
-
-#         # colors
-#         self.colorR = 100
-#         self.colorG = 100
-#         self.colorB = 100
-#         self.title.clicked.connect (self.collapse)
-
-#         # set the content layout
-#         self.content_layout = QtWidgets.QVBoxLayout ()
-#         self.frame.setLayout (self.content_layout)
-#         self.content_layout.setSpacing (4)
-#         self.content_layout.setMargin (0)
-#         self.content_layout.setContentsMargins (0 , 4 , 0 , 4)
-
-#     def init_widget(self):
-#         self._create_frame ()
-#         self._create_title ()
-
-#         self.layout.addWidget (self.title)
-#         self.layout.addWidget (self.frame)
-
-#     def _create_frame(self):
-#         self.frame = QtWidgets.QFrame ()
-#         self.frame.setStyleSheet ("QFrame { border: 0px solid #5d5d5d;"
-#                                   "border-bottom-left-radius: 0px;"
-#                                   "border-bottom-right-radius: 0px;}")
-
-#     def _create_title(self):
-
-#         self.title = QtWidgets.QToolButton (text=self.label , checkable=True , checked=False)
-#         self.title.setStyleSheet ("QToolButton { border: none;"
-#                                   "background-color: #5d5d5d;"
-#                                   "border-width: 5px;"
-#                                   "border-radius: 2px;"
-#                                   "border-color: #5d5d5d;color: #bbbbbb;"
-#                                   "font-weight: bold}")
-#         self.title.setToolButtonStyle (QtCore.Qt.ToolButtonTextBesideIcon)
-#         self.title.setArrowType (QtCore.Qt.ArrowType.DownArrow)
-#         self.title.setSizePolicy (QtWidgets.QSizePolicy.Expanding , QtWidgets.QSizePolicy.Fixed)
-
-#     def collapse(self):
-#         if self.title.isChecked ():
-#             self.frame.setMaximumHeight (167777)
-#             self.title.setArrowType (QtCore.Qt.ArrowType.DownArrow)
-#         else:
-#             self.frame.setMaximumHeight (0)
-#             self.title.setArrowType (QtCore.Qt.ArrowType.RightArrow)
-
-#     def setColor(self , r , g , b):
-#         self.r = r
-#         self.g = g
-#         self.b = b
-#         self.setFrameLayoutStylesheet ()
-
-#     def addWidget(self , widget):
-#         '''
-#         This function receives a widget to add to its internal vertical
-#         layout.
-#         '''
-#         self.content_layout.addWidget (widget)
-
-
-
-# class CollapsibleBox(QtWidgets.QWidget):
-#     def __init__(self, title="", parent=None):
-#         super(CollapsibleBox, self).__init__(parent)
-#         self.toggle_button = QtWidgets.QToolButton(text=title, checkable=True, checked=False)
-#         self.toggle_button.setStyleSheet("QToolButton { border: none;"
-#                                          "background-color: #5d5d5d;border-width: 2px;"
-#                                          "border-radius: 2px;"
-#                                          "border-color: #5d5d5d;color: #bbbbbb;"
-#                                          "font-weight: bold}")
-#         self.toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-#         self.toggle_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
-#         self.toggle_button.setSizePolicy (QtWidgets.QSizePolicy.Expanding , QtWidgets.QSizePolicy.Fixed)
-#         self.toggle_button.pressed.connect(self.on_pressed)
-#         self.toggle_animation = QtCore.QParallelAnimationGroup(self)
-
-#         self.content_area = QtWidgets.QScrollArea(maximumHeight=0, minimumHeight=0)
-#         self.content_area.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-#         self.content_area.setFrameShape(QtWidgets.QFrame.NoFrame)
-
-#         main_box_layout = QtWidgets.QVBoxLayout(self)
-#         main_box_layout.setSpacing(0)
-#         main_box_layout.setContentsMargins(0, 0, 0, 0)
-#         main_box_layout.addWidget(self.toggle_button)
-#         main_box_layout.addWidget(self.content_area)
-
-
-#         # adding a dummy button for testing puposes
-#         # self.add_button("dummy")
-
-#         # self.content_area.setLayout (content_layout)
-#         self.adjustSize()
-#     def update_collapsible_animation(self):
-#         self.toggle_animation.addAnimation (QtCore.QPropertyAnimation (self , b"minimumHeight"))
-#         self.toggle_animation.addAnimation (QtCore.QPropertyAnimation (self , b"maximumHeight"))
-#         self.toggle_animation.addAnimation (QtCore.QPropertyAnimation (self.content_area , b"maximumHeight"))
-
-#         collapsed_height = self.sizeHint ().height () - self.content_area.maximumHeight ()
-#         content_height = self.content_layout.sizeHint ().height ()
-#         for i in range (self.toggle_animation.animationCount ()):
-#             animation = self.toggle_animation.animationAt (i)
-#             animation.setDuration (2)
-#             animation.setStartValue (collapsed_height)
-#             animation.setEndValue (collapsed_height + content_height)
-
-#         content_animation = self.toggle_animation.animationAt (self.toggle_animation.animationCount () - 1)
-#         content_animation.setDuration (2)
-#         content_animation.setStartValue (0)
-#         content_animation.setEndValue (content_height)
-
-
-#     @QtCore.Slot()
-#     def on_pressed(self):
-#         checked = self.toggle_button.isChecked()
-#         self.toggle_button.setArrowType(QtCore.Qt.ArrowType.DownArrow
-#                                         if not checked else QtCore.Qt.ArrowType.RightArrow)
-#         self.toggle_animation.setDirection(QtCore.QAbstractAnimation.Forward
-#                                            if not checked else QtCore.QAbstractAnimation.Backward)
-#         self.toggle_animation.start()
-
-#     @property
-#     def content_layout(self):
-#         content_layout = self.content_area.layout()
-#         if content_layout:
-#             return content_layout
-
-#     @content_layout.setter
-#     def content_layout(self, layout):
-#         old_layout = self.content_area.layout()
-#         del old_layout
-#         self.content_area.setLayout(layout)
-#         self.update_collapsible_animation ()
-
-
-#     def add_button(self, title, func=None):
-#         content_layout = self.content_layout
-#         button = QtWidgets.QPushButton(title)
-#         button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-#         if func:
-#             button.connect(func)
-#         if not content_layout:
-#             print("creating new layout")
-#             content_layout = QtWidgets.QVBoxLayout (self)
-#             content_layout.setSpacing (0)
-#             content_layout.addWidget (button)
-
-#             self.content_layout = content_layout
-#         else:
-#             self.content_layout.addWidget(button)
-#             self.update_collapsible_animation()
-
+    def _on_get_time_range_clicked(self):
+        start_frame = int(cmds.playbackOptions(q=True, min=True))
+        end_frame = int(cmds.playbackOptions(q=True, max=True))
+        self.start_frame_spinbox.setValue(start_frame)
+        self.end_frame_spinbox.setValue(end_frame)
+    @undoable
+    def _duplicate_on_timeline_range(self):
+        start_frame = self.start_frame_spinbox.value()
+        end_frame = self.end_frame_spinbox.value()
+        num_duplicates = self.duplicate_num_spinbox.value()
+        separator = env.SEPARATOR
+        duplicate_name = self.duplicate_name_line_edit.text()
+        selection = cmds.ls(sl=True, long=True)
+        if not selection:
+            cmds.warning("No objects selected to duplicate.")
+            return
+        if not duplicate_name:
+            cmds.warning("Please enter a name for the duplicate.")
+            return
+        offset = 1.0 / (num_duplicates)
+        range_length = end_frame - start_frame
+        current_offset = 0.0
+        current_frame = start_frame
+        for i in range(1, num_duplicates+1):
+            duplicate_suffix = int(offset*(i)*100)
+            if duplicate_suffix == 100:
+                duplicate_suffix = ""
+            current_frame = start_frame + (range_length * (i* offset))
+            cmds.currentTime(current_frame)
+            duplicate_tokens = duplicate_name.split(separator)
+            renamed_tokens = []
+            for token in duplicate_tokens:
+                renamed_tokens.append(f"{token}{duplicate_suffix}")
+            new_name = separator.join(renamed_tokens)
+            duplicated = cmds.duplicate(selection[0], name = new_name)[0]
 
 def show():
     global WINDOW
