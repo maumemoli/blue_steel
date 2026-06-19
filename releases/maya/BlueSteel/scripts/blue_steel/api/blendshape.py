@@ -1633,6 +1633,29 @@ class Blendshape(object):
         weight_map_values = [1.0] * len(weight_map_values)
         self.set_weight_map_values(weight.id, weight_map_values)
 
+
+    def transfer_weight_map(self, source_weight_id: int, target_weight_id: int, target_blendshape: str = None):
+        """
+        Transfers the weight map from the source weight to the target weight in another blendshape node.
+        Parameters:
+            source_weight (int): The weight to transfer the weight map from.
+            target_weight (int): The weight to transfer the weight map to.
+            target_blendshape (str): The blendshape node to transfer the weight map to.
+        Example:
+            >>> blendshape1 = Blendshape("blendshape1")
+            >>> blendshape2 = Blendshape("blendshape2")
+            >>> blendshape1.transfer_weight_map(0, 0, "blendshape2")
+        """
+        if target_blendshape is None:
+            target_blendshape = self.name
+        output_attr = ('{0}.inputTarget[0].inputTargetGroup[{1}].targetWeights'.format(
+            self.name, source_weight_id))
+        inputAttr = ('{0}.inputTarget[0].inputTargetGroup[{1}].targetWeights'.format(
+            target_blendshape, target_weight_id))
+        if not cmds.isConnected(output_attr, inputAttr):
+            cmds.connectAttr(output_attr, inputAttr)
+            cmds.disconnectAttr(output_attr, inputAttr)
+
     def get_target_points(self, input_target_index: int, target_value: int = 6000):
         """
         Returns the list of points for the specified target value

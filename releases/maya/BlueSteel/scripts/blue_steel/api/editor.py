@@ -1514,8 +1514,7 @@ class BlueSteelEditor(object):
         new_shape_name = f"{shape_name}_copy"
         duplicated_weight = self.add_work_shape(new_shape_name)
         # we need to copy the delta from the original shape to the duplicated shape
-        weight_map_values = self.work_blendshape.get_weight_map_values(weight.id)
-        self.work_blendshape.set_weight_map_values(duplicated_weight.id, weight_map_values)
+        self.work_blendshape.transfer_weight_map(weight.id, duplicated_weight.id)
         deltas = self.work_blendshape.get_target_delta(weight.id)
         self.work_blendshape.set_target_delta(duplicated_weight.id, deltas)
         return duplicated_weight
