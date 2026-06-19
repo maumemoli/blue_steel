@@ -7,7 +7,7 @@ Here go all the evnvironment variables that are used in the project.
 """
 
 SEPARATOR = "_"
-VERSION = "v1.1.3"
+VERSION = "v1.2.0"
 ICONS_PATH = os.path.join(cmds.moduleInfo(moduleName="blue_steel_maya", path=True), "icons")
 MAYA_VERSION = int(cmds.about(version=True))
 # python version
