@@ -1347,6 +1347,17 @@ class SliderItemDelegate(QStyledItemDelegate):
 	lockToggleRequested = Signal(str, bool)
 	connectedMeshRequested = Signal(str)
 
+	VALUE_COLUMN_WIDTH = 86
+	VALUE_TEXT_PADDING = 8
+	FALLBACK_VALUE_TEXT_WIDTH = 48
+	LEFT_MARGIN = 6
+	RIGHT_MARGIN = 4
+	TREE_INDENT = 6
+	VALUE_TO_ICON_GAP = 10
+	ICON_SIZE = 22
+	ICON_GAP = 3
+	MIN_TEXT_WIDTH = 20
+
 	def sizeHint(self, option, index):  # noqa: N802
 		if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
 			return QSize(option.rect.width(), 28)
@@ -1355,7 +1366,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
 		self._name_column_width = 0
-		self._value_column_width = 86
+		self._value_column_width = self.VALUE_COLUMN_WIDTH
 		self._drag_active = False
 		self._undo_chunk_open = False
 		self._drag_index = QPersistentModelIndex()
@@ -1397,42 +1408,27 @@ class SliderItemDelegate(QStyledItemDelegate):
 		font_metrics = getattr(option, "fontMetrics", None)
 		if font_metrics is None and self.parent() is not None:
 			font_metrics = self.parent().fontMetrics()
-		return font_metrics.horizontalAdvance("0.000") + 8 if font_metrics is not None else 48
-
-	def minimum_row_width(self, name_width: int, depth: int = 0, icon_slots: Optional[int] = None) -> int:
-		value_text_w = self._value_text_width()
-		left_margin = 6 + max(0, int(depth)) * 6
-		column_gap = 10
-		icon_size = 22
-		icon_gap = 3
-		right_margin = 4
-		if icon_slots is None:
-			icon_slots = self._panel_reserved_icon_slots()
-		return left_margin + value_text_w + column_gap + (icon_size * icon_slots) + (icon_gap * icon_slots) + max(20, int(name_width)) + right_margin + 8
+		return font_metrics.horizontalAdvance("0.000") + self.VALUE_TEXT_PADDING if font_metrics is not None else self.FALLBACK_VALUE_TEXT_WIDTH
 
 	def _area_rects(self, option, index):
 		rect = option.rect
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
-		left_margin = 6 + self._tree_row_indent(index)
-		column_gap = 10
-		icon_size = 22
-		icon_gap = 3
-		right_margin = 4
+		left_margin = self.LEFT_MARGIN + self._tree_row_indent(index)
 		value_text_w = self._value_text_width(option)
-		available_w = max(1, rect.width() - left_margin - right_margin)
+		available_w = max(1, rect.width() - left_margin - self.RIGHT_MARGIN)
 		icon_slots = self._reserved_icon_slots(index)
-		icon_area_w = (icon_size * icon_slots) + (icon_gap * icon_slots)
-		reserved_text_w = max(20, min(self._name_column_width, available_w))
-		reserved_after_value_w = column_gap + icon_area_w + reserved_text_w
+		icon_area_w = (self.ICON_SIZE * icon_slots) + (self.ICON_GAP * icon_slots)
+		reserved_text_w = max(self.MIN_TEXT_WIDTH, min(self._name_column_width, available_w))
+		reserved_after_value_w = self.VALUE_TO_ICON_GAP + icon_area_w + reserved_text_w
 		value_w = min(self._value_column_width, max(value_text_w, available_w - reserved_after_value_w), available_w)
 
 		value_left = rect.left() + left_margin
 		value_rect = QRect(value_left, rect.top(), value_w, rect.height())
 
-		icon_left = value_rect.right() + 1 + column_gap
-		text_left = icon_left + (icon_size * icon_slots) + (icon_gap * icon_slots)
-		text_width = max(20, rect.right() - text_left - right_margin)
+		icon_left = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
+		text_left = icon_left + (self.ICON_SIZE * icon_slots) + (self.ICON_GAP * icon_slots)
+		text_width = max(self.MIN_TEXT_WIDTH, rect.right() - text_left - self.RIGHT_MARGIN)
 		text_rect = QRect(text_left, rect.top(), text_width, rect.height())
 		return value_rect, text_rect
 
@@ -1445,18 +1441,16 @@ class SliderItemDelegate(QStyledItemDelegate):
 		while parent_index.isValid():
 			depth += 1
 			parent_index = parent_index.parent()
-		return depth * 6
+		return depth * self.TREE_INDENT
 
 	def _connected_mesh_icon_rect(self, option, index) -> QRect:
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
 		if shape_type != "WorkShape":
 			return QRect()
 		value_rect, _ = self._area_rects(option, index)
-		icon_size = 22
-		column_gap = 12
-		x = value_rect.right() + 1 + column_gap
-		y = option.rect.top() + (option.rect.height() - icon_size) // 2
-		return QRect(x, y, icon_size, icon_size)
+		x = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
+		y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
+		return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
 
 	def _is_lock_icon_visible(self, index) -> bool:
 		return bool(index.model().data(index, ShapeItemsModel.LockIconVisibleRole))
@@ -1489,31 +1483,25 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return QRect()
 		connected_rect = self._connected_mesh_icon_rect(option, index)
 		if not connected_rect.isNull():
-			icon_gap = 3
-			return QRect(connected_rect.right() + 1 + icon_gap, connected_rect.top(), connected_rect.width(), connected_rect.height())
+			return QRect(connected_rect.right() + 1 + self.ICON_GAP, connected_rect.top(), connected_rect.width(), connected_rect.height())
 		value_rect, _ = self._area_rects(option, index)
-		icon_size = 22
-		column_gap = 10
-		x = value_rect.right() + 1 + column_gap
-		y = option.rect.top() + (option.rect.height() - icon_size) // 2
-		return QRect(x, y, icon_size, icon_size)
+		x = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
+		y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
+		return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
 
 	def _lock_icon_rect(self, option, index) -> QRect:
 		if not self._is_lock_icon_visible(index):
 			return QRect()
-		icon_gap = 3
 		mute_rect = self._mute_icon_rect(option, index)
 		if not mute_rect.isNull():
-			return QRect(mute_rect.right() + 1 + icon_gap, mute_rect.top(), mute_rect.width(), mute_rect.height())
+			return QRect(mute_rect.right() + 1 + self.ICON_GAP, mute_rect.top(), mute_rect.width(), mute_rect.height())
 		connected_rect = self._connected_mesh_icon_rect(option, index)
 		if not connected_rect.isNull():
-			return QRect(connected_rect.right() + 1 + icon_gap, connected_rect.top(), connected_rect.width(), connected_rect.height())
+			return QRect(connected_rect.right() + 1 + self.ICON_GAP, connected_rect.top(), connected_rect.width(), connected_rect.height())
 		value_rect, _ = self._area_rects(option, index)
-		icon_size = 22
-		column_gap = 10
-		x = value_rect.right() + 1 + column_gap
-		y = option.rect.top() + (option.rect.height() - icon_size) // 2
-		return QRect(x, y, icon_size, icon_size)
+		x = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
+		y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
+		return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
 
 	def _draw_icon_pixmap(self, painter: QPainter, icon_rect: QRect, icon: QIcon) -> None:
 		"""Draw icon with smoother scaling and HiDPI-aware rasterization."""
@@ -2245,6 +2233,26 @@ class ShapeTreeWidget(QTreeWidget):
 				shape_names.append(shape_name)
 		return shape_names
 
+	def _next_selectable_item(self, start_item: Optional[QTreeWidgetItem], direction: int) -> Optional[QTreeWidgetItem]:
+		if start_item is None:
+			return None
+		candidate = self.itemBelow(start_item) if direction > 0 else self.itemAbove(start_item)
+		while candidate is not None:
+			if not bool(candidate.data(0, ShapeItemsModel.IsHeaderRole)):
+				return candidate
+			candidate = self.itemBelow(candidate) if direction > 0 else self.itemAbove(candidate)
+		return None
+
+	def _move_to_next_selectable_item(self, direction: int) -> bool:
+		target_item = self._next_selectable_item(self.currentItem(), direction)
+		if target_item is None:
+			return False
+		self.clearSelection()
+		self.setCurrentItem(target_item)
+		target_item.setSelected(True)
+		self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
+		return True
+
 	def startDrag(self, supportedActions):  # noqa: N802
 		shape_names = self._selected_draggable_shape_names()
 		if not shape_names:
@@ -2262,7 +2270,14 @@ class ShapeTreeWidget(QTreeWidget):
 			drag.exec_(drop_action)
 
 	def keyPressEvent(self, event):  # noqa: N802
-		"""Press F to center the selected/current shape row in the shapes panel."""
+		"""Handle shape-row navigation shortcuts in the shapes panel."""
+		if event.modifiers() == Qt.NoModifier:
+			if event.key() == Qt.Key_Down and self._move_to_next_selectable_item(1):
+				event.accept()
+				return
+			if event.key() == Qt.Key_Up and self._move_to_next_selectable_item(-1):
+				event.accept()
+				return
 		if event.key() == Qt.Key_F and event.modifiers() == Qt.NoModifier:
 			target_item = self.currentItem()
 			if target_item is None:
@@ -2431,6 +2446,14 @@ class MainWindow(QMainWindow):
 		self._select_first_available_editor()
 		self._update_window_title()
 
+	def _allow_horizontal_collapse(self, widget: QWidget) -> None:
+		widget.setMinimumWidth(0)
+		widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+
+	def _prepare_toolbar_button(self, button: QPushButton, *, height: int = 32) -> None:
+		button.setStyleSheet("padding: 0px;")
+		button.setFixedHeight(height)
+
 	def _build_ui(self) -> None:
 		self._create_menu_bar()
 
@@ -2484,8 +2507,7 @@ class MainWindow(QMainWindow):
 		self._build_tools_panel(splitter)
 
 		primaries_panel = QWidget()
-		primaries_panel.setMinimumWidth(0)
-		primaries_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(primaries_panel)
 		primaries_layout = QVBoxLayout(primaries_panel)
 		primaries_header_layout = QHBoxLayout()
 		primaries_header_layout.setContentsMargins(0, 0, 0, 0)
@@ -2500,23 +2522,20 @@ class MainWindow(QMainWindow):
 		primaries_sort_layout.setContentsMargins(0, 0, 0, 0)
 		primaries_sort_layout.setSpacing(0)
 		self.primaries_sort_name_button = QPushButton("A-Z")
-		self.primaries_sort_name_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.primaries_sort_name_button)
 		self.primaries_sort_name_button.setToolTip("Sort primaries alphabetically")
 		self.primaries_sort_name_button.setCheckable(True)
 		self.primaries_sort_name_button.setChecked(True)
-		self.primaries_sort_name_button.setFixedHeight(32)
 		self.primaries_sort_value_button = QPushButton("By Value")
-		self.primaries_sort_value_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.primaries_sort_value_button)
 		self.primaries_sort_value_button.setToolTip("Sort primaries by current slider value, highest first")
 		self.primaries_sort_value_button.setCheckable(True)
 		self.primaries_sort_value_button.setChecked(False)
-		self.primaries_sort_value_button.setFixedHeight(32)
 		primaries_sort_layout.addWidget(self.primaries_sort_name_button, 1)
 		primaries_sort_layout.addWidget(self.primaries_sort_value_button, 1)
 		primaries_layout.addLayout(primaries_sort_layout)
 		self.primaries_view = PrimaryTreeWidget()
-		self.primaries_view.setMinimumWidth(0)
-		self.primaries_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(self.primaries_view)
 		self.primaries_view._sort_by_value = False
 		self.primaries_view.setColumnCount(1)
 		self.primaries_view.setHeaderHidden(True)
@@ -2534,16 +2553,14 @@ class MainWindow(QMainWindow):
 		primaries_layout.addWidget(self.primaries_info)
 
 		shapes_panel = QWidget()
-		shapes_panel.setMinimumWidth(0)
-		shapes_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(shapes_panel)
 		shapes_layout = QVBoxLayout(shapes_panel)
 		shapes_layout.addWidget(QLabel("Shapes"))
 		self.shapes_search = QLineEdit()
 		self.shapes_search.setPlaceholderText("Filter shapes...")
 		shapes_layout.addWidget(self.shapes_search)
 		self.shapes_view = ShapeTreeWidget()
-		self.shapes_view.setMinimumWidth(0)
-		self.shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(self.shapes_view)
 		self.shapes_view.setColumnCount(1)
 		self.shapes_view.setHeaderHidden(True)
 		self.shapes_view.setIndentation(0)
@@ -2573,40 +2590,36 @@ class MainWindow(QMainWindow):
 		shapes_header_layout.setContentsMargins(0, 0, 0, 0)
 		shapes_header_layout.setSpacing(0)
 		self.shapes_auto_pose_button = QPushButton("Auto Pose")
-		self.shapes_auto_pose_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.shapes_auto_pose_button)
 		self.shapes_auto_pose_button.setIcon(AUTO_POSE_ICON)
 		self.shapes_auto_pose_button.setIconSize(QSize(16, 16))
-		self.shapes_auto_pose_button.setFixedHeight(32)
 		self.shapes_auto_pose_button.setToolTip("When enabled, selecting a shape sets it to its pose")
 		self.shapes_auto_pose_button.setCheckable(True)
 		self.shapes_auto_pose_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_auto_pose_button, 1)
 
 		self.shapes_downstream_button = QPushButton("Downstream")
-		self.shapes_downstream_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.shapes_downstream_button)
 		self.shapes_downstream_button.setIcon(DOWN_ARROW_ICON)
 		self.shapes_downstream_button.setIconSize(QSize(16, 16))
-		self.shapes_downstream_button.setFixedHeight(32)
 		self.shapes_downstream_button.setToolTip("List Downstream Connections")
 		self.shapes_downstream_button.setCheckable(True)
 		self.shapes_downstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_downstream_button, 1)
 
 		self.shapes_upstream_button = QPushButton("Upstream")
-		self.shapes_upstream_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.shapes_upstream_button)
 		self.shapes_upstream_button.setIcon(UP_ARROW_ICON)
 		self.shapes_upstream_button.setIconSize(QSize(16, 16))
-		self.shapes_upstream_button.setFixedHeight(32)
 		self.shapes_upstream_button.setToolTip("List Upstream Connections")
 		self.shapes_upstream_button.setCheckable(True)
 		self.shapes_upstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_upstream_button, 1)
 
 		self.shapes_highlight_related_button = QPushButton("Highlight Related")
-		self.shapes_highlight_related_button.setStyleSheet("padding: 0px;")
+		self._prepare_toolbar_button(self.shapes_highlight_related_button)
 		self.shapes_highlight_related_button.setIcon(HIGHLIGHT_ICON)
 		self.shapes_highlight_related_button.setIconSize(QSize(24, 24))
-		self.shapes_highlight_related_button.setFixedHeight(32)
 		self.shapes_highlight_related_button.setToolTip("When enabled, highlight upstream/downstream related shapes on selection")
 		self.shapes_highlight_related_button.setCheckable(True)
 		self.shapes_highlight_related_button.setChecked(False)
@@ -2626,8 +2639,7 @@ class MainWindow(QMainWindow):
 		shapes_layout.addLayout(shapes_footer_layout)
 
 		third_column_panel = QWidget()
-		third_column_panel.setMinimumWidth(0)
-		third_column_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(third_column_panel)
 		third_column_layout = QVBoxLayout(third_column_panel)
 		third_column_layout.setContentsMargins(0, 0, 0, 0)
 		third_column_layout.setSpacing(8)
@@ -2646,8 +2658,7 @@ class MainWindow(QMainWindow):
 			self._on_primary_drop_list_dropped,
 			self._on_primary_drop_remove_requested,
 		)
-		self.primary_drop_view.setMinimumWidth(0)
-		self.primary_drop_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(self.primary_drop_view)
 		self.primary_drop_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.primary_drop_view.setModel(self._primary_subset_proxy)
 		self._primary_drop_delegate = SliderItemDelegate(self.primary_drop_view)
@@ -2689,8 +2700,7 @@ class MainWindow(QMainWindow):
 			self._on_work_shape_clear_weights_requested,
 			self._has_copied_work_weight_map_values,
 		)
-		self.work_shapes_view.setMinimumWidth(0)
-		self.work_shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(self.work_shapes_view)
 		self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.work_shapes_view.setModel(self._work_shape_model)
 		self._work_shapes_delegate = SliderItemDelegate(self.work_shapes_view)
@@ -2703,8 +2713,7 @@ class MainWindow(QMainWindow):
 		self.active_shapes_search.setPlaceholderText("Filter active shapes...")
 		active_shapes_layout.addWidget(self.active_shapes_search)
 		self.active_shapes_view = SliderListView()
-		self.active_shapes_view.setMinimumWidth(0)
-		self.active_shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self._allow_horizontal_collapse(self.active_shapes_view)
 		self.active_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.active_shapes_view.setDragEnabled(True)
 		self.active_shapes_view.setDragDropMode(QAbstractItemView.DragOnly)
@@ -4234,25 +4243,23 @@ class MainWindow(QMainWindow):
 			if self.blendshape_tracker is not None:
 				self.blendshape_tracker.start()
 
-	def _compute_tree_name_metrics(self, tree: QTreeWidget) -> tuple[int, int]:
+	def _compute_tree_max_name_width(self, tree: QTreeWidget) -> int:
 		fm = tree.fontMetrics()
 		max_width = 0
-		max_depth = 0
 
-		def visit(item: QTreeWidgetItem, depth: int) -> None:
-			nonlocal max_width, max_depth
+		def visit(item: QTreeWidgetItem) -> None:
+			nonlocal max_width
 			if item.isHidden():
 				return
 			if not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
 				name = str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or "")
 				max_width = max(max_width, fm.horizontalAdvance(name))
-				max_depth = max(max_depth, depth)
 			for i in range(item.childCount()):
-				visit(item.child(i), depth + 1)
+				visit(item.child(i))
 
 		for i in range(tree.topLevelItemCount()):
-			visit(tree.topLevelItem(i), 0)
-		return max_width, max_depth
+			visit(tree.topLevelItem(i))
+		return max_width
 
 	def _compute_filtered_max_name_width(self, view: QListView, model: QSortFilterProxyModel) -> int:
 		"""Return max name width for currently filtered rows in a proxy model."""
@@ -4266,9 +4273,8 @@ class MainWindow(QMainWindow):
 
 	def _update_delegate_name_columns(self) -> None:
 		"""Align value columns using max name width of the *filtered* data per view."""
-		self._update_third_column_section_minimums()
-		primaries_width, primaries_depth = self._compute_tree_name_metrics(self.primaries_view)
-		shapes_width, shapes_depth = self._compute_tree_name_metrics(self.shapes_view)
+		primaries_width = self._compute_tree_max_name_width(self.primaries_view)
+		shapes_width = self._compute_tree_max_name_width(self.shapes_view)
 		active_shapes_width = self._compute_filtered_max_name_width(self.active_shapes_view, self._active_shapes_proxy)
 		primary_drop_width = self._compute_filtered_max_name_width(self.primary_drop_view, self._primary_subset_proxy)
 		work_shapes_width = self._compute_filtered_max_name_width(self.work_shapes_view, self._work_shape_model)
@@ -4277,8 +4283,6 @@ class MainWindow(QMainWindow):
 		self._active_shapes_delegate.set_name_column_width(active_shapes_width)
 		self._primary_drop_delegate.set_name_column_width(primary_drop_width)
 		self._work_shapes_delegate.set_name_column_width(work_shapes_width)
-		self.primaries_view.setMinimumWidth(0)
-		self.shapes_view.setMinimumWidth(0)
 		self.primaries_view.viewport().update()
 		self.shapes_view.viewport().update()
 		self.active_shapes_view.viewport().update()
@@ -4803,6 +4807,20 @@ class MainWindow(QMainWindow):
 
 	def _on_work_shapes_double_clicked(self, model_index: QModelIndex) -> None:
 		if self.current_editor is None or not model_index.isValid():
+			return
+		shape_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return
+		if QGuiApplication.keyboardModifiers() & Qt.AltModifier:
+			try:
+				connected_shape_name = self.current_editor.get_work_shape_driver(shape_name)
+			except Exception as exc:
+				self._set_status(f"Error finding connected shape for '{shape_name}': {exc}", error=True)
+				return
+			if not connected_shape_name:
+				self._set_status(f"Work shape '{shape_name}' is not connected to a shape.", warning=True)
+				return
+			self._set_shape_pose_by_name(str(connected_shape_name))
 			return
 		self._begin_inline_workshape_rename(model_index)
 
@@ -5447,7 +5465,6 @@ class MainWindow(QMainWindow):
 		self._reload_shapes_from_editor()
 
 	def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
-		print(f"Work shape value changed: {shape_name} = {value:.3f}")
 		del shape_id
 		self._work_shape_model.set_value_local(shape_name, value)
 
