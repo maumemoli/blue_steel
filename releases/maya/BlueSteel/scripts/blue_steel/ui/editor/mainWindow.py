@@ -53,12 +53,13 @@ from ..common.icons import (
 	CONTROLLER_LAYOUT_ICON,
 	CONNECTED_MESH_ENABLED_ICON,
 	CONNECTED_MESH_DISABLED_ICON,
+	COMPARE_MESH_ICON,
 
 )
 from ...mmtools import ui
 
 WINDOW = None
-SHOW_UPADTE_CHECK = True
+SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
 	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
 	from PySide6.QtGui import QAction, QColor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
@@ -2580,6 +2581,18 @@ class MainWindow(QMainWindow):
 		self._primary_rename_old_name: str = ""
 		self._controller_layout_window: Optional[ControllerLayoutWindow] = None
 		self.heat_map_switch: Optional[QPushButton] = None
+		self._main_splitter: Optional[QSplitter] = None
+		self._tools_group: Optional[QGroupBox] = None
+		self._tools_panel_buttons: List[QPushButton] = []
+		self._tools_panel_button_labels: Dict[QPushButton, str] = {}
+		self._tools_panel_sections: List[frameLayout.FrameLayout] = []
+		self._tools_panel_section_labels: Dict[frameLayout.FrameLayout, str] = {}
+		self._tools_panel_compact_mode = False
+		self._tools_panel_compact_threshold = 165
+		self._tools_panel_compact_width = 76
+		self._tools_panel_expanded_width = 200
+		self._tools_panel_compact_icon_size = QSize(24, 24)
+		self._tools_panel_expanded_icon_size = QSize(18, 18)
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -2635,6 +2648,7 @@ class MainWindow(QMainWindow):
 		root_layout.addLayout(controls_layout)
 
 		splitter = QSplitter(Qt.Horizontal)
+		self._main_splitter = splitter
 		root_layout.addWidget(splitter, 1)
 		self._build_tools_panel(splitter)
 
@@ -2830,6 +2844,7 @@ class MainWindow(QMainWindow):
 		splitter.setStretchFactor(1, 1)
 		splitter.setStretchFactor(2, 2)
 		splitter.setSizes([200, 340, 520, 360])
+		QTimer.singleShot(0, self._sync_tools_panel_compact_mode_from_splitter)
 
 		self.status_bar = QStatusBar(self)
 		self.setStatusBar(self.status_bar)
@@ -3041,12 +3056,18 @@ class MainWindow(QMainWindow):
 
 	def _build_tools_panel(self, parent_layout) -> None:
 		tools_group = QGroupBox()
+		self._tools_group = tools_group
 		tools_group.setContentsMargins(2, 2, 2, 2)
-		tools_group.setFixedWidth(200)
-		tools_group.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+		tools_group.setMinimumWidth(self._tools_panel_compact_width)
+		tools_group.setMaximumWidth(self._tools_panel_expanded_width)
+		tools_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 		parent_layout.addWidget(tools_group)
 
 		self.tool_buttons = []
+		self._tools_panel_buttons = []
+		self._tools_panel_button_labels = {}
+		self._tools_panel_sections = []
+		self._tools_panel_section_labels = {}
 		main_tools_layout = QVBoxLayout(tools_group)
 		main_tools_layout.setSpacing(10)
 		main_tools_layout.setSizeConstraint(QLayout.SetMinimumSize)
@@ -3055,6 +3076,8 @@ class MainWindow(QMainWindow):
 		main_tools_layout.addWidget(self.mmtools_button)
 
 		editor_frame_layout = frameLayout.FrameLayout("Editor")
+		self._tools_panel_sections.append(editor_frame_layout)
+		self._tools_panel_section_labels[editor_frame_layout] = "Editor"
 		self.select_editor_button = self._create_tool_button("Select Controller", SELECT_ICON)
 		self.controller_layout_button = self._create_tool_button("Controller Layout", CONTROLLER_LAYOUT_ICON)
 		
@@ -3068,6 +3091,8 @@ class MainWindow(QMainWindow):
 		editor_frame_layout.addWidget(self.duplicate_button)
 
 		edit_shapes_frame_layout = frameLayout.FrameLayout("Shapes Edit")
+		self._tools_panel_sections.append(edit_shapes_frame_layout)
+		self._tools_panel_section_labels[edit_shapes_frame_layout] = "Shapes Edit"
 		self.add_primary_button = self._create_tool_button("Add/Commit New Primary", ADD_ICON)
 		self.add_primary_button.setToolTip("Add selected mesh as a new primary shape.\n If there are no selected meshes, creates an empty primary shape that can be filled by copying values from an existing shape.")
 		self.add_selected_at_current_pose_button = self._create_tool_button("Add/Commit At Current Pose", ADD_AT_POSE_ICON)
@@ -3079,13 +3104,18 @@ class MainWindow(QMainWindow):
 
 
 		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
+		self._tools_panel_sections.append(preview_shapes_frame_layout)
+		self._tools_panel_section_labels[preview_shapes_frame_layout] = "Shapes Preview"
 		self.unmute_all_shapes_button = self._create_tool_button("Unmute All Shapes", MUTE_OFF_ICON)
 		preview_shapes_frame_layout.addWidget(self.unmute_all_shapes_button)
 		self.unlock_all_shapes_button = self._create_tool_button("Unlock All Shapes", LOCK_OFF_ICON)
 		preview_shapes_frame_layout.addWidget(self.unlock_all_shapes_button)
 
 		debug_shapes_frame_layout = frameLayout.FrameLayout("Debug")
-		self.compare_shapes_button = self._create_tool_button("Compare Shapes")
+		self._tools_panel_sections.append(debug_shapes_frame_layout)
+		self._tools_panel_section_labels[debug_shapes_frame_layout] = "Debug"
+		self.compare_shapes_button = self._create_tool_button("Compare Shapes", COMPARE_MESH_ICON)
+		self.compare_shapes_button.setToolTip("Compare the shapes in the editor with meshes in the scene with the same name.")
 		debug_shapes_frame_layout.addWidget(self.compare_shapes_button)
 
 		main_tools_layout.addWidget(edit_shapes_frame_layout, 0)
@@ -3099,8 +3129,13 @@ class MainWindow(QMainWindow):
 		button.setStyleSheet("text-align: left; padding-left: 5px;")
 		if icon is not None:
 			button.setIcon(icon)
+			button.setIconSize(self._tools_panel_expanded_icon_size)
 		if track_enabled:
 			self.tool_buttons.append(button)
+		self._tools_panel_buttons.append(button)
+		self._tools_panel_button_labels[button] = label
+		if not button.toolTip():
+			button.setToolTip(label)
 		return button
 
 	def _connect_ui_signals(self) -> None:
@@ -3188,6 +3223,64 @@ class MainWindow(QMainWindow):
 		self._sort_primaries_tree()
 		self._update_tools_button_panel()
 		self._update_work_shape_button_panel()
+		if self._main_splitter is not None:
+			self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+
+	def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
+		self._sync_tools_panel_compact_mode_from_splitter()
+
+	def _sync_tools_panel_compact_mode_from_splitter(self) -> None:
+		if self._main_splitter is None:
+			return
+		sizes = self._main_splitter.sizes()
+		if not sizes:
+			return
+		self._set_tools_panel_compact_mode(sizes[0] <= self._tools_panel_compact_threshold)
+
+	def _set_tools_panel_compact_mode(self, compact: bool) -> None:
+		if compact == self._tools_panel_compact_mode:
+			return
+		self._tools_panel_compact_mode = compact
+
+		if self._tools_group is not None:
+			if compact:
+				self._tools_group.setMinimumWidth(self._tools_panel_compact_width)
+				self._tools_group.setMaximumWidth(self._tools_panel_expanded_width)
+			else:
+				self._tools_group.setMinimumWidth(self._tools_panel_compact_width)
+				self._tools_group.setMaximumWidth(self._tools_panel_expanded_width)
+
+		for button in self._tools_panel_buttons:
+			label = self._tools_panel_button_labels.get(button, "")
+			has_icon = not button.icon().isNull()
+			button.setVisible(has_icon or not compact)
+			if compact:
+				button.setText("")
+				button.setStyleSheet("text-align: center; padding-left: 0px;")
+				button.setIconSize(self._tools_panel_compact_icon_size)
+				button.setFixedHeight(34)
+			else:
+				button.setText(label)
+				button.setStyleSheet("text-align: left; padding-left: 5px;")
+				button.setIconSize(self._tools_panel_expanded_icon_size)
+				button.setMinimumHeight(0)
+				button.setMaximumHeight(16777215)
+
+		for section in self._tools_panel_sections:
+			title_button = getattr(section, "title", None)
+			if title_button is None:
+				continue
+			label = self._tools_panel_section_labels.get(section, "")
+			if compact:
+				title_button.setText("")
+				title_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+				title_button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+				section.layout.setContentsMargins(1, 1, 1, 1)
+			else:
+				title_button.setText(label)
+				title_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+				title_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+				section.layout.setContentsMargins(3, 3, 3, 3)
 
 	def _update_tools_button_panel(self) -> None:
 		activate = self.current_editor is not None
@@ -5713,7 +5806,7 @@ def show() -> MainWindow:
 	"""
 	print("Opening Blue Steel editor...")
 	global WINDOW
-	global SHOW_UPADTE_CHECK
+	global SHOW_UPDATE_CHECK
 
 	try:
 		if WINDOW is not None:
