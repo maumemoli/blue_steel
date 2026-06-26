@@ -1002,6 +1002,12 @@ class WorkShapeItemsModel(QAbstractListModel):
 					self._edit_shape_name = name
 		self.endResetModel()
 
+	def has_connected_driver_shapes(self) -> bool:
+		for row in self._rows:
+			if bool(row.get("driver_connected", False)):
+				return True
+		return False
+
 	def set_value_by_name(self, shape_name: str, value: float) -> None:
 		row_index = self._row_by_name.get(shape_name)
 		if row_index is None:
@@ -2769,6 +2775,9 @@ class MainWindow(QMainWindow):
 		self.work_edit_mode_button = QPushButton("Edit Selected")
 		self.work_edit_mode_button.setToolTip("Toggle edit mode on selected work blendshape target")
 		work_toolbar.addWidget(self.work_edit_mode_button)
+		self.apply_work_shapes_button = QPushButton("Apply All")
+		self.apply_work_shapes_button.setToolTip("Apply changes to all linked work blendshape targets")
+		work_toolbar.addWidget(self.apply_work_shapes_button)
 		work_toolbar.addStretch(1)
 		work_shapes_layout.addLayout(work_toolbar)
 		self.work_shapes_view = WorkShapesListView(
@@ -3164,6 +3173,7 @@ class MainWindow(QMainWindow):
 		self.work_remove_button.clicked.connect(self._on_remove_work_shapes_clicked)
 		self.work_paint_button.clicked.connect(self._on_paint_work_shape_clicked)
 		self.work_edit_mode_button.clicked.connect(self._on_toggle_work_shape_edit_mode)
+		self.apply_work_shapes_button.clicked.connect(self._on_apply_work_shapes_clicked)
 		if self.work_shapes_view.selectionModel() is not None:
 			self.work_shapes_view.selectionModel().selectionChanged.connect(self._on_work_shapes_selection_changed)
 
@@ -3480,13 +3490,11 @@ class MainWindow(QMainWindow):
 		new_name = cmds.rename(selection[0], pose_name)
 		self._set_status(f"Renamed mesh to '{new_name}'.")
 
-	def extract_selected(self) -> None:
+	def extract_selected(self, selected_shapes) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
-		# let's get the selected shape names from the shapes view, not the scene selection, since extracting is a shape-level operation
-		selected_shapes = self._selected_shape_names_from_shapes_view()
-		print(f"Extracting shapes: {selected_shapes}")
+
 		try:
 			extracted = self.current_editor.extract_shapes_to_mesh(selected_shapes)
 		except Exception as exc:
@@ -4055,7 +4063,7 @@ class MainWindow(QMainWindow):
 		else:
 			selected_action = menu.exec_(sender.mapToGlobal(pos))
 		if selected_action == extract_action:
-			self.extract_selected()
+			self.extract_selected(selected_shapes)
 		elif selected_action == reset_deltas_action:
 			try:
 				if self.blendshape_tracker is not None:
@@ -4565,15 +4573,18 @@ class MainWindow(QMainWindow):
 		self.work_remove_button.setEnabled(has_editor and has_selection)
 		self.work_paint_button.setEnabled(has_editor and has_selection)
 		self.work_edit_mode_button.setEnabled(has_editor and ((has_selection and not selected_has_connection) or has_active_edit))
+		self.apply_work_shapes_button.setEnabled(has_editor and bool(self._work_shape_model.has_connected_driver_shapes()))
 
 	def _stop_active_blendshape_trackers(self) -> None:
 		for tracker in (self.blendshape_tracker, self.work_blendshape_tracker):
 			if tracker is not None:
+				print(f"Stopping active blendshape tracker {tracker.node_name}.")
 				tracker.stop()
 
 	def _start_active_blendshape_trackers(self) -> None:
 		for tracker in (self.blendshape_tracker, self.work_blendshape_tracker):
 			if tracker is not None:
+				print(f"Starting active blendshape tracker {tracker.node_name}.")
 				tracker.start()
 
 	def _reload_work_shapes_from_editor(self) -> None:
@@ -4620,12 +4631,14 @@ class MainWindow(QMainWindow):
 		removed_count = 0
 		try:
 			self._stop_active_blendshape_trackers()
+			print("Stopping active blendshape trackers to remove work shapes...")
 			self.current_editor.delete_work_shapes(shape_names)
 			removed_count = len(shape_names)
 		except Exception as exc:
 			self._set_status(f"Error removing work shape(s): {exc}", error=True)
 			return
 		finally:
+			print("Restarting active blendshape trackers after removing work shapes...")
 			self._start_active_blendshape_trackers()
 
 		self._reload_work_shapes_from_editor()
@@ -4647,6 +4660,21 @@ class MainWindow(QMainWindow):
 		# self._work_shape_model.set_edit_shape(shape_name)
 		# self._update_work_shape_button_panel()
 		self._set_status(f"Paint mode on '{shape_name}' (target id {target_id}).")
+
+	def _on_apply_work_shapes_clicked(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		try:
+			self._stop_active_blendshape_trackers()
+			applied_work_shapes = self.current_editor.apply_active_work_shapes()
+		except Exception as exc:
+			self._set_status(f"Error applying work shapes: {exc}", error=True)
+			return
+		finally:
+			self._start_active_blendshape_trackers()
+		self._reload_work_shapes_from_editor()
+		self._set_status(f"Committed {len(applied_work_shapes)} linked shape(s). Check the Script Editor for the list.")
 
 	def _on_toggle_work_shape_edit_mode(self) -> None:
 		if self.current_editor is None:
@@ -5233,10 +5261,13 @@ class MainWindow(QMainWindow):
 			self.work_blendshape_tracker.shapeAdded.connect(self._on_work_shape_structure_changed)
 			self.work_blendshape_tracker.shapeRemoved.connect(self._on_work_shape_structure_changed)
 			self.work_blendshape_tracker.shapeRenamed.connect(self._on_work_shape_structure_changed)
+			self.work_blendshape_tracker.shapeInputConnected.connect(self._on_work_blendshape_driver_connection_changed)
 			self.work_blendshape_tracker.sculptTargetChanged.connect(self._on_work_sculpt_target_changed, Qt.QueuedConnection)
 			self.work_blendshape_tracker.nodeDeleted.connect(self._on_work_blendshape_deleted)
 			self.work_blendshape_tracker.target_connection_changed.connect(self._on_work_blendshape_target_connection_changed)
 			self.work_blendshape_tracker.start()
+		else:
+			print("No work blendshape found for current editor, skipping work tracker setup.")
 
 	def _clear_blendshape_tracker(self) -> None:
 		if isinstance(self.blendshape_tracker, BlendShapeNodeTracker):
@@ -5306,10 +5337,12 @@ class MainWindow(QMainWindow):
 		self._reload_shapes_from_editor()
 
 	def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
+		print(f"Work shape value changed: {shape_name} = {value:.3f}")
 		del shape_id
 		self._work_shape_model.set_value_local(shape_name, value)
 
 	def _on_work_shape_structure_changed(self, *_args) -> None:
+		print("Work shape structure changed, reloading work shapes from editor...")
 		self._reload_work_shapes_from_editor()
 
 	def _on_work_sculpt_target_changed(self, target_id: int, _shape_name: str) -> None:
@@ -5468,6 +5501,14 @@ class MainWindow(QMainWindow):
 				pass
 			self._work_shape_model.set_edit_shape(None)
 		self._update_work_shape_button_panel()
+
+	def _on_work_blendshape_driver_connection_changed(self, target_id: int, connected: bool) -> None:
+		if self.current_editor is None or self.current_editor.work_blendshape is None:
+			return
+		work_weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
+		if work_weight is None:
+			return
+		self._work_shape_model.set_driver_connected_state_local(str(work_weight), bool(connected))
 		
 
 	def _on_shape_renamed(self, *_args) -> None:

@@ -739,12 +739,10 @@ class BlueSteelEditor(object):
         # we need to create an extraction mesh
         negative_mesh = cmds.duplicate(self.base_mesh, name=f"{work_shape_name}_negativeMesh")[0]
         extracted_mesh = self.duplicate_base_mesh_neutral_state(f"{work_shape_name}_extractionMesh")
-        extracted_shape = cmds.listRelatives(extracted_mesh, shapes=True, fullPath=True)[0]
-        extracted_shape = cmds.parent(extracted_shape, edit_mesh, shape=True, relative=True)[0]
         # we need to create a blendshape to extract the delta between the current pose and the neutral pose
         extraction_blendshape = cmds.blendShape(edit_mesh_shape,
                                                 negative_mesh,
-                                                extracted_shape,
+                                                extracted_mesh,
                                                 name=f"{work_shape_name}_extractionBlendshape",
                                                 weight =[(0, 1.0),(1, -1.0)])[0]
         # we need to set the edit mesh as sculpt target
@@ -753,18 +751,21 @@ class BlueSteelEditor(object):
             # if the current sculpt target is the same as the work shape we are extracting, we need to set it to another target to avoid issues with the extraction blendshape
             cmds.sculptTarget(self.work_blendshape.name, e=True, t=-1)
         # we need to connect the extracted mesh to the work blendshape target
-        self.work_blendshape.connect_mesh_to_target(work_weight.id, extracted_shape)
+        self.work_blendshape.connect_mesh_to_target(work_weight.id, extracted_mesh)
         # we can delete the negative mesh and the extracted mesh empty transform.
-        cmds.delete(extracted_mesh)
         cmds.delete(negative_mesh)
         self.set_work_shape_mute_state(work_weight, current_mute_state)
         # we can translate the group to the side for better visibility
         bbox = mayaUtils.get_mesh_bounding_box(self.base_mesh)
         offset = (bbox[1][0] - bbox[0][0]) * 1.1
         cmds.move(offset, 0, 0, edit_mesh, relative=True, worldSpace=True)
-        cmds.setAttr(f"{extracted_shape}.visibility", 0)
-
-
+        cmds.setAttr(f"{extracted_mesh}.visibility", 0)
+        # we create a group to hold the edit mesh and the extracted mesh
+        group_name = f"{work_shape_name}_extractionGroup"
+        group  = cmds.createNode("transform", name=group_name)
+        print(f"Created extraction group '{group_name}' for work shape '{work_shape_name}'.")
+        cmds.parent(edit_mesh, group)
+        cmds.parent(extracted_mesh, group)
 
     def remove_shape_from_locked_shapes(self, shape_name: str):
         """
@@ -834,6 +835,22 @@ class BlueSteelEditor(object):
                     primary_shape_name = conn.split(".")[-1]
                     return primary_shape_name
         return None
+
+    def get_shapes_with_connected_work_shapes(self):
+        """
+        Create a dictionary with the primary shapes that have work shapes connected to them
+        where the key is the primary shape name and the value is a list of work shape names that are connected to it.
+        """
+        shapes_with_connected_work_shapes = {}
+        work_weights = self.work_blendshape.get_weights() or []
+        for work_weight in work_weights:
+            primary_shape_name = self.get_work_shape_driver(work_weight)
+            if primary_shape_name:
+                if primary_shape_name not in shapes_with_connected_work_shapes:
+                    shapes_with_connected_work_shapes[primary_shape_name] = []
+                shapes_with_connected_work_shapes[primary_shape_name].append(work_weight)
+        return shapes_with_connected_work_shapes
+
     
     def get_connected_work_shapes(self):
         """
@@ -848,6 +865,47 @@ class BlueSteelEditor(object):
                 connected_work_shapes[work_weight] = primary_shape_name
         return connected_work_shapes
 
+    @undoable
+    def apply_active_work_shapes(self):
+        """
+        Apply the active work shapes to their linked primary shapes.
+        """
+        connected_shapes = self.get_shapes_with_connected_work_shapes()
+        # we need to get all the work shapes values
+        work_shapes_values= {}
+        committed_connected_shapes = set()
+        for work_shape_weight in self.work_blendshape.get_weights() or []:
+            work_shapes_values[work_shape_weight] = self.work_blendshape.get_weight_value(work_shape_weight)
+        for connected_shape in utilities.sort_for_insertion(connected_shapes.keys(), self.separator):
+            work_shapes = self.work_blendshape.get_weights() or []
+            # we need to set the pose to the shape
+            current_shape = self.get_shape(connected_shape)
+            self.set_shape_pose(current_shape)
+            linked_work_shapes = connected_shapes[connected_shape]
+            # we need to set the value of all the other shapes to 1
+            for work_shape in work_shapes:
+                if work_shape not in linked_work_shapes:
+                    self.work_blendshape.set_weight_value(work_shape, 0.0)
+            # we can duplicate the base mesh and commit the shape.
+            dup = cmds.duplicate(self.base_mesh, name=connected_shape)[0]
+            committed_connected_shapes.add(connected_shape)
+            try:
+                self.disable_all_deformers()
+                self.commit_shape(connected_shape, dup)
+            finally:
+                self.enable_all_deformers()
+                cmds.delete(dup)
+            for linked_work_shape in linked_work_shapes:
+                self.delete_work_shape(linked_work_shape)
+        # restore the work shapes values
+        for work_shape in self.work_blendshape.get_weights() or []:
+            if work_shape in work_shapes_values:
+                self.work_blendshape.set_weight_value(work_shape, work_shapes_values[work_shape])
+        formatted_committed_shapes ='\n      '.join(committed_connected_shapes)
+        print(f"================================================================")
+        print(f"Applied active work shapes to their linked primary shapes:\n      {formatted_committed_shapes}")
+        print(f"================================================================")
+        return committed_connected_shapes
     @undoable
     def connect_work_blendshape_weight_to_blendshape_weight(self,work_shape_name: str, shape_name: str):
         """
@@ -1538,9 +1596,11 @@ class BlueSteelEditor(object):
             bool: The muted state of the work shape
         """
         if self.work_blendshape is None:
+            return False
             raise ValueError("Work blendshape not found.")
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
+            return False
             raise ValueError(f"Work shape '{shape_name}' not found in work blendshape.")
         parent_dir = self.work_blendshape.get_weight_parent_directory(weight)
         parent_dir_value = self.work_blendshape.get_target_dir_weight_value(parent_dir)

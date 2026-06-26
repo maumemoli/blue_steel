@@ -284,7 +284,7 @@ class BlendShapeNodeTracker(QObject):
         self._last_aliases = []
         self._depending_weights_idxs = set()
         self._store_indices_and_aliases()
-        self.chached_weights = self._get_current_weights_values()
+        self.cached_weights = self._get_current_weights_values()
 
     @property
     def node_name(self):
@@ -518,7 +518,7 @@ class BlendShapeNodeTracker(QObject):
             changed_weights = dict()
             current_weights = self._get_current_weights_values()
             for idx, current_value in current_weights.items():
-                cached_value = self.chached_weights.get(idx, None)
+                cached_value = self.cached_weights.get(idx, None)
                 if cached_value is None or abs(cached_value - current_value) > 0.0001:
                     changed_weights[idx] = current_value
             if changed_weights:
@@ -527,7 +527,7 @@ class BlendShapeNodeTracker(QObject):
                     self.shapeValueChanged.emit(idx, shape_name, value)
                     # print(f"  Emitted shapeValueChanged for shape: '{shape_name}' at index {idx} at value {value} due to output geometry change.")
                 # update the cached weights
-                self.chached_weights = current_weights
+                self.cached_weights = current_weights
 
         elif message == 10240 and plugChanged == self._weight_plug:
 
@@ -553,7 +553,7 @@ class BlendShapeNodeTracker(QObject):
             self.shapeInputConnected.emit(index, True)
 
         elif message == 18434 and self._weight_plug == plugChanged:  # INPUT CONNECTION BROKEN
-            #print(f"INPUT CONNECTION BROKEN: {message}, logical {index} {plugChanged} last count {self._last_count} current count {current_count}")
+            # print(f"INPUT CONNECTION BROKEN: {message}, logical {index} {plugChanged} last count {self._last_count} current count {current_count}")
             self.shapeInputConnected.emit(index, False)
 
         self._depending_weights_idxs.clear()
@@ -563,6 +563,7 @@ class BlendShapeNodeTracker(QObject):
     # Public API
     # ------------------------------------------------------------------
     def start(self):
+        self._refresh_snapshot()
         node_removed_callback_id = om2.MDGMessage.addNodeRemovedCallback(
             self._on_node_removed,
             self._fn_dep.typeName,)
@@ -642,6 +643,13 @@ class BlendShapeNodeTracker(QObject):
 
     def __del__(self):
         self.kill()
+
+    def _refresh_snapshot(self):
+        if self._weight_plug is None:
+            return
+        self._store_indices_and_aliases()
+        self.cached_weights = self._get_current_weights_values()
+        self._depending_weights_idxs.clear()
 
     def _get_attribute_message_string(self, msg):
         """Helper to decode MNodeMessage attribute change flags into a readable string."""

@@ -2,12 +2,13 @@ from maya import cmds, mel
 import numpy as np
 from dataclasses import dataclass, field
 from . import mayaUtils
+from . mayaUtils import undoable
 from .targetDirectory import TargetDirectory
 from maya import OpenMaya as om
 from maya.api import OpenMaya as om2
 import os
 import time
-        
+
 class Weight(str):
     """
     A class to represent a weight with a name and an ID.
@@ -1540,23 +1541,56 @@ class Blendshape(object):
             target_value (int): The target value for the blendshape.
             Default is 6000.
         """
-        weight_id = weight.id
+        target_index= weight.id
         # remove the alias if the target values is 6000
+        input_target_attr = "{0}.inputTarget".format(self.name)
+        input_target_indices = cmds.getAttr(input_target_attr, multiIndices = True)
         if target_value == 6000:
-            cmds.aliasAttr(f"{self.name}.{weight}", remove=True)
-            target_group_plug = self.get_target_group_plug(weight_id, target_value)
-            # print("THE TARGET PLUG NAME IS:")
-            # print(target_group_plug.name())
-            array_plug = target_group_plug.array()   # → inputTargetItem (the whole array)
-            parent_plug = array_plug.parent()
-            # print("THE PARENT PLUG NAME IS:")
-            # print(parent_plug.name())
-            cmds.removeMultiInstance(parent_plug.name(), b=True)  # b=True means break connections
-            cmds.removeMultiInstance('{0}.weight[{1}]'.format(self.name, weight_id), b=True)
+            parent_directory = cmds.getAttr("{0}.parentDirectory[{1}]".format(self.name, target_index)) or 0
+            if parent_directory > 0:
+                attr = "{0}.targetDirectory[{1}].childIndices".format(self.name, parent_directory)
+                child_indices = cmds.getAttr(attr) or []
+                location = -1
+                if target_index in child_indices:
+                    location = child_indices.index(target_index)
+                if location != -1 and location +1 < len(child_indices):
+                    # we are moving the location to the next one
+                    cmds.setAttr("{0}.nextTarget[{1}]".format(self.name, target_index), child_indices[location+1])
+            # Remove the element in the weight array. This has to happen first.
+            for attr in ["weight", "parentDirectory", "nextTarget", "targetVisibility", "targetParentVisibility"]:
+                attr = "{0}.{1}[{2}]".format(self.name,attr, target_index)
+                cmds.removeMultiInstance(attr, b=True)
+            # resetting the sculpt target if the target index is one we are are planning to delete
+
+            for input_target_index in input_target_indices:
+                sculpt_target_index = cmds.getAttr("{0}.inputTarget[{1}].sculptTargetIndex".format(self.name, input_target_index))
+                if sculpt_target_index == target_index:
+                    cmds.sculptTarget(self.name, e=True, t=-1)
+            for input_target_index in input_target_indices:
+                target_group_attr = "{0}.inputTarget[{1}].inputTargetGroup[{2}]".format(self.name, input_target_index, target_index)
+                input_target_item_attr = "{0}.inputTargetItem".format(target_group_attr)
+                inbetween_items = cmds.getAttr(input_target_item_attr, multiIndices = True) or []
+                for inbetween_item in inbetween_items:
+                    inbetween_attr = "{0}[{1}]".format(input_target_item_attr, inbetween_item)
+                    cmds.removeMultiInstance(inbetween_attr, b=True)
+                target_weights_attr = "{0}.targetWeights".format(target_group_attr)
+                cmds.removeMultiInstance(target_weights_attr, b=True, all =True)
+                cmds.removeMultiInstance(target_group_attr, b=True)
+            # remove alias
+            weight_attr = "{0}.weight[{1}]".format(self.name, target_index)
+            alias =  cmds.aliasAttr(weight_attr, q=True )
+            if alias:
+                cmds.aliasAttr("{0}.{1}".format(self.name, alias), rm=True)
+
         else:
-            target_item_plug = self.get_target_group_plug(weight_id, target_value)
-            cmds.removeMultiInstance(target_item_plug.name(), b=True)  # b=True means break connections
-            # we need to remove the inbetween info as well
+            for input_target_index in input_target_indices:
+                target_group_attr = "{0}.inputTarget[{1}].inputTargetGroup[{2}]".format(self.name, input_target_index, target_index)
+                input_target_item_attr = "{0}.inputTargetItem".format(target_group_attr)
+                inbetween_items = cmds.getAttr(input_target_item_attr, multiIndices = True) or []
+                if target_value not in inbetween_items:
+                    raise ValueError(f"Target value {target_value} does not exist for weight '{weight}'.")
+                inbetween_attr = "{0}[{1}]".format(input_target_item_attr, target_value)
+                cmds.removeMultiInstance(inbetween_attr, b=True)
         return False
 
     def get_target_components(self, input_target_index: int, target_value: int = 6000):
@@ -1940,11 +1974,17 @@ class Blendshape(object):
             input_target_index (int): The index of the weight to set the weight map for.
             values (list): A list of weight values where each entry corresponds to a vertex in the base mesh.
         """
+        # this is going to be hell if there is a a target in sculpting mode so we need to disable it first
+        target_sculpt_ids = self.get_sculpt_target_indices()
+        if len(target_sculpt_ids) > 0:
+            self.set_sculpt_target_index(-1)
         vcount = self.get_base_vertex_count()
         if len(values) != vcount:
             raise ValueError(f"Length of values array must be equal to the number of vertices in the base mesh ({vcount}).")
         weightAttr = f'{self.name}.inputTarget[0].inputTargetGroup[{input_target_index}].targetWeights[0:{vcount-1}]'
         cmds.setAttr(weightAttr, *values, size=len(values))
+        if len(target_sculpt_ids) > 0:
+            self.set_sculpt_target_index(target_sculpt_ids[0])
 
     def connect_target_to_blendshape_target(self,
                                             input_target_index: int,
