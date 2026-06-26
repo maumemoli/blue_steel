@@ -4631,14 +4631,12 @@ class MainWindow(QMainWindow):
 		removed_count = 0
 		try:
 			self._stop_active_blendshape_trackers()
-			print("Stopping active blendshape trackers to remove work shapes...")
 			self.current_editor.delete_work_shapes(shape_names)
 			removed_count = len(shape_names)
 		except Exception as exc:
 			self._set_status(f"Error removing work shape(s): {exc}", error=True)
 			return
 		finally:
-			print("Restarting active blendshape trackers after removing work shapes...")
 			self._start_active_blendshape_trackers()
 
 		self._reload_work_shapes_from_editor()
