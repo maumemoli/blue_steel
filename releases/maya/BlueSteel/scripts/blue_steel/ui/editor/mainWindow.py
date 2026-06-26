@@ -136,6 +136,9 @@ def get_maya_main_window() -> Optional[QWidget]:
 	return wrapInstance(int(main_window_ptr), QWidget)
 
 
+PRIMARY_TREE_SORT_VALUE_ROLE = Qt.UserRole + 905
+
+
 class ShapeItemsModel(QAbstractListModel):
 	"""Shared source model containing all shape rows for the active editor.
 
@@ -1390,17 +1393,39 @@ class SliderItemDelegate(QStyledItemDelegate):
 		"""Return fixed value column width used by rows and headers."""
 		return self._value_column_width
 
+	def _value_text_width(self, option=None) -> int:
+		font_metrics = getattr(option, "fontMetrics", None)
+		if font_metrics is None and self.parent() is not None:
+			font_metrics = self.parent().fontMetrics()
+		return font_metrics.horizontalAdvance("0.000") + 8 if font_metrics is not None else 48
+
+	def minimum_row_width(self, name_width: int, depth: int = 0, icon_slots: Optional[int] = None) -> int:
+		value_text_w = self._value_text_width()
+		left_margin = 6 + max(0, int(depth)) * 6
+		column_gap = 10
+		icon_size = 22
+		icon_gap = 3
+		right_margin = 4
+		if icon_slots is None:
+			icon_slots = self._panel_reserved_icon_slots()
+		return left_margin + value_text_w + column_gap + (icon_size * icon_slots) + (icon_gap * icon_slots) + max(20, int(name_width)) + right_margin + 8
+
 	def _area_rects(self, option, index):
 		rect = option.rect
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
-		left_margin = 6
-		column_gap = 12
+		left_margin = 6 + self._tree_row_indent(index)
+		column_gap = 10
 		icon_size = 22
-		icon_gap = 8
+		icon_gap = 3
 		right_margin = 4
-		value_w = min(self._value_column_width, max(40, rect.width() - 40))
-		icon_slots = 1 + (1 if self._is_lock_icon_visible(index) else 0) + (1 if is_work_shape else 0)
+		value_text_w = self._value_text_width(option)
+		available_w = max(1, rect.width() - left_margin - right_margin)
+		icon_slots = self._reserved_icon_slots(index)
+		icon_area_w = (icon_size * icon_slots) + (icon_gap * icon_slots)
+		reserved_text_w = max(20, min(self._name_column_width, available_w))
+		reserved_after_value_w = column_gap + icon_area_w + reserved_text_w
+		value_w = min(self._value_column_width, max(value_text_w, available_w - reserved_after_value_w), available_w)
 
 		value_left = rect.left() + left_margin
 		value_rect = QRect(value_left, rect.top(), value_w, rect.height())
@@ -1410,6 +1435,17 @@ class SliderItemDelegate(QStyledItemDelegate):
 		text_width = max(20, rect.right() - text_left - right_margin)
 		text_rect = QRect(text_left, rect.top(), text_width, rect.height())
 		return value_rect, text_rect
+
+	def _tree_row_indent(self, index) -> int:
+		parent_view = self.parent()
+		if not isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget)):
+			return 0
+		depth = 0
+		parent_index = index.parent()
+		while parent_index.isValid():
+			depth += 1
+			parent_index = parent_index.parent()
+		return depth * 6
 
 	def _connected_mesh_icon_rect(self, option, index) -> QRect:
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
@@ -1425,14 +1461,39 @@ class SliderItemDelegate(QStyledItemDelegate):
 	def _is_lock_icon_visible(self, index) -> bool:
 		return bool(index.model().data(index, ShapeItemsModel.LockIconVisibleRole))
 
+	def _shows_mute_icon(self, index) -> bool:
+		parent_view = self.parent()
+		return not isinstance(parent_view, (PrimaryTreeWidget, PrimaryDropListView))
+
+	def _panel_reserved_icon_slots(self) -> int:
+		parent_view = self.parent()
+		if isinstance(parent_view, PrimaryTreeWidget):
+			return 0
+		if isinstance(parent_view, PrimaryDropListView):
+			return 1
+		if isinstance(parent_view, WorkShapesListView):
+			return 2
+		if isinstance(parent_view, (ShapeTreeWidget, SliderListView)):
+			return 2
+		return 1
+
+	def _reserved_icon_slots(self, index) -> int:
+		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+		is_work_shape = shape_type == "WorkShape"
+		reserved_slots = self._panel_reserved_icon_slots()
+		actual_slots = (1 if self._shows_mute_icon(index) else 0) + (1 if self._is_lock_icon_visible(index) else 0) + (1 if is_work_shape else 0)
+		return max(reserved_slots, actual_slots)
+
 	def _mute_icon_rect(self, option, index) -> QRect:
+		if not self._shows_mute_icon(index):
+			return QRect()
 		connected_rect = self._connected_mesh_icon_rect(option, index)
 		if not connected_rect.isNull():
-			icon_gap = 8
+			icon_gap = 3
 			return QRect(connected_rect.right() + 1 + icon_gap, connected_rect.top(), connected_rect.width(), connected_rect.height())
 		value_rect, _ = self._area_rects(option, index)
 		icon_size = 22
-		column_gap = 12
+		column_gap = 10
 		x = value_rect.right() + 1 + column_gap
 		y = option.rect.top() + (option.rect.height() - icon_size) // 2
 		return QRect(x, y, icon_size, icon_size)
@@ -1440,9 +1501,19 @@ class SliderItemDelegate(QStyledItemDelegate):
 	def _lock_icon_rect(self, option, index) -> QRect:
 		if not self._is_lock_icon_visible(index):
 			return QRect()
+		icon_gap = 3
 		mute_rect = self._mute_icon_rect(option, index)
-		icon_gap = 8
-		return QRect(mute_rect.right() + 1 + icon_gap, mute_rect.top(), mute_rect.width(), mute_rect.height())
+		if not mute_rect.isNull():
+			return QRect(mute_rect.right() + 1 + icon_gap, mute_rect.top(), mute_rect.width(), mute_rect.height())
+		connected_rect = self._connected_mesh_icon_rect(option, index)
+		if not connected_rect.isNull():
+			return QRect(connected_rect.right() + 1 + icon_gap, connected_rect.top(), connected_rect.width(), connected_rect.height())
+		value_rect, _ = self._area_rects(option, index)
+		icon_size = 22
+		column_gap = 10
+		x = value_rect.right() + 1 + column_gap
+		y = option.rect.top() + (option.rect.height() - icon_size) // 2
+		return QRect(x, y, icon_size, icon_size)
 
 	def _draw_icon_pixmap(self, painter: QPainter, icon_rect: QRect, icon: QIcon) -> None:
 		"""Draw icon with smoother scaling and HiDPI-aware rasterization."""
@@ -1474,6 +1545,8 @@ class SliderItemDelegate(QStyledItemDelegate):
 		if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
 			name = model.data(index, ShapeItemsModel.NameRole) or ""
 			rect = option.rect
+			parent_view = self.parent()
+			is_group_tree = isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget))
 			painter.save()
 			header_bg = option.palette.alternateBase().color()
 			header_bg.setAlpha(190)
@@ -1484,7 +1557,19 @@ class SliderItemDelegate(QStyledItemDelegate):
 			font.setBold(True)
 			painter.setFont(font)
 			painter.setPen(option.palette.text().color())
-			painter.drawText(rect.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, f"{name}")
+			text_rect = rect.adjusted(6, 0, -6, 0)
+			if is_group_tree:
+				indent = self._tree_row_indent(index)
+				icon_size = 14
+				icon_rect = QRect(rect.left() + indent + 2, rect.top() + (rect.height() - icon_size) // 2, icon_size, icon_size)
+				icon = index.data(Qt.DecorationRole)
+				if isinstance(icon, QIcon) and not icon.isNull():
+					self._draw_icon_pixmap(painter, icon_rect, icon)
+				else:
+					is_expanded = bool(parent_view.isExpanded(index)) if parent_view is not None else False
+					painter.drawText(icon_rect, Qt.AlignCenter, "v" if is_expanded else ">")
+				text_rect = rect.adjusted(indent + icon_size + 6, 0, -6, 0)
+			painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, f"{name}")
 			painter.restore()
 			return
 
@@ -1521,7 +1606,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 			sel.setAlpha(60)
 			painter.fillRect(option.rect, sel)
 
-		indicator_rect = QRect(option.rect.left() + 1, option.rect.top() + 3, 4, max(6, option.rect.height() - 6))
+		indicator_rect = QRect(option.rect.left() + self._tree_row_indent(index) + 1, option.rect.top() + 3, 4, max(6, option.rect.height() - 6))
 		indicator_color = QColor(0, 0, 0, 0)
 		if is_driver_connected_work_shape:
 			# Maya-like driven-key cue for linked work shapes.
@@ -1564,7 +1649,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 		icon_rect = self._mute_icon_rect(option, index)
 		mute_icon = MUTE_ON_ICON if muted else MUTE_OFF_ICON
-		if not mute_icon.isNull():
+		if not icon_rect.isNull() and not mute_icon.isNull():
 			self._draw_icon_pixmap(painter, icon_rect, mute_icon)
 
 		connected_icon_rect = self._connected_mesh_icon_rect(option, index)
@@ -2207,298 +2292,41 @@ class ShapeTreeWidget(QTreeWidget):
 
 
 class PrimaryTreeWidget(QTreeWidget):
-	"""QTreeWidget that forwards drag move/release to primaries value delegate."""
+	"""QTreeWidget that forwards drag move/release to primaries slider delegate."""
 
 	def mouseMoveEvent(self, event):  # noqa: N802
-		delegate = self.itemDelegateForColumn(1)
-		if isinstance(delegate, PrimaryTreeValueDelegate) and delegate.is_drag_active():
+		delegate = self.itemDelegateForColumn(0)
+		if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
 			if delegate.external_drag_move(event.pos().x()):
 				event.accept()
 				return
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
-		delegate = self.itemDelegateForColumn(1)
-		if isinstance(delegate, PrimaryTreeValueDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
+		delegate = self.itemDelegateForColumn(0)
+		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
 				event.accept()
 				return
 		super().mouseReleaseEvent(event)
 
 
-class PrimaryTreeValueDelegate(QStyledItemDelegate):
-	"""Delegate that draws/edits primaries tree value cells like slider rows."""
-	_MIN_ROW_HEIGHT = 24
-
-	valueCommitted = Signal(str, float)
-	valueDragStarted = Signal()
-	valueDragEnded = Signal()
-
-	def __init__(self, name_role: int, parent=None) -> None:
-		super().__init__(parent)
-		self._name_role = name_role
-		self._drag_active = False
-		self._undo_chunk_open = False
-		self._drag_index = QPersistentModelIndex()
-		self._drag_model = None
-		self._drag_start_x = 0
-		self._drag_start_value = 0.0
-		self._drag_range_px = 1
-		self._drag_target_indexes: List[QPersistentModelIndex] = []
-		self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
-
-	def _open_drag_undo_chunk(self) -> None:
-		if self._undo_chunk_open:
-			return
-		try:
-			cmds.undoInfo(openChunk=True, chunkName="BlueSteel Slider Drag")
-			self._undo_chunk_open = True
-		except Exception:
-			self._undo_chunk_open = False
-
-	def _close_drag_undo_chunk(self) -> None:
-		if not self._undo_chunk_open:
-			return
-		try:
-			cmds.undoInfo(closeChunk=True)
-		except Exception:
-			pass
-		finally:
-			self._undo_chunk_open = False
-
-	def _shape_name_from_index(self, index: QModelIndex) -> Optional[str]:
-		if not index.isValid():
-			return None
-		name_index = index.sibling(index.row(), 0)
-		shape_name = name_index.data(self._name_role)
-		return str(shape_name) if shape_name else None
-
-	def _is_leaf_value_cell(self, index: QModelIndex) -> bool:
-		if not index.isValid() or index.column() != 1:
-			return False
-		return self._shape_name_from_index(index) is not None
-
-	def _value_from_index(self, index: QModelIndex) -> float:
-		return max(0.0, min(1.0, float(index.data(Qt.UserRole) or 0.0)))
-
-	def _set_value(self, model, index: QModelIndex, value: float, *, emit: bool = True) -> None:
-		if not self._is_leaf_value_cell(index):
-			return
-		value = max(0.0, min(1.0, float(value)))
-		model.setData(index, value, Qt.UserRole)
-		if emit:
-			shape_name = self._shape_name_from_index(index)
-			if shape_name:
-				self.valueCommitted.emit(shape_name, value)
-
-	def _slider_rect(self, option) -> QRect:
-		return option.rect.adjusted(6, 3, -6, -3)
-
-	def sizeHint(self, option, index):  # noqa: N802
-		size = super().sizeHint(option, index)
-		if self._is_leaf_value_cell(index):
-			size.setHeight(max(size.height(), self._MIN_ROW_HEIGHT))
-		return size
-
-	def paint(self, painter: QPainter, option, index):
-		if not self._is_leaf_value_cell(index):
-			return super().paint(painter, option, index)
-
-		value = self._value_from_index(index)
-		rect = option.rect
-		track_rect = self._slider_rect(option)
-
-		painter.save()
-		painter.fillRect(rect, option.palette.base().color())
-		if option.state & QStyle.State_Selected:
-			sel = option.palette.highlight().color()
-			sel.setAlpha(60)
-			painter.fillRect(rect, sel)
-
-		track_bg = QColor(57, 57, 57)
-		track_border = QColor(83, 83, 83)
-		fill_color = QColor(109, 109, 109)
-
-		painter.fillRect(track_rect, track_bg)
-		painter.setPen(track_border)
-		painter.drawRect(track_rect.adjusted(0, 0, -1, -1))
-
-		progress_width = int(value * track_rect.width())
-		if progress_width > 0:
-			painter.fillRect(QRect(track_rect.left(), track_rect.top(), progress_width, track_rect.height()), fill_color)
-
-		painter.setPen(option.palette.text().color())
-		painter.drawText(track_rect.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, f"{value:.3f}")
-		painter.restore()
-
-	def createEditor(self, parent, option, index):  # noqa: N802
-		if not self._is_leaf_value_cell(index):
-			return None
-		editor = QLineEdit(parent)
-		editor.setFrame(False)
-		editor.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-		editor.setValidator(QDoubleValidator(0.0, 1.0, 4, editor))
-		return editor
-
-	def setEditorData(self, editor, index):  # noqa: N802
-		editor.setText(f"{self._value_from_index(index):.4f}")
-
-	def setModelData(self, editor, model, index):  # noqa: N802
-		try:
-			value = float(editor.text())
-		except ValueError:
-			value = self._value_from_index(index)
-		self._set_value(model, index, value, emit=True)
-
-	def updateEditorGeometry(self, editor, option, index):  # noqa: N802
-		editor.setGeometry(self._slider_rect(option))
-
-	def _set_drag_value_from_pos(self, model, x_pos: int) -> None:
-		if not self._drag_target_indexes:
-			return
-		delta_px = x_pos - self._drag_start_x
-		delta_value = float(delta_px) / float(max(1, self._drag_range_px))
-		for target_index in self._drag_target_indexes:
-			if not target_index.isValid():
-				continue
-			start_value = self._drag_target_start_values.get(target_index, 0.0)
-			new_value = start_value + delta_value
-			self._set_value(model, target_index, new_value, emit=True)
-
-	def _resolve_drag_targets(self, index: QModelIndex) -> None:
-		"""Mirror shapes behavior:
-		- dragging selected row -> affect all selected leaf rows
-		- dragging non-selected row -> affect only dragged row
-		"""
-		self._drag_target_indexes = []
-		self._drag_target_start_values = {}
-
-		parent = self.parent()
-		if not isinstance(parent, QAbstractItemView) or parent.selectionModel() is None:
-			persistent = QPersistentModelIndex(index)
-			self._drag_target_indexes = [persistent]
-			self._drag_target_start_values[persistent] = self._value_from_index(index)
-			return
-
-		row0_index = index.sibling(index.row(), 0)
-		selected_rows0 = parent.selectionModel().selectedRows(0)
-		if row0_index in selected_rows0:
-			candidate_indexes = [row_index.sibling(row_index.row(), 1) for row_index in selected_rows0]
-		else:
-			candidate_indexes = [index]
-
-		for candidate in candidate_indexes:
-			if not self._is_leaf_value_cell(candidate):
-				continue
-			persistent = QPersistentModelIndex(candidate)
-			self._drag_target_indexes.append(persistent)
-			self._drag_target_start_values[persistent] = self._value_from_index(candidate)
-
-		if not self._drag_target_indexes:
-			persistent = QPersistentModelIndex(index)
-			self._drag_target_indexes = [persistent]
-			self._drag_target_start_values[persistent] = self._value_from_index(index)
-
-	def _start_drag(self, model, index, event_pos, track_rect: QRect) -> None:
-		self._drag_active = True
-		self._drag_index = QPersistentModelIndex(index)
-		self._drag_model = model
-		self._drag_start_x = event_pos.x()
-		self._drag_start_value = self._value_from_index(index)
-		self._drag_range_px = max(1, track_rect.width())
-		self._resolve_drag_targets(index)
-		self._grab_view_mouse()
-		self._open_drag_undo_chunk()
-		self.valueDragStarted.emit()
-
-	def _end_drag(self) -> None:
-		self._drag_active = False
-		self._drag_index = QPersistentModelIndex()
-		self._drag_model = None
-		self._drag_start_x = 0
-		self._drag_start_value = 0.0
-		self._drag_range_px = 1
-		self._drag_target_indexes = []
-		self._drag_target_start_values = {}
-		self._release_view_mouse()
-		self.valueDragEnded.emit()
-		self._close_drag_undo_chunk()
-
-	def _grab_view_mouse(self) -> None:
-		parent = self.parent()
-		if isinstance(parent, QAbstractItemView):
-			parent.viewport().grabMouse()
-
-	def _release_view_mouse(self) -> None:
-		parent = self.parent()
-		if isinstance(parent, QAbstractItemView):
-			parent.viewport().releaseMouse()
-
-	def is_drag_active(self) -> bool:
-		return self._drag_active
-
-	def external_drag_move(self, x_pos: int) -> bool:
-		if not self._drag_active or self._drag_model is None:
-			return False
-		self._set_drag_value_from_pos(self._drag_model, x_pos)
-		return True
-
-	def external_drag_end(self, x_pos: int) -> bool:
-		if not self._drag_active or self._drag_model is None:
-			return False
-		self._set_drag_value_from_pos(self._drag_model, x_pos)
-		self._end_drag()
-		return True
-
-	def editorEvent(self, event, model, option, index):  # noqa: N802
-		if not self._is_leaf_value_cell(index):
-			return super().editorEvent(event, model, option, index)
-
-		track_rect = self._slider_rect(option)
-
-		if event.type() == QEvent.MouseButtonPress:
-			if event.button() == Qt.LeftButton and track_rect.contains(event.pos()):
-				self._start_drag(model, index, event.pos(), track_rect)
-				self._set_drag_value_from_pos(model, event.pos().x())
-				return True
-
-		if event.type() == QEvent.MouseMove:
-			if self._drag_active and (event.buttons() & Qt.LeftButton):
-				self._set_drag_value_from_pos(model, event.pos().x())
-				return True
-
-		if event.type() == QEvent.MouseButtonRelease:
-			if self._drag_active and event.button() == Qt.LeftButton:
-				self._set_drag_value_from_pos(model, event.pos().x())
-				self._end_drag()
-				return True
-
-		if event.type() == QEvent.MouseButtonDblClick:
-			if track_rect.contains(event.pos()):
-				parent = self.parent()
-				if isinstance(parent, QAbstractItemView):
-					parent.edit(index)
-					return True
-
-		return super().editorEvent(event, model, option, index)
-
-
 class PrimaryTreeItem(QTreeWidgetItem):
-	"""Tree item with numeric-aware sorting on the Value column."""
+	"""Tree item with name/value-aware sorting controlled by tree mode."""
 
 	def __lt__(self, other):  # noqa: N802
 		tree = self.treeWidget()
 		if tree is None:
 			return super().__lt__(other)
-		column = tree.sortColumn()
-		if column == 1:
-			left_value = float(self.data(1, Qt.UserRole) or 0.0)
-			right_value = float(other.data(1, Qt.UserRole) or 0.0)
+		sort_by_value = bool(getattr(tree, "_sort_by_value", False))
+		if sort_by_value:
+			left_value = float(self.data(0, PRIMARY_TREE_SORT_VALUE_ROLE) or 0.0)
+			right_value = float(other.data(0, PRIMARY_TREE_SORT_VALUE_ROLE) or 0.0)
 			if abs(left_value - right_value) > 1e-9:
-				return left_value < right_value
+				return left_value > right_value
 			# stable tie-breaker by name
 			return (self.text(0) or "").lower() < (other.text(0) or "").lower()
-		return (self.text(column) or "").lower() < (other.text(column) or "").lower()
+		return (self.text(0) or "").lower() < (other.text(0) or "").lower()
 
 
 class InlineWorkshapeRenameEditor(QLineEdit):
@@ -2553,8 +2381,7 @@ class MainWindow(QMainWindow):
 		self._primary_subset_proxy.setSourceModel(self._shape_model)
 		self._active_shapes_proxy.setSourceModel(self._shape_model)
 		self._active_shapes_proxy.set_active_only(True)
-		self._primary_tree_sort_column = 0
-		self._primary_tree_sort_order = Qt.AscendingOrder
+		self._primary_tree_sort_by_value = False
 		self._primaries_drag_active = False
 		self._linked_drag_active = False
 		self._linked_primary_start_values: Dict[str, float] = {}
@@ -2563,6 +2390,7 @@ class MainWindow(QMainWindow):
 		self._linked_drag_ctrl_pressed = False
 		self._primary_tree_items: Dict[str, QTreeWidgetItem] = {}
 		self._shape_tree_items: Dict[str, QTreeWidgetItem] = {}
+		self._syncing_primaries_tree = False
 		self._syncing_shapes_tree = False
 		self._upstream_shapes_cache: Dict[str, Set[str]] = {}
 		self._downstream_shapes_cache: Dict[str, Set[str]] = {}
@@ -2582,6 +2410,8 @@ class MainWindow(QMainWindow):
 		self._controller_layout_window: Optional[ControllerLayoutWindow] = None
 		self.heat_map_switch: Optional[QPushButton] = None
 		self._main_splitter: Optional[QSplitter] = None
+		self._third_column_splitter: Optional[QSplitter] = None
+		self._third_column_sections: List[QWidget] = []
 		self._tools_group: Optional[QGroupBox] = None
 		self._tools_panel_buttons: List[QPushButton] = []
 		self._tools_panel_button_labels: Dict[QPushButton, str] = {}
@@ -2649,46 +2479,89 @@ class MainWindow(QMainWindow):
 
 		splitter = QSplitter(Qt.Horizontal)
 		self._main_splitter = splitter
+		splitter.setChildrenCollapsible(True)
 		root_layout.addWidget(splitter, 1)
 		self._build_tools_panel(splitter)
 
 		primaries_panel = QWidget()
+		primaries_panel.setMinimumWidth(0)
+		primaries_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		primaries_layout = QVBoxLayout(primaries_panel)
-		primaries_layout.addWidget(QLabel("Primaries"))
+		primaries_header_layout = QHBoxLayout()
+		primaries_header_layout.setContentsMargins(0, 0, 0, 0)
+		primaries_header_layout.setSpacing(4)
+		primaries_header_layout.addWidget(QLabel("Primaries"))
+		primaries_header_layout.addStretch(1)
+		primaries_layout.addLayout(primaries_header_layout)
 		self.primaries_search = QLineEdit()
 		self.primaries_search.setPlaceholderText("Filter primaries...")
 		primaries_layout.addWidget(self.primaries_search)
+		primaries_sort_layout = QHBoxLayout()
+		primaries_sort_layout.setContentsMargins(0, 0, 0, 0)
+		primaries_sort_layout.setSpacing(0)
+		self.primaries_sort_name_button = QPushButton("A-Z")
+		self.primaries_sort_name_button.setStyleSheet("padding: 0px;")
+		self.primaries_sort_name_button.setToolTip("Sort primaries alphabetically")
+		self.primaries_sort_name_button.setCheckable(True)
+		self.primaries_sort_name_button.setChecked(True)
+		self.primaries_sort_name_button.setFixedHeight(32)
+		self.primaries_sort_value_button = QPushButton("By Value")
+		self.primaries_sort_value_button.setStyleSheet("padding: 0px;")
+		self.primaries_sort_value_button.setToolTip("Sort primaries by current slider value, highest first")
+		self.primaries_sort_value_button.setCheckable(True)
+		self.primaries_sort_value_button.setChecked(False)
+		self.primaries_sort_value_button.setFixedHeight(32)
+		primaries_sort_layout.addWidget(self.primaries_sort_name_button, 1)
+		primaries_sort_layout.addWidget(self.primaries_sort_value_button, 1)
+		primaries_layout.addLayout(primaries_sort_layout)
 		self.primaries_view = PrimaryTreeWidget()
-		self.primaries_view.setColumnCount(2)
-		self.primaries_view.setHeaderLabels(["Primary", "Value"])
-		# Match indentation to icon+spacing so child text aligns with group label text.
-		self.primaries_view.setIndentation(18)
+		self.primaries_view.setMinimumWidth(0)
+		self.primaries_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+		self.primaries_view._sort_by_value = False
+		self.primaries_view.setColumnCount(1)
+		self.primaries_view.setHeaderHidden(True)
+		self.primaries_view.setIndentation(0)
+		self.primaries_view.setRootIsDecorated(False)
 		self._apply_primaries_branch_icons()
-		self.primaries_view.setColumnWidth(1, 140)
-		self.primaries_view.header().setSectionsClickable(True)
-		self.primaries_view.header().setSortIndicatorShown(True)
-		self.primaries_view.header().setSortIndicator(self._primary_tree_sort_column, self._primary_tree_sort_order)
 		self.primaries_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.primaries_view.setDragEnabled(True)
 		self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
-		self._primaries_delegate = PrimaryTreeValueDelegate(self.PRIMARY_TREE_NAME_ROLE, self.primaries_view)
-		self.primaries_view.setItemDelegateForColumn(1, self._primaries_delegate)
+		self._primaries_delegate = SliderItemDelegate(self.primaries_view)
+		self.primaries_view.setItemDelegateForColumn(0, self._primaries_delegate)
 
 		primaries_layout.addWidget(self.primaries_view, 1)
 		self.primaries_info = QLabel("Items: 0")
 		primaries_layout.addWidget(self.primaries_info)
 
 		shapes_panel = QWidget()
+		shapes_panel.setMinimumWidth(0)
+		shapes_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		shapes_layout = QVBoxLayout(shapes_panel)
 		shapes_layout.addWidget(QLabel("Shapes"))
 		self.shapes_search = QLineEdit()
 		self.shapes_search.setPlaceholderText("Filter shapes...")
 		shapes_layout.addWidget(self.shapes_search)
 		self.shapes_view = ShapeTreeWidget()
+		self.shapes_view.setMinimumWidth(0)
+		self.shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		self.shapes_view.setColumnCount(1)
 		self.shapes_view.setHeaderHidden(True)
-		self.shapes_view.setIndentation(18)
-		self.shapes_view.setRootIsDecorated(True)
+		self.shapes_view.setIndentation(0)
+		self.shapes_view.setRootIsDecorated(False)
+		self.shapes_view.setStyleSheet(
+			"""
+			QTreeView::branch {
+				image: none;
+				border-image: none;
+				width: 0px;
+				height: 0px;
+			}
+			QTreeView::item {
+				padding-top: 2px;
+				padding-bottom: 2px;
+			}
+			"""
+		)
 		self.shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.shapes_view.setDragEnabled(True)
 		self.shapes_view.setDragDropMode(QAbstractItemView.DragOnly)
@@ -2697,44 +2570,47 @@ class MainWindow(QMainWindow):
 		self.shapes_view.setItemDelegateForColumn(0, self._shapes_delegate)
 
 		shapes_header_layout = QHBoxLayout()
-		shapes_header_layout.setContentsMargins(6, 0, 4, 0)
-		shapes_header_layout.setSpacing(2)
+		shapes_header_layout.setContentsMargins(0, 0, 0, 0)
+		shapes_header_layout.setSpacing(0)
 		self.shapes_auto_pose_button = QPushButton("Auto Pose")
+		self.shapes_auto_pose_button.setStyleSheet("padding: 0px;")
 		self.shapes_auto_pose_button.setIcon(AUTO_POSE_ICON)
 		self.shapes_auto_pose_button.setIconSize(QSize(16, 16))
 		self.shapes_auto_pose_button.setFixedHeight(32)
 		self.shapes_auto_pose_button.setToolTip("When enabled, selecting a shape sets it to its pose")
 		self.shapes_auto_pose_button.setCheckable(True)
 		self.shapes_auto_pose_button.setChecked(False)
-		shapes_header_layout.addWidget(self.shapes_auto_pose_button)
+		shapes_header_layout.addWidget(self.shapes_auto_pose_button, 1)
 
 		self.shapes_downstream_button = QPushButton("Downstream")
+		self.shapes_downstream_button.setStyleSheet("padding: 0px;")
 		self.shapes_downstream_button.setIcon(DOWN_ARROW_ICON)
 		self.shapes_downstream_button.setIconSize(QSize(16, 16))
 		self.shapes_downstream_button.setFixedHeight(32)
 		self.shapes_downstream_button.setToolTip("List Downstream Connections")
 		self.shapes_downstream_button.setCheckable(True)
 		self.shapes_downstream_button.setChecked(False)
-		shapes_header_layout.addWidget(self.shapes_downstream_button)
+		shapes_header_layout.addWidget(self.shapes_downstream_button, 1)
 
 		self.shapes_upstream_button = QPushButton("Upstream")
+		self.shapes_upstream_button.setStyleSheet("padding: 0px;")
 		self.shapes_upstream_button.setIcon(UP_ARROW_ICON)
 		self.shapes_upstream_button.setIconSize(QSize(16, 16))
 		self.shapes_upstream_button.setFixedHeight(32)
 		self.shapes_upstream_button.setToolTip("List Upstream Connections")
 		self.shapes_upstream_button.setCheckable(True)
 		self.shapes_upstream_button.setChecked(False)
-		shapes_header_layout.addWidget(self.shapes_upstream_button)
+		shapes_header_layout.addWidget(self.shapes_upstream_button, 1)
 
 		self.shapes_highlight_related_button = QPushButton("Highlight Related")
+		self.shapes_highlight_related_button.setStyleSheet("padding: 0px;")
 		self.shapes_highlight_related_button.setIcon(HIGHLIGHT_ICON)
 		self.shapes_highlight_related_button.setIconSize(QSize(24, 24))
 		self.shapes_highlight_related_button.setFixedHeight(32)
 		self.shapes_highlight_related_button.setToolTip("When enabled, highlight upstream/downstream related shapes on selection")
 		self.shapes_highlight_related_button.setCheckable(True)
 		self.shapes_highlight_related_button.setChecked(False)
-		shapes_header_layout.addWidget(self.shapes_highlight_related_button)
-		shapes_header_layout.addStretch(1)
+		shapes_header_layout.addWidget(self.shapes_highlight_related_button, 1)
 		shapes_layout.addLayout(shapes_header_layout)
 
 		shapes_layout.addWidget(self.shapes_view, 1)
@@ -2750,10 +2626,13 @@ class MainWindow(QMainWindow):
 		shapes_layout.addLayout(shapes_footer_layout)
 
 		third_column_panel = QWidget()
+		third_column_panel.setMinimumWidth(0)
+		third_column_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		third_column_layout = QVBoxLayout(third_column_panel)
 		third_column_layout.setContentsMargins(0, 0, 0, 0)
 		third_column_layout.setSpacing(8)
 		third_column_splitter = QSplitter(Qt.Vertical)
+		third_column_splitter.setChildrenCollapsible(True)
 		third_column_layout.addWidget(third_column_splitter, 1)
 
 		primary_drop_section = QGroupBox("Sliders Drop Box")
@@ -2767,6 +2646,8 @@ class MainWindow(QMainWindow):
 			self._on_primary_drop_list_dropped,
 			self._on_primary_drop_remove_requested,
 		)
+		self.primary_drop_view.setMinimumWidth(0)
+		self.primary_drop_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		self.primary_drop_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.primary_drop_view.setModel(self._primary_subset_proxy)
 		self._primary_drop_delegate = SliderItemDelegate(self.primary_drop_view)
@@ -2808,6 +2689,8 @@ class MainWindow(QMainWindow):
 			self._on_work_shape_clear_weights_requested,
 			self._has_copied_work_weight_map_values,
 		)
+		self.work_shapes_view.setMinimumWidth(0)
+		self.work_shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.work_shapes_view.setModel(self._work_shape_model)
 		self._work_shapes_delegate = SliderItemDelegate(self.work_shapes_view)
@@ -2820,6 +2703,8 @@ class MainWindow(QMainWindow):
 		self.active_shapes_search.setPlaceholderText("Filter active shapes...")
 		active_shapes_layout.addWidget(self.active_shapes_search)
 		self.active_shapes_view = SliderListView()
+		self.active_shapes_view.setMinimumWidth(0)
+		self.active_shapes_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 		self.active_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.active_shapes_view.setDragEnabled(True)
 		self.active_shapes_view.setDragDropMode(QAbstractItemView.DragOnly)
@@ -2836,6 +2721,8 @@ class MainWindow(QMainWindow):
 		third_column_splitter.setStretchFactor(1, 1)
 		third_column_splitter.setStretchFactor(2, 1)
 		third_column_splitter.setSizes([260, 260, 260])
+		self._third_column_splitter = third_column_splitter
+		self._third_column_sections = [primary_drop_section, work_shapes_section, active_shapes_section]
 
 		splitter.addWidget(primaries_panel)
 		splitter.addWidget(shapes_panel)
@@ -2843,8 +2730,8 @@ class MainWindow(QMainWindow):
 		splitter.setStretchFactor(0, 0)
 		splitter.setStretchFactor(1, 1)
 		splitter.setStretchFactor(2, 2)
-		splitter.setSizes([200, 340, 520, 360])
-		QTimer.singleShot(0, self._sync_tools_panel_compact_mode_from_splitter)
+		splitter.setSizes([self._tools_panel_compact_width, 340, 520, 360])
+		QTimer.singleShot(0, self._force_tools_panel_startup_compact_mode)
 
 		self.status_bar = QStatusBar(self)
 		self.setStatusBar(self.status_bar)
@@ -3144,8 +3031,10 @@ class MainWindow(QMainWindow):
 		self.editor_combo.currentTextChanged.connect(self._on_editor_selected)
 		if self.heat_map_switch is not None:
 			self.heat_map_switch.toggled.connect(self._on_display_heat_map_toggled)
-		self.primaries_view.header().sectionClicked.connect(self._on_primaries_header_clicked)
-		self._primaries_delegate.valueCommitted.connect(self._on_primary_tree_slider_changed)
+		self.primaries_sort_name_button.clicked.connect(self._on_primaries_sort_name_clicked)
+		self.primaries_sort_value_button.clicked.connect(self._on_primaries_sort_value_clicked)
+		if self.primaries_view.model() is not None:
+			self.primaries_view.model().dataChanged.connect(self._on_primaries_tree_data_changed)
 		self._primaries_delegate.valueDragStarted.connect(lambda: self._on_value_drag_state_changed(True))
 		self._primaries_delegate.valueDragEnded.connect(lambda: self._on_value_drag_state_changed(False))
 		self._shapes_delegate.muteToggleRequested.connect(self._on_shapes_mute_toggle_requested)
@@ -3225,9 +3114,50 @@ class MainWindow(QMainWindow):
 		self._update_work_shape_button_panel()
 		if self._main_splitter is not None:
 			self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+		if self._third_column_splitter is not None:
+			self._third_column_splitter.splitterMoved.connect(self._on_third_column_splitter_moved)
 
 	def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._sync_tools_panel_compact_mode_from_splitter()
+		self._update_delegate_name_columns()
+
+	def _on_third_column_splitter_moved(self, _pos: int, _index: int) -> None:
+		self._update_third_column_section_minimums()
+		self._update_delegate_name_columns()
+
+	def _update_third_column_section_minimums(self) -> None:
+		if self._third_column_splitter is None or not self._third_column_sections:
+			return
+		sizes = self._third_column_splitter.sizes()
+		for section, size in zip(self._third_column_sections, sizes):
+			section.setMinimumWidth(0)
+			if size <= 0:
+				section.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+			else:
+				section.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+			section.updateGeometry()
+
+	def _force_tools_panel_startup_compact_mode(self) -> None:
+		self._set_tools_panel_compact_mode(True, force=True)
+		if self._main_splitter is not None:
+			sizes = self._main_splitter.sizes()
+			if sizes:
+				total_width = sum(sizes)
+				remainder_width = max(0, total_width - self._tools_panel_compact_width)
+				remainder = sizes[1:] if len(sizes) > 1 else []
+				remainder_total = sum(remainder)
+				if remainder and remainder_total > 0:
+					new_remainder = [max(1, int(round(remainder_width * (size / remainder_total)))) for size in remainder]
+					delta = remainder_width - sum(new_remainder)
+					new_remainder[-1] = max(1, new_remainder[-1] + delta)
+				else:
+					new_remainder = []
+				was_blocked = self._main_splitter.blockSignals(True)
+				try:
+					self._main_splitter.setSizes([self._tools_panel_compact_width] + new_remainder)
+				finally:
+					self._main_splitter.blockSignals(was_blocked)
+		self._set_tools_panel_compact_mode(True, force=True)
 
 	def _sync_tools_panel_compact_mode_from_splitter(self) -> None:
 		if self._main_splitter is None:
@@ -3237,8 +3167,8 @@ class MainWindow(QMainWindow):
 			return
 		self._set_tools_panel_compact_mode(sizes[0] <= self._tools_panel_compact_threshold)
 
-	def _set_tools_panel_compact_mode(self, compact: bool) -> None:
-		if compact == self._tools_panel_compact_mode:
+	def _set_tools_panel_compact_mode(self, compact: bool, *, force: bool = False) -> None:
+		if compact == self._tools_panel_compact_mode and not force:
 			return
 		self._tools_panel_compact_mode = compact
 
@@ -3923,8 +3853,26 @@ class MainWindow(QMainWindow):
 	def _resort_value_sorted_lists_if_needed(self) -> None:
 		if self._primaries_drag_active:
 			return
-		if self._primary_tree_sort_column == 1:
+		if self._primary_tree_sort_by_value:
 			self._sort_primaries_tree()
+
+	def _on_primaries_sort_name_clicked(self) -> None:
+		self._set_primary_tree_sort_mode(False)
+
+	def _on_primaries_sort_value_clicked(self) -> None:
+		self._set_primary_tree_sort_mode(True)
+
+	def _set_primary_tree_sort_mode(self, sort_by_value: bool) -> None:
+		sort_by_value = bool(sort_by_value)
+		self._primary_tree_sort_by_value = sort_by_value
+		self.primaries_view._sort_by_value = sort_by_value
+		self.primaries_sort_name_button.blockSignals(True)
+		self.primaries_sort_value_button.blockSignals(True)
+		self.primaries_sort_name_button.setChecked(not sort_by_value)
+		self.primaries_sort_value_button.setChecked(sort_by_value)
+		self.primaries_sort_name_button.blockSignals(False)
+		self.primaries_sort_value_button.blockSignals(False)
+		self._sort_primaries_tree()
 
 	def _apply_shapes_name_sort(self) -> None:
 		self._shapes_proxy.setSortRole(ShapeItemsModel.NameRole)
@@ -4174,13 +4122,23 @@ class MainWindow(QMainWindow):
 		if item is None or not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
 			return
 		item.setData(0, ShapeItemsModel.HeaderCollapsedRole, False)
+		self._update_shapes_tree_group_icon(item)
 		self.shapes_view.viewport().update()
 
 	def _on_shapes_item_collapsed(self, item: QTreeWidgetItem) -> None:
 		if item is None or not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
 			return
 		item.setData(0, ShapeItemsModel.HeaderCollapsedRole, True)
+		self._update_shapes_tree_group_icon(item)
 		self.shapes_view.viewport().update()
+
+	def _update_shapes_tree_group_icon(self, item: Optional[QTreeWidgetItem]) -> None:
+		if item is None or not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+			return
+		if item.isExpanded() and not self._primary_tree_folder_open_icon.isNull():
+			item.setIcon(0, self._primary_tree_folder_open_icon)
+		elif not self._primary_tree_folder_closed_icon.isNull():
+			item.setIcon(0, self._primary_tree_folder_closed_icon)
 
 	def _on_shapes_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
 		if self._syncing_shapes_tree:
@@ -4276,12 +4234,25 @@ class MainWindow(QMainWindow):
 			if self.blendshape_tracker is not None:
 				self.blendshape_tracker.start()
 
-	def _compute_tree_max_name_width(self, tree: QTreeWidget) -> int:
+	def _compute_tree_name_metrics(self, tree: QTreeWidget) -> tuple[int, int]:
 		fm = tree.fontMetrics()
 		max_width = 0
-		for shape_name in self._shape_tree_items.keys():
-			max_width = max(max_width, fm.horizontalAdvance(str(shape_name)))
-		return max_width
+		max_depth = 0
+
+		def visit(item: QTreeWidgetItem, depth: int) -> None:
+			nonlocal max_width, max_depth
+			if item.isHidden():
+				return
+			if not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+				name = str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or "")
+				max_width = max(max_width, fm.horizontalAdvance(name))
+				max_depth = max(max_depth, depth)
+			for i in range(item.childCount()):
+				visit(item.child(i), depth + 1)
+
+		for i in range(tree.topLevelItemCount()):
+			visit(tree.topLevelItem(i), 0)
+		return max_width, max_depth
 
 	def _compute_filtered_max_name_width(self, view: QListView, model: QSortFilterProxyModel) -> int:
 		"""Return max name width for currently filtered rows in a proxy model."""
@@ -4295,14 +4266,19 @@ class MainWindow(QMainWindow):
 
 	def _update_delegate_name_columns(self) -> None:
 		"""Align value columns using max name width of the *filtered* data per view."""
-		shapes_width = self._compute_tree_max_name_width(self.shapes_view)
+		self._update_third_column_section_minimums()
+		primaries_width, primaries_depth = self._compute_tree_name_metrics(self.primaries_view)
+		shapes_width, shapes_depth = self._compute_tree_name_metrics(self.shapes_view)
 		active_shapes_width = self._compute_filtered_max_name_width(self.active_shapes_view, self._active_shapes_proxy)
 		primary_drop_width = self._compute_filtered_max_name_width(self.primary_drop_view, self._primary_subset_proxy)
 		work_shapes_width = self._compute_filtered_max_name_width(self.work_shapes_view, self._work_shape_model)
+		self._primaries_delegate.set_name_column_width(primaries_width)
 		self._shapes_delegate.set_name_column_width(shapes_width)
 		self._active_shapes_delegate.set_name_column_width(active_shapes_width)
 		self._primary_drop_delegate.set_name_column_width(primary_drop_width)
 		self._work_shapes_delegate.set_name_column_width(work_shapes_width)
+		self.primaries_view.setMinimumWidth(0)
+		self.shapes_view.setMinimumWidth(0)
 		self.primaries_view.viewport().update()
 		self.shapes_view.viewport().update()
 		self.active_shapes_view.viewport().update()
@@ -4372,7 +4348,7 @@ class MainWindow(QMainWindow):
 					font = group_item.font(0)
 					font.setBold(True)
 					group_item.setFont(0, font)
-					group_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+					group_item.setFlags(Qt.ItemIsEnabled)
 					self.shapes_view.addTopLevelItem(group_item)
 					should_expand = expanded_headers.get(level_value, True)
 					group_item.setExpanded(should_expand)
@@ -4391,7 +4367,7 @@ class MainWindow(QMainWindow):
 					font = current_group_item.font(0)
 					font.setBold(True)
 					current_group_item.setFont(0, font)
-					current_group_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+					current_group_item.setFlags(Qt.ItemIsEnabled)
 					self.shapes_view.addTopLevelItem(current_group_item)
 					current_level_value = 999
 					type_group_items = {}
@@ -4409,7 +4385,7 @@ class MainWindow(QMainWindow):
 					font = type_group_item.font(0)
 					font.setBold(True)
 					type_group_item.setFont(0, font)
-					type_group_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+					type_group_item.setFlags(Qt.ItemIsEnabled)
 					current_group_item.addChild(type_group_item)
 					should_expand = expanded_type_groups.get((int(current_level_value if current_level_value is not None else 999), type_group_name), True)
 					type_group_item.setExpanded(should_expand)
@@ -4439,6 +4415,14 @@ class MainWindow(QMainWindow):
 				self._shape_tree_items[name] = leaf
 				if name in selected_names:
 					leaf.setSelected(True)
+
+			for i in range(self.shapes_view.topLevelItemCount()):
+				stack = [self.shapes_view.topLevelItem(i)]
+				while stack:
+					item = stack.pop()
+					self._update_shapes_tree_group_icon(item)
+					for j in range(item.childCount()):
+						stack.append(item.child(j))
 		finally:
 			self._syncing_shapes_tree = False
 
@@ -5122,13 +5106,13 @@ class MainWindow(QMainWindow):
 		def visit(item: QTreeWidgetItem) -> float:
 			shape_name = item.data(0, self.PRIMARY_TREE_NAME_ROLE)
 			if shape_name:
-				value = float(item.data(1, Qt.UserRole) or 0.0)
-				item.setData(1, Qt.UserRole, value)
+				value = float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)
+				item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, value)
 				return value
 			max_value = 0.0
 			for i in range(item.childCount()):
 				max_value = max(max_value, visit(item.child(i)))
-			item.setData(1, Qt.UserRole, max_value)
+			item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, max_value)
 			return max_value
 
 		max_root = 0.0
@@ -5137,37 +5121,18 @@ class MainWindow(QMainWindow):
 		return max_root
 
 	def _sort_primaries_tree(self) -> None:
-		"""Sort primaries tree using header sort mode: name column or value column."""
+		"""Sort primaries tree by current sort mode (name or value)."""
 		self._refresh_primary_folder_sort_values()
-		column = self._primary_tree_sort_column
-		order = self._primary_tree_sort_order
-		self.primaries_view.header().setSortIndicator(column, order)
-
-		# Use native sort APIs to keep per-item widgets (sliders) attached.
-		self.primaries_view.sortItems(column, order)
+		# Use ascending sort and let PrimaryTreeItem.__lt__ handle mode-specific ordering.
+		self.primaries_view.sortItems(0, Qt.AscendingOrder)
 
 		def sort_descendants(item: QTreeWidgetItem) -> None:
-			item.sortChildren(column, order)
+			item.sortChildren(0, Qt.AscendingOrder)
 			for i in range(item.childCount()):
 				sort_descendants(item.child(i))
 
 		for i in range(self.primaries_view.topLevelItemCount()):
 			sort_descendants(self.primaries_view.topLevelItem(i))
-
-	def _on_primaries_header_clicked(self, section: int) -> None:
-		"""Toggle primaries sort mode from tree header clicks.
-
-		section 0: sort by primary/directory name
-		section 1: sort by value (active primaries/folders first)
-		"""
-		if section not in (0, 1):
-			return
-		if self._primary_tree_sort_column == section:
-			self._primary_tree_sort_order = Qt.DescendingOrder if self._primary_tree_sort_order == Qt.AscendingOrder else Qt.AscendingOrder
-		else:
-			self._primary_tree_sort_column = section
-			self._primary_tree_sort_order = Qt.DescendingOrder if section == 1 else Qt.AscendingOrder
-		self._sort_primaries_tree()
 
 	def _set_status(self, message: str, *, warning: bool = False, error: bool = False) -> None:
 		self.status_bar.showMessage(message)
@@ -5187,7 +5152,7 @@ class MainWindow(QMainWindow):
 			item = stack.pop()
 			if item is None:
 				continue
-			if item.data(0, self.PRIMARY_TREE_NAME_ROLE):
+			if item.data(0, ShapeItemsModel.EditableRole):
 				yield item
 			for i in range(item.childCount()):
 				stack.append(item.child(i))
@@ -5215,8 +5180,34 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Failed setting primary '{shape_name}': {exc}", error=True)
 		# Keep row positions stable while dragging; re-sort on drag end.
-		if self._primary_tree_sort_column == 1 and not self._primaries_drag_active:
+		if self._primary_tree_sort_by_value and not self._primaries_drag_active:
 			self._sort_primaries_tree()
+
+	def _on_primaries_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+		if self._syncing_primaries_tree:
+			return
+		if self.current_editor is None:
+			return
+		if roles and ShapeItemsModel.ValueRole not in roles:
+			return
+		for row in range(top_left.row(), bottom_right.row() + 1):
+			index = top_left.sibling(row, 0)
+			if not index.isValid() or bool(index.data(ShapeItemsModel.IsHeaderRole)):
+				continue
+			if not bool(index.data(ShapeItemsModel.EditableRole)):
+				continue
+			shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+			if not shape_name:
+				continue
+			value = max(0.0, min(1.0, float(index.data(ShapeItemsModel.ValueRole) or 0.0)))
+			item = self.primaries_view.itemFromIndex(index)
+			if item is not None:
+				self._syncing_primaries_tree = True
+				try:
+					item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, value)
+				finally:
+					self._syncing_primaries_tree = False
+			self._on_primary_tree_slider_changed(shape_name, value)
 
 	def _sync_primary_tree_slider(self, shape_name: str, value: float) -> None:
 		"""Sync one primaries tree leaf value from tracker/model updates."""
@@ -5224,82 +5215,110 @@ class MainWindow(QMainWindow):
 		if item is None:
 			return
 		target = max(0.0, min(1.0, float(value)))
-		current = float(item.data(1, Qt.UserRole) or 0.0)
+		current = float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)
 		if abs(current - target) <= 1e-6:
 			return
-		item.setData(1, Qt.UserRole, target)
-		model = self.primaries_view.model()
-		if model is not None:
-			idx = self.primaries_view.indexFromItem(item, 1)
-			if idx.isValid():
-				model.dataChanged.emit(idx, idx, [Qt.UserRole, Qt.DisplayRole])
+		self._syncing_primaries_tree = True
+		try:
+			item.setData(0, ShapeItemsModel.ValueRole, target)
+			item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, target)
+			model = self.primaries_view.model()
+			if model is not None:
+				idx = self.primaries_view.indexFromItem(item, 0)
+				if idx.isValid():
+					model.dataChanged.emit(idx, idx, [ShapeItemsModel.ValueRole, Qt.DisplayRole])
+		finally:
+			self._syncing_primaries_tree = False
 
 	def _rebuild_primaries_tree(self) -> None:
 		"""Build primaries hierarchy from target directories, skipping shape envelope folders."""
 		selected_names = {item.data(0, self.PRIMARY_TREE_NAME_ROLE) for item in self.primaries_view.selectedItems()}
 		selected_names.discard(None)
-		self.primaries_view.clear()
-		self._primary_tree_items.clear()
+		self._syncing_primaries_tree = True
+		try:
+			self.primaries_view.clear()
+			self._primary_tree_items.clear()
 
-		if self.current_editor is None:
-			return
+			if self.current_editor is None:
+				return
 
-		primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
-		primaries_target_dirs = self.current_editor.get_primaries_target_dirs() or {}
-		dirs_by_name = {str(name): list(path or []) for name, path in primaries_target_dirs.items()}
+			primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
+			primaries_target_dirs = self.current_editor.get_primaries_target_dirs() or {}
+			dirs_by_name = {str(name): list(path or []) for name, path in primaries_target_dirs.items()}
 
-		# Build stable grouped data: path is stored leaf->root from API, so reverse to root->leaf.
-		grouped = {}
-		for shape in primary_shapes:
-			shape_name = str(shape)
-			tokens = list(reversed(dirs_by_name.get(shape_name, [])))
-			tokens = [token for token in tokens if token != shape_name]
-			grouped.setdefault(tuple(tokens), []).append(shape_name)
+			# Build stable grouped data: path is stored leaf->root from API, so reverse to root->leaf.
+			grouped = {}
+			for shape in primary_shapes:
+				shape_name = str(shape)
+				tokens = list(reversed(dirs_by_name.get(shape_name, [])))
+				tokens = [token for token in tokens if token != shape_name]
+				grouped.setdefault(tuple(tokens), []).append(shape_name)
 
-		nodes_by_path = {}
-		for dir_path in sorted(grouped.keys(), key=lambda path: (len(path), path)):
-			parent_item = None
-			for depth in range(len(dir_path)):
-				partial_path = dir_path[: depth + 1]
-				node = nodes_by_path.get(partial_path)
-				if node is None:
-					node = PrimaryTreeItem([dir_path[depth], ""])
-					node.setData(0, self.PRIMARY_TREE_FOLDER_ROLE, True)
-					node.setData(1, Qt.UserRole, 0.0)
-					folder_font = node.font(0)
-					folder_font.setBold(True)
-					node.setFont(0, folder_font)
-					node.setFlags(Qt.ItemIsEnabled)
+			nodes_by_path = {}
+			for dir_path in sorted(grouped.keys(), key=lambda path: (len(path), path)):
+				parent_item = None
+				for depth in range(len(dir_path)):
+					partial_path = dir_path[: depth + 1]
+					node = nodes_by_path.get(partial_path)
+					if node is None:
+						node = PrimaryTreeItem([dir_path[depth]])
+						node.setData(0, self.PRIMARY_TREE_FOLDER_ROLE, True)
+						node.setData(0, ShapeItemsModel.NameRole, dir_path[depth])
+						node.setData(0, ShapeItemsModel.TypeRole, "PrimaryFolder")
+						node.setData(0, ShapeItemsModel.ValueRole, 0.0)
+						node.setData(0, ShapeItemsModel.EditableRole, False)
+						node.setData(0, ShapeItemsModel.IsHeaderRole, True)
+						node.setData(0, ShapeItemsModel.MutedRole, False)
+						node.setData(0, ShapeItemsModel.LockedRole, False)
+						node.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+						node.setData(0, ShapeItemsModel.PrimariesRole, tuple())
+						node.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, 0.0)
+						folder_font = node.font(0)
+						folder_font.setBold(True)
+						node.setFont(0, folder_font)
+						node.setFlags(Qt.ItemIsEnabled)
+						if parent_item is None:
+							self.primaries_view.addTopLevelItem(node)
+						else:
+							parent_item.addChild(node)
+						nodes_by_path[partial_path] = node
+					parent_item = node
+
+				for shape_name in sorted(grouped[dir_path], key=str.lower):
+					leaf = PrimaryTreeItem([shape_name])
+					leaf.setData(0, self.PRIMARY_TREE_NAME_ROLE, shape_name)
+					value = self._get_primary_tree_value(shape_name)
+					leaf_value = 0.0 if value is None else float(value)
+					leaf.setData(0, ShapeItemsModel.NameRole, shape_name)
+					leaf.setData(0, ShapeItemsModel.TypeRole, "PrimaryShape")
+					leaf.setData(0, ShapeItemsModel.ValueRole, leaf_value)
+					leaf.setData(0, ShapeItemsModel.EditableRole, True)
+					leaf.setData(0, ShapeItemsModel.IsHeaderRole, False)
+					leaf.setData(0, ShapeItemsModel.MutedRole, False)
+					leaf.setData(0, ShapeItemsModel.LockedRole, False)
+					leaf.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+					leaf.setData(0, ShapeItemsModel.PrimariesRole, (shape_name,))
+					leaf.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, leaf_value)
+					leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
 					if parent_item is None:
-						self.primaries_view.addTopLevelItem(node)
+						self.primaries_view.addTopLevelItem(leaf)
 					else:
-						parent_item.addChild(node)
-					nodes_by_path[partial_path] = node
-				parent_item = node
+						parent_item.addChild(leaf)
+					self._primary_tree_items[shape_name] = leaf
+					if shape_name in selected_names:
+						leaf.setSelected(True)
 
-			for shape_name in sorted(grouped[dir_path], key=str.lower):
-				leaf = PrimaryTreeItem([shape_name, ""])
-				leaf.setData(0, self.PRIMARY_TREE_NAME_ROLE, shape_name)
-				value = self._get_primary_tree_value(shape_name)
-				leaf.setData(1, Qt.UserRole, 0.0 if value is None else value)
-				leaf.setFlags(leaf.flags() | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
-				if parent_item is None:
-					self.primaries_view.addTopLevelItem(leaf)
-				else:
-					parent_item.addChild(leaf)
-				self._primary_tree_items[shape_name] = leaf
-				if shape_name in selected_names:
-					leaf.setSelected(True)
-
-		self.primaries_view.expandAll()
-		for i in range(self.primaries_view.topLevelItemCount()):
-			stack = [self.primaries_view.topLevelItem(i)]
-			while stack:
-				item = stack.pop()
-				self._update_primary_tree_folder_icon(item)
-				for j in range(item.childCount()):
-					stack.append(item.child(j))
-		self._sort_primaries_tree()
+			self.primaries_view.expandAll()
+			for i in range(self.primaries_view.topLevelItemCount()):
+				stack = [self.primaries_view.topLevelItem(i)]
+				while stack:
+					item = stack.pop()
+					self._update_primary_tree_folder_icon(item)
+					for j in range(item.childCount()):
+						stack.append(item.child(j))
+			self._sort_primaries_tree()
+		finally:
+			self._syncing_primaries_tree = False
 
 	def _apply_primaries_tree_filter(self, text: str) -> None:
 		"""Filter primaries tree while preserving parent groups for matching children."""
