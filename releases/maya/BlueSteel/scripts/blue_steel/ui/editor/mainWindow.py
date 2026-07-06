@@ -4820,7 +4820,42 @@ class MainWindow(QMainWindow):
 			if not connected_shape_name:
 				self._set_status(f"Work shape '{shape_name}' is not connected to a shape.", warning=True)
 				return
-			self._set_shape_pose_by_name(str(connected_shape_name))
+			connected_shape_name = str(connected_shape_name)
+			self._set_shape_pose_by_name(connected_shape_name)
+
+			connected_shape = self.current_editor.get_shape(connected_shape_name)
+			if connected_shape is None:
+				self._set_status(f"Connected shape '{connected_shape_name}' not found.", warning=True)
+				return
+
+			shape_primaries = tuple(str(name) for name in (getattr(connected_shape, "parents", None) or ()) if name)
+			if shape_primaries:
+				first_primary_item = None
+				was_blocked = self.primaries_view.blockSignals(True)
+				try:
+					self.primaries_view.clearSelection()
+					for primary_name in shape_primaries:
+						item = self._primary_tree_items.get(primary_name)
+						if item is None:
+							continue
+						item.setSelected(True)
+						if first_primary_item is None:
+							first_primary_item = item
+					if first_primary_item is not None:
+						self.primaries_view.setCurrentItem(
+							first_primary_item,
+							0,
+							QItemSelectionModel.NoUpdate,
+						)
+						self.primaries_view.scrollToItem(first_primary_item, QAbstractItemView.PositionAtCenter)
+				finally:
+					self.primaries_view.blockSignals(was_blocked)
+				self._on_primaries_selection_changed()
+
+			if self._select_shape_in_shapes_tree(connected_shape_name, ensure_visible=True):
+				item = self._shape_tree_items.get(connected_shape_name)
+				if item is not None:
+					self.shapes_view.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 			return
 		self._begin_inline_workshape_rename(model_index)
 

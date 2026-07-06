@@ -11,9 +11,11 @@ def reset_transformations():
     if not selection:
         return
     for selected in selection:
-        channels = cmds.listAttr (selected , k=True)
+        channels = cmds.listAttr (selected , k=True) or []
         excluded_channels = ["visibility"]
         for channel in channels:
+            if channel is None:
+                continue
             if channel not in excluded_channels:
                 default_value = cmds.attributeQuery (channel , n=selected , ld=True)
                 if not cmds.getAttr ("{}.{}".format (selected , channel) , l=True):  # check for incoming connections
