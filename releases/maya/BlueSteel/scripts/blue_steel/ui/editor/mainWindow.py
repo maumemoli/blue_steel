@@ -54,6 +54,7 @@ from ..common.icons import (
 	CONNECTED_MESH_ENABLED_ICON,
 	CONNECTED_MESH_DISABLED_ICON,
 	COMPARE_MESH_ICON,
+	HUD_ICON,
 
 )
 from ...mmtools import ui
@@ -3006,6 +3007,8 @@ class MainWindow(QMainWindow):
 		preview_shapes_frame_layout.addWidget(self.unmute_all_shapes_button)
 		self.unlock_all_shapes_button = self._create_tool_button("Unlock All Shapes", LOCK_OFF_ICON)
 		preview_shapes_frame_layout.addWidget(self.unlock_all_shapes_button)
+		self.toggle_hud_button = self._create_tool_button("Toggle HUD", HUD_ICON)
+		preview_shapes_frame_layout.addWidget(self.toggle_hud_button)
 
 		debug_shapes_frame_layout = frameLayout.FrameLayout("Debug")
 		self._tools_panel_sections.append(debug_shapes_frame_layout)
@@ -3089,6 +3092,7 @@ class MainWindow(QMainWindow):
 		self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
 		self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
 		self.mmtools_button.clicked.connect(self.launch_mmtools)
+		self.toggle_hud_button.clicked.connect(self._on_toggle_hud_clicked)
 		self._shape_model.primaryValueCommitted.connect(self._on_primary_value_committed)
 		self._work_shape_model.valueCommitted.connect(self._on_work_shape_value_committed)
 		self._shape_model.modelReset.connect(self._update_info_labels)
@@ -3548,6 +3552,19 @@ class MainWindow(QMainWindow):
 
 	def launch_mmtools(self) -> None:
 		ui.show()
+
+	def _on_toggle_hud_clicked(self) -> None:
+		modifiers = QGuiApplication.keyboardModifiers()
+		alt_pressed = bool(modifiers & Qt.AltModifier)
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		try:
+			self.current_editor.toggle_hud_display(state=not self.current_editor.hud_on, list_combos= not alt_pressed)
+		except Exception as exc:
+			self._set_status(f"Error toggling HUD: {exc}", error=True)
+			return
+		self._set_status(f"Toggled HUD for '{self.current_editor.blendshape.name}'.")
 
 	def compare_shapes_debug(self) -> None:
 		if self.current_editor is None:
@@ -5859,6 +5876,8 @@ class MainWindow(QMainWindow):
 		)
 
 	def closeEvent(self, event) -> None:  # noqa: N802
+		if self.current_editor is not None:
+			self.current_editor.toggle_hud_display(False)
 		if self._controller_layout_window is not None:
 			self._controller_layout_window.close()
 			self._controller_layout_window.deleteLater()

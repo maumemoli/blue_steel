@@ -14,6 +14,8 @@ from ..logic.network import Network
 from ..logic.splitMap import SplitMap
 from ..logic import utilities
 from . import mayaUtils
+from . import blendshapeHUD
+
 
 from .. import env
 import os
@@ -122,6 +124,24 @@ class BlueSteelEditor(object):
         # setting up the network
         self.build_network()
         self.sync_up_muted_shapes()
+        self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
+
+    #-----------------------------
+    # HUD SETUP
+    #-----------------------------
+    def toggle_hud_display(self, state: bool, list_combos: bool = True):
+        """
+        Setup the HUD for the Blue Steel rig.
+        """
+        if state:
+            if self.blendshape is None:
+                return
+            blendshapeHUD.create_master_hud(self.blendshape.name, list_combos=list_combos)
+            self.hud_on = True
+
+        else:
+            blendshapeHUD.clear_huds()
+            self.hud_on = False
 
     #-----------------------------
     # Heat map setup creation
