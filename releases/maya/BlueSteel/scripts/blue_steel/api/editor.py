@@ -3468,23 +3468,29 @@ class BlueSteelEditor(object):
         """
         Create a new editor and add all the split shapes to it.
         """
+        
+        cmds.cycleCheck(e=False)
         editor_name = f"{self.name}_split"
         mesh = self.base_mesh
-        split_editor = self.create_new(name=editor_name, base_mesh=mesh)
+        split_editor = self.create_new(editor_name=editor_name, mesh_name=mesh)
         split_editor_blendshape = split_editor.blendshape
         split_meshes_group = self.create_split_maps_meshes()
-        for shape in self.shapes:
+        self.zero_out()
+        for shape in utilities.sort_for_insertion(self.blendshape.get_weights()):
             split_shape_poses = self.get_split_shape_poses(shape)
+            self.connect_shape_to_split_map_blendshapes(shape)
             for split_shape_pose_name, suffices in split_shape_poses.items():
                 self.set_split_pose_from_suffices(suffices)
-                committed_shape = split_editor.commit_shape(split_shape_pose_name)
+                committed_shape = split_editor.commit_shape(split_shape_pose_name, split_editor.base_mesh)
                 committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
                 if not committed_weight:
                     raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
+                split_editor_blendshape.connect_mesh_to_target(committed_weight.id, self.split_bake_mesh)
+                split_editor_blendshape.disconnect_mesh_from_target(committed_weight.id)
+        split_editor.zero_out()
+        cmds.delete(split_meshes_group)
+        cmds.cycleCheck(e=True)
                 
-
-
-
     def get_split_shape_poses(self, shape_name) -> dict:
         """
         Get the split shape poses for a given shape.
@@ -3510,10 +3516,8 @@ class BlueSteelEditor(object):
             split_weights.append([str(w) for w in self.get_split_map_weights(split_map)])
         split_possible_combos = list(product(*split_weights))
         for combo_suffices in split_possible_combos:
-            print(f"Generating name for split shape pose: {shape_name} with suffices: {combo_suffices}")
             split_shape_pose_name = self.generate_name_for_split_shape_pose(shape_name, combo_suffices)
             split_shape_poses[split_shape_pose_name] = combo_suffices
-            print(f"Generated name for split shape pose: {split_shape_pose_name} with suffices: {combo_suffices}")
         return split_shape_poses
 
     def generate_name_for_split_shape_pose(self, shape_name: str, suffices: list) -> str:
@@ -3530,10 +3534,10 @@ class BlueSteelEditor(object):
         split_groups = self.read_split_groups_attributes()  
         for primary, parent in zip(shape.primaries, shape.parents):
             shape_split_group = self.get_primary_split_group(primary)
-            split_token = parent
+            split_token = primary
             parent_value = parent.str_values[0]
             if shape_split_group == "NoSplit":
-                tokens.append(split_token)
+                tokens.append(parent)
                 continue
             split_maps = split_groups.get(shape_split_group, [])
             for split_map in split_maps:
@@ -3570,9 +3574,7 @@ class BlueSteelEditor(object):
                 raise ValueError(f"Split map {split_map_name} does not have a corresponding split blendshape")
             split_blendshape = Blendshape(split_blendshape_name)
             for weight in split_blendshape.get_weights():
-                print(f"Checking weight {weight} for split map {split_map_name} with suffix {split_map_suffix}")
                 if weight == split_map_suffix:
-                    print(f"Setting weight {weight} to 1.0 for split map {split_map_name} with suffix {split_map_suffix}")
                     split_blendshape.set_weight_value(weight, 1.0)
                     continue
                 split_blendshape.set_weight_value(weight, 0.0)
