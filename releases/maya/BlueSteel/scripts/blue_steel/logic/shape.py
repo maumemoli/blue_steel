@@ -127,6 +127,20 @@ class Shape(str):
         shape_values = utilities.get_shape_values(self, self.separator)
         return shape_values
 
+    @property
+    def str_values(self):
+        """
+        Get the shape values as strings based on the last two digits of the parent name.
+        If the parent name has less than two digits, the value is "100".
+
+        Returns:
+            list: List of shape values as strings.
+        """
+        if self.type == "InvalidShape":
+            return []
+        shape_str_values = utilities.get_shape_str_values(self, self.separator)
+        return shape_str_values
+
     @classmethod
     def create(cls, shape_name: str, separator=SEPARATOR):
         """

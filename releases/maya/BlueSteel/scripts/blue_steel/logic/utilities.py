@@ -288,6 +288,31 @@ def get_parents(shape_name: str, separator=SEPARATOR):
     shape_parents = shape_name.split(separator)
     return sorted(shape_parents)
 
+def get_shape_str_values(shape_name: str, separator=SEPARATOR):
+    """Get the shape values as strings from the shape name.
+
+    Parameters:
+        shape_name (str): The shape name to extract values from.
+        separator (str): Separator used to split the shape name.
+
+    Returns:
+        list: List of string values for each parent.
+
+    Example:
+        >>> get_shape_str_values("a_b10")
+        ['100', '10']
+    """
+    shape_values = list()
+    shape_parents = shape_name.split(separator)
+    for parent in shape_parents:
+        val = [char for char in parent[-2:] if char.isdigit()]
+        if val:
+            val = "".join(val)
+        else:
+            val = "100"
+        shape_values.append(val)
+    return shape_values
+
 def get_shape_values(shape_name: str, separator=SEPARATOR):
     """Get the shape values from the shape name.
 
@@ -302,17 +327,8 @@ def get_shape_values(shape_name: str, separator=SEPARATOR):
         >>> get_shape_values("a_b10")
         [1.0, 0.1]
     """
-    shape_values = list()
-    shape_parents = shape_name.split(separator)
-    for parent in shape_parents:
-        val = [char for char in parent[-2:] if char.isdigit()]
-        if val:
-            val = "".join(val)
-        else:
-            val = 100
-        val = float(val)/100
-        shape_values.append(val)
-    return shape_values
+    return [float(val)/100 for val in get_shape_str_values(shape_name, separator)]
+
 
 
 def find_split_suffix(primary_name: str):

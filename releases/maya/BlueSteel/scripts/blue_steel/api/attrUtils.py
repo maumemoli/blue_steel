@@ -3,7 +3,7 @@ Set of functions to manage attributes in Maya.
 """
 
 from maya import cmds
-
+import json
 # tags are simple string attributes added to nodes to store metadata.
 
 def get_next_available_index(attr_name: str):
@@ -147,6 +147,71 @@ def get_message_attr(node: str, attr_name: str):
     if connections:
         return connections[0]
     return None
+
+def add_string_attr(node: str, attr_name: str, default_value: str = ""):
+    """
+    Create a string attribute on a node.
+    Parameters:
+        node (str): The name of the node.
+        attr_name (str): The name of the attribute.
+        default_value (str): The default value of the attribute. Default is an empty string.
+    Returns:
+        str: The name of the created attribute.
+    Example:
+        >>> create_string_attr("pCube1", "myString", "default")
+        'pCube1.myString'
+    """
+    if cmds.attributeQuery(attr_name,node = node, exists=True):
+        return None
+    full_attr_name = f"{node}.{attr_name}"
+    cmds.addAttr(node, longName=attr_name, dataType="string")
+    cmds.setAttr(full_attr_name, default_value, type="string")
+    return full_attr_name
+
+def read_json_attr(node: str, attr_name: str):
+    """
+    Read a JSON attribute from a node and return it as a Python object.
+    Parameters:
+        node (str): The name of the node.
+        attr_name (str): The name of the attribute.
+    Returns:
+        object: The Python object represented by the JSON string, or None if the attribute does not
+        exist or is empty.
+    Example:
+        >>> data = read_json_attr("pCube1", "myJson")
+        >>> print(data)
+        {'key': 'value'}
+    """
+    full_attr_name = f"{node}.{attr_name}"
+    if not cmds.attributeQuery(attr_name, node=node, exists=True):
+        return None
+    attr_value = cmds.getAttr(full_attr_name)
+    if attr_value is None or attr_value == "":
+        return None
+    try:
+        return json.loads(attr_value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Attribute {attr_name} on node {node} is not a valid JSON string")
+    
+def write_json_attr(node: str, attr_name: str, data):
+    """
+    Write a Python object to a JSON attribute on a node.
+    Parameters:
+        node (str): The name of the node.
+        attr_name (str): The name of the attribute.
+        data: The Python object to write as a JSON string.
+    Returns:
+        str: The name of the attribute.
+    Example:
+        >>> write_json_attr("pCube1", "myJson", {'key': 'value'})
+        'pCube1.myJson'
+    """
+    full_attr_name = f"{node}.{attr_name}"
+    if not cmds.attributeQuery(attr_name, node=node, exists=True):
+        raise ValueError(f"Attribute {attr_name} does not exist on node {node}")
+    json_string = json.dumps(data)
+    cmds.setAttr(full_attr_name, json_string, type="string")
+    return full_attr_name
 
 def add_float_attr(node: str,
                    attr_name: str,

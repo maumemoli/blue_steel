@@ -3,6 +3,7 @@ print("Success")
 from maya import cmds, mel
 import traceback
 import sys
+import json
 
 from . import attrUtils
 from .mayaUtils import undoable
@@ -15,7 +16,7 @@ from ..logic.splitMap import SplitMap
 from ..logic import utilities
 from . import mayaUtils
 from . import blendshapeHUD
-
+from itertools import product
 
 from .. import env
 import os
@@ -41,22 +42,7 @@ DGA_NODES_SUPPORTED = env.DGA_NODES_SUPPORTED
 
 
 # ATTR
-MAIN_BLENDSHAPE_STRING_IDENTIFIER = "mainBlendShape"
-SPLIT_BLENDSHAPE_STRING_IDENTIFIER = "splitBlendShape"
-WORK_BLENDSHAPE_STRING_IDENTIFIER = "workBlendShape"
-HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER = "heatMapBlendShape"
-SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
-FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
-NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
-BASE_MESH_STRING_IDENTIFIER = "baseMesh"
-HEAT_MAP_MESH_STRING_IDENTIFIER = "heatMapMesh"
-DGA_VISUALIZER_STRING_IDENTIFIER = "dgaVisualizer"
-DGA_DELTA_STRING_IDENTIFIER = "dgaDelta"
-DELTA_MAP_STRING_IDENTIFIER = "deltaMap"
-# TARGET GROUP NAMES
-PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
-COMBO_SHAPES_GRP_NAME = "Combos_GRP"
-INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
+
 
 
 VERBOSE = False
@@ -64,6 +50,24 @@ TIMED = False
 
 class BlueSteelEditor(object):
     SHAPE_EDITOR_PANEL = "shapePanel1Window"
+    MAIN_BLENDSHAPE_STRING_IDENTIFIER = "mainBlendShape"
+    SPLIT_BLENDSHAPE_STRING_IDENTIFIER = "splitBlendShape"
+    WORK_BLENDSHAPE_STRING_IDENTIFIER = "workBlendShape"
+    HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER = "heatMapBlendShape"
+    SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
+    SPLIT_GRP_ATTR_STRING_IDENTIFIER = "splitGroups"
+    SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
+    FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
+    NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
+    BASE_MESH_STRING_IDENTIFIER = "baseMesh"
+    HEAT_MAP_MESH_STRING_IDENTIFIER = "heatMapMesh"
+    DGA_VISUALIZER_STRING_IDENTIFIER = "dgaVisualizer"
+    DGA_DELTA_STRING_IDENTIFIER = "dgaDelta"
+    DELTA_MAP_STRING_IDENTIFIER = "deltaMap"
+    # TARGET GROUP NAMES
+    PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
+    COMBO_SHAPES_GRP_NAME = "Combos_GRP"
+    INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
     def __init__(self, container, separator=SEPARATOR):
         if not cmds.objExists(container):
             raise ValueError(f"Container '{container}' does not exist.")
@@ -84,7 +88,11 @@ class BlueSteelEditor(object):
         self.split_blendshape = None
         self.work_blendshape = None
         self.heat_map_blendshape = None
+        self.split_maps_mesh = None
+        self.split_map_blendshapes = {}
         self.deformers_node_states = {}
+        self.split_blendshape_to_connect = None
+        self.split_bake_mesh = None
         # Signals
         self.signals_connected = False
         # getting the blendshape nodes
@@ -125,6 +133,7 @@ class BlueSteelEditor(object):
         self.build_network()
         self.sync_up_muted_shapes()
         self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
+        self._sync_up_split_maps_attributes()
 
     #-----------------------------
     # HUD SETUP
@@ -276,8 +285,9 @@ class BlueSteelEditor(object):
         shape = shapes[0]
         history = cmds.listHistory(shape, pruneDagObjects=True) or []
         deformers = []
+        scene_deformers = cmds.listNodeTypes('deformer')
         for node in history:
-            if cmds.nodeType(node) in cmds.listNodeTypes('deformer'):
+            if cmds.nodeType(node) in scene_deformers:
                 deformers.append(node)
         
         return deformers
@@ -314,10 +324,10 @@ class BlueSteelEditor(object):
         # deleting the existing nodes if they exist to avoid duplicates
         self._delete_dga_heat_maps_node_network()
         # creating the dga delta node
-        delta_node_name = f"{self.editor_base_name}_{DGA_DELTA_STRING_IDENTIFIER}"
+        delta_node_name = f"{self.editor_base_name}_{self.DGA_DELTA_STRING_IDENTIFIER}"
         delta_node = cmds.createNode("dgaDelta", name=delta_node_name)
         # link to the message attribute for easy access
-        attrUtils.add_message_attr(self.container.name, DGA_DELTA_STRING_IDENTIFIER, delta_node)
+        attrUtils.add_message_attr(self.container.name, self.DGA_DELTA_STRING_IDENTIFIER, delta_node)
         self.container.add_member(delta_node)
         # now we neeed to connect the delta node to the heat map blendshape and mesh
         heat_map_shape = self.heat_map_blendshape.get_base()[0]
@@ -325,10 +335,10 @@ class BlueSteelEditor(object):
         cmds.connectAttr(f"{heat_map_shape}.outMesh", f"{delta_node}.inputGeometry", force=True)
         cmds.connectAttr(f"{heat_original_mesh}.outMesh", f"{delta_node}.originalGeometry", force=True)
         # now let's create the dga visualizer node
-        visualizer_node_name = f"{self.editor_base_name}_{DGA_VISUALIZER_STRING_IDENTIFIER}"
+        visualizer_node_name = f"{self.editor_base_name}_{self.DGA_VISUALIZER_STRING_IDENTIFIER}"
         visualizer_node = cmds.createNode("dgaVisualizer", name=visualizer_node_name)
         # link to the message attribute for easy access
-        attrUtils.add_message_attr(self.container.name, DGA_VISUALIZER_STRING_IDENTIFIER, visualizer_node)
+        attrUtils.add_message_attr(self.container.name, self.DGA_VISUALIZER_STRING_IDENTIFIER, visualizer_node)
         self.container.add_member(visualizer_node)
         # connecting the visualizer node to the delta node and to the heat map mesh
         base_shape = self.blendshape.get_base()
@@ -359,21 +369,10 @@ class BlueSteelEditor(object):
         # check if the node exists first
         if self.delta_map:
             return
-        # out_shape = cmds.listRelatives(self.base_mesh, shapes=True, fullPath=True) or None
-        # if out_shape is None:
-        #     raise ValueError(f"Base mesh '{self.base_mesh}' does not have any shapes.")
-        # out_shape = out_shape[0]
-        # previous_connection = cmds.listConnections(f"{out_shape}.inMesh", source=True, destination=False, plugs=True) or []
-        # if not previous_connection:
-        #     raise ValueError(f"Base mesh '{self.base_mesh}' does not have a connection to its shape node. Cannot connect heat map delta node.")
-        delta_node_name = f"{self.editor_base_name}_{DELTA_MAP_STRING_IDENTIFIER}"
+        delta_node_name = f"{self.editor_base_name}_{self.DELTA_MAP_STRING_IDENTIFIER}"
         delta_node = cmds.deformer(self.base_mesh, type="deltaMap", name=delta_node_name)[0]
-        attrUtils.add_message_attr(self.container.name, DELTA_MAP_STRING_IDENTIFIER, delta_node)
+        attrUtils.add_message_attr(self.container.name, self.DELTA_MAP_STRING_IDENTIFIER, delta_node)
         self.container.add_member(delta_node)
-        # # we need to find the orig shape for the heat map mesh and connect it to the delta node orig input,
-        # cmds.connectAttr(f"{previous_connection[0]}", f"{delta_node}.inMesh", force=True)
-        # cmds.connectAttr(f"{delta_node}.outMesh", f"{out_shape}.inMesh", force=True)
-        # we need to get the heat mesh intermediate shape and connect it to the delta node deformed input
         heat_base_shapes = cmds.listRelatives(self.heat_map_mesh, shapes=True, fullPath=True) or None
         if heat_base_shapes is None:
             raise ValueError(f"Heat map mesh '{self.heat_map_mesh}' does not have any shapes.")
@@ -395,19 +394,19 @@ class BlueSteelEditor(object):
             self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
             return
         # we need to create a mesh node to connect to.
-        heat_map_geo_name = f"{self.editor_base_name}_{HEAT_MAP_MESH_STRING_IDENTIFIER}"
+        heat_map_geo_name = f"{self.editor_base_name}_{self.HEAT_MAP_MESH_STRING_IDENTIFIER}"
         heat_map_geo = self.duplicate_base_mesh_neutral_state(heat_map_geo_name)
         cmds.setAttr(f"{heat_map_geo}.v", 0)
         attrUtils.add_message_attr(self.container.name,
-                                   HEAT_MAP_MESH_STRING_IDENTIFIER,
+                                   self.HEAT_MAP_MESH_STRING_IDENTIFIER,
                                    heat_map_geo)
         self.container.add_mesh_as_member(heat_map_geo)
 
-        heat_blendshape_name = f"{self.editor_base_name}_{HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER}"
+        heat_blendshape_name = f"{self.editor_base_name}_{self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER}"
         heat_blendshape =self.add_new_blendshape_to_container(blendshape_name=heat_blendshape_name,
                                                               mesh_name=heat_map_geo,
                                                               container=self.container,
-                                                              message_attr=HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER,
+                                                              message_attr=self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER,
                                                               parent_directory_index=0)
 
         parent_dir_id = self.blendshape.mid_layer_parent
@@ -457,43 +456,43 @@ class BlueSteelEditor(object):
             return None
     @property
     def main_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, MAIN_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.MAIN_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def split_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, SPLIT_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.SPLIT_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def work_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, WORK_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.WORK_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def heat_map_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def split_attr_grp(self):
-        return attrUtils.get_message_attr(self.container.name, SPLIT_ATTR_GRP_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.SPLIT_ATTR_GRP_STRING_IDENTIFIER)
 
     @property
     def dga_visualizer(self):
-        return attrUtils.get_message_attr(self.container.name, DGA_VISUALIZER_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.DGA_VISUALIZER_STRING_IDENTIFIER)
     
     @property
     def dga_delta(self):
-        return attrUtils.get_message_attr(self.container.name, DGA_DELTA_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.DGA_DELTA_STRING_IDENTIFIER)
     
     @property
     def delta_map(self):
-        return attrUtils.get_message_attr(self.container.name, DELTA_MAP_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.DELTA_MAP_STRING_IDENTIFIER)
 
     @property
     def face_ctrl(self):
-        return attrUtils.get_message_attr(self.container.name, FACE_CTRL_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.FACE_CTRL_STRING_IDENTIFIER)
 
     @property
     def heat_map_mesh(self):
-        return attrUtils.get_message_attr(self.container.name, HEAT_MAP_MESH_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.HEAT_MAP_MESH_STRING_IDENTIFIER)
 
     @property
     def node_network_container(self):
-        node_network_name = attrUtils.get_message_attr(self.container.name, NODE_NETWORK_CONTAINER_STRING_IDENTIFIER)
+        node_network_name = attrUtils.get_message_attr(self.container.name, self.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER)
         if node_network_name:
             return Container(node_network_name)
         return None
@@ -515,7 +514,7 @@ class BlueSteelEditor(object):
         Returns:
             str: The name of the base mesh.
         """
-        return attrUtils.get_message_attr(self.container.name, BASE_MESH_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, self.BASE_MESH_STRING_IDENTIFIER)
 
     @property
     def editor_base_name(self):
@@ -982,17 +981,57 @@ class BlueSteelEditor(object):
 
         self.rename_work_shape(work_shape_name, new_work_shape_name)
 
+    def copy_blendshape_weight_map_values(self, blendshape: Blendshape, shape_name: str):
+        """
+        Copy the weight values of a shape from a given blendshape to be pasted later.
+        Parameters:
+            blendshape (Blendshape): The blendshape to copy the weight values from
+            shape_name (str): The name of the shape to copy the weight values from
+        """
+        weight = blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {blendshape.name}.")
+        self.copied_weight_map_values = blendshape.get_weight_map_values(weight.id)
+
+    def paste_blendshape_weight_map_values_to_shape(self,
+                                                    blendshape: Blendshape,
+                                                    shape_name: str,
+                                                    invert: bool = False,
+                                                    add: bool = False,
+                                                    subtract: bool = False):
+        """
+        Paste the copied weight values to a shape in a given blendshape.
+        Parameters:
+            blendshape (Blendshape): The blendshape to paste the weight values to
+            shape_name (str): The name of the shape to paste the weight values to
+        """
+        if self.copied_weight_map_values is None:
+            raise ValueError("No weight map values have been copied.")
+        weight = blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {blendshape.name}.")
+        if invert:
+            inverted_values = 1 - np.array(self.copied_weight_map_values)
+            blendshape.set_weight_map_values(weight.id, inverted_values.tolist())
+        elif add:
+            existing_values = blendshape.get_weight_map_values(weight.id)
+            new_values = np.array(existing_values) + np.array(self.copied_weight_map_values)
+            blendshape.set_weight_map_values(weight.id, new_values.tolist())
+        elif subtract:
+            existing_values = blendshape.get_weight_map_values(weight.id)
+            new_values = np.array(existing_values) - np.array(self.copied_weight_map_values)
+            blendshape.set_weight_map_values(weight.id, new_values.tolist())
+        else:
+            blendshape.set_weight_map_values(weight.id, self.copied_weight_map_values)
+
     def copy_work_weight_map_values(self, shape_name: str):
         """
         Copy the weight values of a shape to be pasted later.
         Parameters:
             shape_name (str): The name of the shape to copy the weight values from
         """
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+        self.copy_blendshape_weight_map_values(self.work_blendshape, shape_name)
 
-        self.copied_weight_map_values = self.work_blendshape.get_weight_map_values(weight.id)
 
     def paste_work_weight_map_values_to_shape(self, shape_name: str):
         """
@@ -1000,12 +1039,7 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to paste the weight values to
         """
-        if self.copied_weight_map_values is None:
-            raise ValueError("No weight map values have been copied.")
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        self.work_blendshape.set_weight_map_values(weight.id, self.copied_weight_map_values)
+        self.paste_blendshape_weight_map_values_to_shape(self.work_blendshape, shape_name)
 
     def paste_inverted_work_weight_map_values(self, shape_name: str):
         """
@@ -1013,13 +1047,7 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to paste the weight values to
         """
-        if self.copied_weight_map_values is None:
-            raise ValueError("No weight map values have been copied.")
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        inverted_values = 1 -np.array(self.copied_weight_map_values) 
-        self.work_blendshape.set_weight_map_values(weight.id, inverted_values.tolist())
+        self.paste_blendshape_weight_map_values_to_shape(self.work_blendshape, shape_name, invert=True)
 
     def add_work_weight_map_values(self, shape_name: str):
         """
@@ -1027,14 +1055,7 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to paste the weight values to
         """
-        if self.copied_weight_map_values is None:
-            raise ValueError("No weight map values have been copied.")
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        existing_values = self.work_blendshape.get_weight_map_values(weight.id)
-        new_values = np.array(existing_values) + np.array(self.copied_weight_map_values)
-        self.work_blendshape.set_weight_map_values(weight.id, new_values.tolist())
+        self.paste_blendshape_weight_map_values_to_shape(self.work_blendshape, shape_name, add=True)
     
     def subtract_work_weight_map_values(self, shape_name: str):
         """
@@ -1042,18 +1063,11 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to paste the weight values to
         """
-        if self.copied_weight_map_values is None:
-            raise ValueError("No weight map values have been copied.")
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        existing_values = self.work_blendshape.get_weight_map_values(weight.id)
-        new_values = np.array(existing_values) - np.array(self.copied_weight_map_values)
-        self.work_blendshape.set_weight_map_values(weight.id, new_values.tolist()) 
+        self.paste_blendshape_weight_map_values_to_shape(self.work_blendshape, shape_name, subtract=True)
 
     def clear_work_weight_map_values(self, shape_name: str):
         """
-        Clear the weight map values of a shape by setting them all to 0.
+        Clear the weight map values to 1.0 of a shape by setting them all to 0.
         Parameters:
             shape_name (str): The name of the shape to clear the weight values for
         """
@@ -1064,18 +1078,19 @@ class BlueSteelEditor(object):
         zero_values = [1.0] * num_vertices
         self.work_blendshape.set_weight_map_values(weight.id, zero_values)
 
-    def normalize_work_weight_map_values(self, shape_names: list):
+    def normalize_shapes_weight_map_values(self, blendshape: Blendshape, shape_names: list):
         """
-        Normalize the weight values of the given shapes so that the maximum value of the sum of all weight value for each vertex is always 1.0.
+        Normalize the weight values of the given shapes so that the maximum value of the sum of all
+        weight value for each vertex is always 1.0.
         Parameters:
+            blendshape (Blendshape): The blendshape to normalize the weight values for
             shape_names (list): A list of shape names to normalize the weight values for
         """
         if not shape_names:
             return
 
-        if self.work_blendshape is None:
-            raise ValueError("Work blendshape not found.")
-
+        if blendshape is None:
+            raise ValueError("Blendshape not found.")
         unique_shape_names = []
         seen = set()
         for shape_name in shape_names:
@@ -1091,11 +1106,11 @@ class BlueSteelEditor(object):
         weights = []
         maps = []
         for shape_name in unique_shape_names:
-            weight = self.work_blendshape.get_weight_by_name(shape_name)
+            weight = blendshape.get_weight_by_name(shape_name)
             if weight is None:
-                raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+                raise ValueError(f"Shape '{shape_name}' not found in {blendshape.name}.")
             weights.append(weight)
-            maps.append(np.asarray(self.work_blendshape.get_weight_map_values(weight.id), dtype=np.float64))
+            maps.append(np.asarray(blendshape.get_weight_map_values(weight.id), dtype=np.float64))
 
         stacked_maps = np.vstack(maps)
         per_vertex_sum = stacked_maps.sum(axis=0)
@@ -1104,7 +1119,15 @@ class BlueSteelEditor(object):
         normalized_maps = stacked_maps * scale
 
         for weight, normalized_values in zip(weights, normalized_maps):
-            self.work_blendshape.set_weight_map_values(weight.id, normalized_values.tolist())
+            blendshape.set_weight_map_values(weight.id, normalized_values.tolist())
+
+    def normalize_work_weight_map_values(self, shape_names: list):
+        """
+        Normalize the weight values of the given shapes so that the maximum value of the sum of all weight value for each vertex is always 1.0.
+        Parameters:
+            shape_names (list): A list of shape names to normalize the weight values for
+        """
+        self.normalize_shapes_weight_map_values(self.work_blendshape, shape_names)
 
     def paste_work_weight_map_values(self, shape_name: str):
         """
@@ -1173,8 +1196,13 @@ class BlueSteelEditor(object):
                     ctrl_attr = f"{self.face_ctrl}.{shape}"
                     self.container.unbind_attribute(ctrl_attr)
                     attrUtils.remove_attribute(self.face_ctrl, shape)
+                    
                 else:
                     raise ValueError(f"Cannot remove primary shape '{shape}' because control group is missing.")
+                if cmds.objExists(self.split_attr_grp):
+                    attrUtils.remove_attribute(self.split_attr_grp, shape)
+                else:
+                    raise ValueError(f"Cannot remove primary shape '{shape}' because split attribute group is missing.")
             else:
                 # we need to remove the input connections to the remapValue or combinationShape nodes
                 # of the inbetween combo and combo inbetween shapes
@@ -1457,7 +1485,6 @@ class BlueSteelEditor(object):
             for mesh in selected:
                 shape_name = mesh.split("|")[-1]
                 if utilities.is_valid(shape_name, self.separator):
-                    print(f"Committing shape: {shape_name} from mesh: {mesh}")
                     related_downstream_shapes.update(self.get_related_shapes_downstream(shape_name))
                     if shape_name in self.locked_shapes:
                         # we need a prompt to ask the user if they want to unlock the shape and continue or skip this shape
@@ -2077,7 +2104,7 @@ class BlueSteelEditor(object):
             current_dir_index = weight_parent_dir.get(weight.id)
             while current_dir_index not in (None, 0):
                 current_dir_name = target_dir_name.get(current_dir_index)
-                if current_dir_name is None or current_dir_name == PRIMARY_SHAPES_GRP_NAME:
+                if current_dir_name is None or current_dir_name == self.PRIMARY_SHAPES_GRP_NAME:
                     break
                 parent_dirs.append(current_dir_name)
                 current_dir_index = target_dir_parent.get(current_dir_index)
@@ -2174,15 +2201,17 @@ class BlueSteelEditor(object):
                 print(f"Adding new {shape.type} shape {shape}")
             return_value = "ADDED"
             # let's create a shape target directory under the primary shapes group
-            primary_dir = self.blendshape.get_target_dirs_by_name(PRIMARY_SHAPES_GRP_NAME)
+            primary_dir = self.blendshape.get_target_dirs_by_name(self.PRIMARY_SHAPES_GRP_NAME)
             if primary_dir == []: # we need to create the primary shapes group
-                primary_dir = self.blendshape.add_target_dir(PRIMARY_SHAPES_GRP_NAME)
+                primary_dir = self.blendshape.add_target_dir(self.PRIMARY_SHAPES_GRP_NAME)
             else:
                 primary_dir = primary_dir[0]
             primary_shape_dir = self.blendshape.add_target_dir(name=shape,
                                                                parent_index=primary_dir.index)
             # let's parent the weight to the primary shape dir
             self.blendshape.set_weight_parent_directory(w, primary_shape_dir)
+            # will add a split attribute to the shape to store the split maps
+            self.add_primary_split_map_attribute(shape)
             self.set_shape_pose(shape)
 
         else:
@@ -2376,9 +2405,9 @@ class BlueSteelEditor(object):
             self.create_remap_value_node(shape)
             self.update_remap_nodes_values(shape.primaries[0])
             # let's create a shape target directory under the inbetween shapes group
-            inbetween_dir = self.blendshape.get_target_dirs_by_name(INBETWEEN_SHAPES_GRP_NAME)
+            inbetween_dir = self.blendshape.get_target_dirs_by_name(self.INBETWEEN_SHAPES_GRP_NAME)
             if inbetween_dir == []: # we need to create the inbetween shapes group
-                inbetween_dir = self.blendshape.add_target_dir(INBETWEEN_SHAPES_GRP_NAME)
+                inbetween_dir = self.blendshape.add_target_dir(self.INBETWEEN_SHAPES_GRP_NAME)
             else:
                 inbetween_dir = inbetween_dir[0]
             inbetween_shape_dir = self.blendshape.add_target_dir(name=shape,
@@ -2424,9 +2453,9 @@ class BlueSteelEditor(object):
             return_value = "ADDED"
             w = self.blendshape.add_target(shape)
             # we need to create a target directory under the combo shapes group
-            combo_dir = self.blendshape.get_target_dirs_by_name(COMBO_SHAPES_GRP_NAME)
+            combo_dir = self.blendshape.get_target_dirs_by_name(self.COMBO_SHAPES_GRP_NAME)
             if combo_dir == []: # we need to create the combo shapes group
-                combo_dir = self.blendshape.add_target_dir(COMBO_SHAPES_GRP_NAME)
+                combo_dir = self.blendshape.add_target_dir(self.COMBO_SHAPES_GRP_NAME)
             else:
                 combo_dir = combo_dir[0]
             combo_shape_dir = self.blendshape.add_target_dir(name=shape,
@@ -2572,8 +2601,8 @@ class BlueSteelEditor(object):
         network_container = Container.create(node_network_container_name)
         network_container.set_icon("node_network_icon.svg")
         # add a message attribute to link the base mesh to the container
-        attrUtils.add_message_attr(container.name, BASE_MESH_STRING_IDENTIFIER, mesh_name)
-        attrUtils.add_message_attr(container.name, NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
+        attrUtils.add_message_attr(container.name, cls.BASE_MESH_STRING_IDENTIFIER, mesh_name)
+        attrUtils.add_message_attr(container.name, cls.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
         attrUtils.add_tag(container.name, "lockedShapes", "")
         container.add_member(network_container.name)
 
@@ -2581,9 +2610,9 @@ class BlueSteelEditor(object):
         editor_grp_id = cls.add_shape_editor_directory(editor_group_name)
 
         blendshape_names_suffices = ["mainBlendshape","splitBlendshape", "workBlendshape"]
-        message_attributeds = [MAIN_BLENDSHAPE_STRING_IDENTIFIER,
-                               SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
-                               WORK_BLENDSHAPE_STRING_IDENTIFIER]
+        message_attributeds = [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+                               cls.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
+                               cls.WORK_BLENDSHAPE_STRING_IDENTIFIER]
         # create the blendshape node blendshape.
         for suffix, message_attr in zip(blendshape_names_suffices, message_attributeds):
             blendshape_name = f"{editor_name}_{suffix}"
@@ -2595,9 +2624,9 @@ class BlueSteelEditor(object):
             if suffix == "mainBlendshape":
                 # adding the target groups to the blendshape editor
                 blendshape = Blendshape(blendshape_name)
-                blendshape.add_target_dir(PRIMARY_SHAPES_GRP_NAME)
-                blendshape.add_target_dir(INBETWEEN_SHAPES_GRP_NAME)
-                blendshape.add_target_dir(COMBO_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(cls.PRIMARY_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(cls.INBETWEEN_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(cls.COMBO_SHAPES_GRP_NAME)
                 
         # create the controls group node
         face_ctrl_name = f"{editor_name}_face_CTRL"
@@ -2617,12 +2646,12 @@ class BlueSteelEditor(object):
         cmds.setAttr(f"{face_ctrl}.translateY", y)
         cmds.setAttr(f"{face_ctrl}.translateZ", z)
         container.add_member(face_ctrl)
-        attrUtils.add_message_attr(container.name, FACE_CTRL_STRING_IDENTIFIER, face_ctrl)
+        attrUtils.add_message_attr(container.name, cls.FACE_CTRL_STRING_IDENTIFIER, face_ctrl)
         # create the split attribute group node
         split_settings_grp_name = f"{editor_name}_splitSettings_GRP"
         split_settings_grp = attrUtils.create_attribute_grp(split_settings_grp_name)
         container.add_member(split_settings_grp)
-        attrUtils.add_message_attr(container.name, SPLIT_ATTR_GRP_STRING_IDENTIFIER, split_settings_grp)
+        attrUtils.add_message_attr(container.name, cls.SPLIT_ATTR_GRP_STRING_IDENTIFIER, split_settings_grp)
         # set the icon of the container
         container.set_icon("blue_steel_icon.svg")
 
@@ -2736,11 +2765,11 @@ class BlueSteelEditor(object):
                 new_driver_name = f"{new_name}_{w}_{driver_type}"
                 cmds.rename(driver, new_driver_name)
         # renaming the linked nodes
-        for link in [MAIN_BLENDSHAPE_STRING_IDENTIFIER,
-                     SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
-                     WORK_BLENDSHAPE_STRING_IDENTIFIER,
-                     SPLIT_ATTR_GRP_STRING_IDENTIFIER,
-                     NODE_NETWORK_CONTAINER_STRING_IDENTIFIER]:
+        for link in [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+                     cls.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
+                     cls.WORK_BLENDSHAPE_STRING_IDENTIFIER,
+                     cls.SPLIT_ATTR_GRP_STRING_IDENTIFIER,
+                     cls.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER]:
             node_name = attrUtils.get_message_attr(old_editor.container.name, link)
             if node_name:
                 new_node_name = f"{new_name}_{link}"
@@ -2898,6 +2927,839 @@ class BlueSteelEditor(object):
         cmds.delete(self.container.name)
         
         # we need to pull out the 
+
+    # SPLIT MAPS
+    def _sync_up_split_maps_attributes(self):
+        """ Sync up the split groups assignments attributes in the
+        split settings node with the current primaries
+        """
+        self._add_split_group_attribute()
+        self._add_split_maps_order_attribute()
+        self.sync_network() # just rebuilding the network to make sure it's up to date
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        # get only user-defined enum attributes in the split attribute group
+        attrs = [
+            attr for attr in (cmds.listAttr(self.split_attr_grp, userDefined=True) or [])
+            if cmds.getAttr(f"{self.split_attr_grp}.{attr}", type=True) == "enum"
+        ]
+        # get the primaries in the network
+        primaries = self.network.get_primary_shapes()
+        # remove any attributes that are not in the primaries
+        for attr in attrs:
+            if attr not in primaries:
+                cmds.deleteAttr(f"{self.split_attr_grp}.{attr}")
+        # add any primaries that are not in the attributes
+        for primary in primaries:
+            if primary not in attrs:
+                self.add_primary_split_map_attribute(primary)
+        self.update_split_map_attributes_from_groups()
+
+    def get_primary_split_group(self, primary: str) -> str:
+        """Get the split group assigned to a primary shape.
+        Parameters:
+            primary (str): The name of the primary shape to get the split group for.
+        Returns:
+            str: The name of the split group assigned to the primary shape.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        if not cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
+            raise ValueError(f"Primary {primary} does not have an attribute in the split settings node")
+        enum_index = int(cmds.getAttr(f"{self.split_attr_grp}.{primary}"))
+        enum_values = cmds.attributeQuery(primary, node=self.split_attr_grp, listEnum=True) or [""]
+        enum_labels = enum_values[0].split(":") if enum_values[0] else []
+        return enum_labels[enum_index] if enum_index < len(enum_labels) else "NoSplit"
+
+    def set_primary_split_group(self, primary: str, group: str):
+        """Set the split group assigned to a primary shape.
+        Parameters:
+            primary (str): The name of the primary shape to set the split group for.
+            group (str): The name of the split group to assign to the primary shape.
+        """
+        if group is None or group == "":
+            group = "NoSplit"
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        if not cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
+            raise ValueError(f"Primary {primary} does not have an attribute in the split settings node")
+        enum_values = cmds.attributeQuery(primary, node=self.split_attr_grp, listEnum=True) or [""]
+        enum_labels = enum_values[0].split(":") if enum_values[0] else []
+        if group not in enum_labels:
+            raise ValueError(f"Group {group} is not a valid split group for primary {primary}")
+        enum_index = enum_labels.index(group)
+        cmds.setAttr(f"{self.split_attr_grp}.{primary}", enum_index)
+
+    def update_split_map_attributes_from_groups(self):
+        """Update all primary split-map enum attributes from split groups.
+
+        The currently selected enum label is preserved when still available.
+        If a selected label no longer exists, it falls back to ``NoSplit``.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+
+        split_groups = self.read_split_groups_attributes()
+        enum_labels = ["NoSplit"] + [str(name) for name in split_groups.keys()]
+        enum_labels = [label.replace(":", "_") for label in enum_labels]
+        enum_name = ":".join(enum_labels)
+
+        attrs = cmds.listAttr(self.split_attr_grp, userDefined=True) or []
+        for attr in attrs:
+            if attr == self.SPLIT_GRP_ATTR_STRING_IDENTIFIER:
+                continue
+
+            attr_full = f"{self.split_attr_grp}.{attr}"
+            if cmds.getAttr(attr_full, type=True) != "enum":
+                continue
+
+            current_index = int(cmds.getAttr(attr_full))
+            old_enum_values = cmds.attributeQuery(attr, node=self.split_attr_grp, listEnum=True) or [""]
+            old_labels = old_enum_values[0].split(":") if old_enum_values[0] else []
+            current_label = old_labels[current_index] if current_index < len(old_labels) else "NoSplit"
+
+            cmds.addAttr(attr_full, edit=True, enumName=enum_name)
+            new_index = enum_labels.index(current_label) if current_label in enum_labels else 0
+            cmds.setAttr(attr_full, new_index)
+            cmds.setAttr(attr_full, cb=True)
+
+    def add_primary_split_map_attribute(self, primary: str):
+        """Add an enum attribute for a primary shape on the split settings node.
+
+        Index ``0`` is reserved for ``NoSplit`` and the following enum entries map
+        to the current split group names.
+        Parameters:
+            primary (str): The name of the primary shape to add the attribute for.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        if cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
+            print(f"Primary {primary} already has an attribute in the split settings node")
+            return
+
+        split_groups = self.read_split_groups_attributes()
+        enum_labels = ["NoSplit"] + list(split_groups.keys())
+        enum_name = ":".join(str(label).replace(":", "_") for label in enum_labels)
+
+        cmds.addAttr(self.split_attr_grp,
+                     longName=primary,
+                     attributeType="enum",
+                     enumName=enum_name,
+                     defaultValue=0)
+        cmds.setAttr(f"{self.split_attr_grp}.{primary}", cb=True)
+
+    def _add_split_maps_order_attribute(self):
+        """ add a string attribute that contains a json format list with the order of the split groups.
+        The attribute will be added to the split settings node.
+        """
+        print("Adding split groups order attribute to the split settings node")
+        # check if the split group attriute node exists
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        # check if the attribute already exists
+        group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
+                                                    self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER,
+                                                    "[]")
+        if group_attribute is None:
+            print(f"Failed to add split groups order attribute {self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER} to {self.split_attr_grp}")
+
+
+    def _add_split_group_attribute(self):
+        """ add a string attribute that contains a json format dictionary with the name of the group
+        and the list of split maps assigned to that group. The attribute will be added to the split settings node.
+        """
+        print("Adding split groups attribute to the split settings node")
+        # check if the split group attriute node exists
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        # check if the attribute already exists
+        group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
+                                                    self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
+                                                    "{}")
+        if group_attribute is None:
+            print(f"Failed to add split groups attribute {self.SPLIT_GRP_ATTR_STRING_IDENTIFIER} to {self.split_attr_grp}")
+
+    def read_split_groups_attributes(self) -> dict:
+        """ read the split groups attribute and return a dictionary with the name of the group
+        and the list of split maps assigned to that group.
+        Returns:
+            dict: A dictionary with the name of the group and the list of split maps assigned to that group.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        if not cmds.attributeQuery(self.SPLIT_GRP_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
+            raise ValueError("Split groups attribute does not exist")
+        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_GRP_ATTR_STRING_IDENTIFIER) or {}
+
+    def read_split_maps_order_attribute(self) -> list:
+        """ read the split groups order attribute and return a list with the names of the groups in the order they should be displayed.
+        Returns:
+            list: A list with the names of the groups in the order they should be displayed.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        if not cmds.attributeQuery(self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
+            raise ValueError("Split groups order attribute does not exist")
+        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER) or []
+
+    def get_split_map_suffices(self, split_map_name: str) -> list:
+        """ get the suffices of a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        Returns:
+            list: A list of suffices for the split map.
+        """
+        suffices = []
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
+        for child_dir in child_target_dirs:
+            suffices.append(child_dir.name)
+        return suffices
+
+    def normalize_split_map_weights(self, split_map_name: str):
+        """ normalize the weights of a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        """
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        spit_map_weights = self.get_split_map_weights(split_map_name)
+        self.normalize_shapes_weight_map_values(self.split_blendshape, spit_map_weights)
+
+    def get_split_map_weights(self, split_map_name: str) -> list:
+        """ get the weights of a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        Returns:
+            list: A list of weights for the split map.
+        """
+        weights = []
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
+        for child_dir in child_target_dirs:
+            child_weights = self.split_blendshape.get_target_dir_child_weights(child_dir)
+            weights.extend(child_weights)
+        return weights
+
+    def rename_split_map_suffix(self, split_map_name: str, old_name: str, new_name: str):
+        """ rename the weights of a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+            old_name (str): The old name of the weight.
+            new_name (str): The new name of the weight.
+        """
+        old_weight_name = f"{split_map_name}_{old_name}"
+        new_weight_name = f"{split_map_name}_{new_name}"
+        if old_weight_name not in self.split_blendshape.get_weights_names():
+            raise ValueError(f"Weight {old_weight_name} does not exist in the split blendshape")
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
+        for child_dir in child_target_dirs:
+            if child_dir.name == old_name:
+                self.split_blendshape.rename_target_dir(child_dir, new_name)
+                child_weights = self.split_blendshape.get_target_dir_child_weights(child_dir)
+                for child in child_weights:
+                    if child == old_weight_name:
+                        self.split_blendshape.rename_weight(child, new_weight_name)
+
+    def rename_split_map(self, old_name: str, new_name: str):
+        """ rename a split map in the split_blendshape and in the split groups attribute.
+        Parameters:
+            old_name (str): The name of the split map to rename.
+            new_name (str): The new name of the split map.
+        """
+        if old_name not in self.get_split_maps():
+            raise ValueError(f"Split map {old_name} does not exist")
+        if new_name in self.get_split_maps():
+            raise ValueError(f"Split map {new_name} already exists")
+        # we need to rename the target directory for the split map
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(old_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {old_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {old_name}.")
+        self.split_blendshape.rename_target_dir(split_map_dir[0], new_name)
+        # we need to rename the weights under the split map directory
+        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
+        for child_dir in child_target_dirs:
+            child_weights = self.split_blendshape.get_target_dir_child_weights(child_dir)
+            for child in child_weights:
+                new_weight_name = child.replace(old_name, new_name)
+                self.split_blendshape.rename_weight(child, new_weight_name)
+        # we need to update the split groups attribute
+        split_groups = self.read_split_groups_attributes()
+        for group, maps in split_groups.items():
+            if old_name in maps:
+                maps[maps.index(old_name)] = new_name
+                split_groups[group] = maps
+        self.write_split_groups_attributes(split_groups)
+        # we need to update the split maps order attribute
+        split_maps_order = self.read_split_maps_order_attribute()
+        if old_name in split_maps_order:
+            split_maps_order[split_maps_order.index(old_name)] = new_name
+        self.write_split_maps_order_attribute(split_maps_order)
+
+    def delete_split_map(self, split_map_name: str):
+        """ delete a split map in the split_blendshape and in the split groups attribute.
+        Parameters:
+            split_map_name (str): The name of the split map to delete.
+        """
+        if split_map_name not in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} does not exist")
+        # we need to delete the target directory for the split map
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        # we need to remove all the targets under the split map directory before deleting it
+        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
+        for child_dir in child_target_dirs:
+            child_weights = self.split_blendshape.get_target_dir_child_weights(child_dir)
+            for child in child_weights:
+                self.split_blendshape.remove_target(child)
+            self.split_blendshape.remove_target_dir(child_dir)
+        self.split_blendshape.remove_target_dir(split_map_dir[0])
+        # we need to update the split groups attribute
+        split_groups = self.read_split_groups_attributes()
+        empty_groups = []
+        for group, maps in split_groups.items():
+            if split_map_name in maps:
+                maps.remove(split_map_name)
+                if not maps:
+                    empty_groups.append(group)
+                split_groups[group] = maps
+
+        for group in empty_groups:
+            del split_groups[group]
+        # we need to update the split maps order attribute
+        split_maps_order = self.read_split_maps_order_attribute()
+        if split_map_name in split_maps_order:
+            split_maps_order.remove(split_map_name)
+        self.write_split_maps_order_attribute(split_maps_order)
+        self.write_split_groups_attributes(split_groups)
+        self.update_split_map_attributes_from_groups()
+
+    def write_split_maps_order_attribute(self, split_maps_order: list):
+        """ write the split groups order attribute with a list of the names of the groups in the order they should be displayed.
+        Parameters:
+            split_maps_order (list): A list of the names of the groups in the order they should be displayed.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        attrUtils.write_json_attr(self.split_attr_grp,
+                                  self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER,
+                                  split_maps_order)
+
+    def write_split_groups_attributes(self, split_groups: dict):
+        """ write the split groups attribute with a dictionary with the name of the group
+        and the list of split maps assigned to that group.
+        Parameters:
+            split_groups (dict): A dictionary with the name of the group and the list of split maps assigned to that group.
+        """
+        if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
+            raise ValueError("Split attribute group does not exist")
+        attrUtils.write_json_attr(self.split_attr_grp,
+                                  self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
+                                  split_groups)
+
+    def get_split_maps(self,) -> list:
+        """
+        Reads the split_blendshape directories.
+        Returns:
+            list: A list of split_blendshape directories.
+        """
+        result = []
+        split_maps_target_dirs = self.split_blendshape.get_target_dirs() or []
+        for d in split_maps_target_dirs:
+            if d.index == 0:
+                continue
+            if self.split_blendshape.get_target_dir_parent(d) == 0:
+                result.append(d.name)
+        return result
+
+    def create_split_map(self, split_map_name: str, suffices: list = []):
+        """
+        Create a new split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map to create.
+            suffices (list): A list of suffices to add to the split map. Default is [].
+        Returns:
+            str: The name of the created split map.
+        """
+        if split_map_name in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} already exists")
+        # we need to create a target directory for the split map
+        existing_weights = self.split_blendshape.get_weights()
+        weight_names = [f"{split_map_name}_{suffix}" for suffix in suffices]
+        for weight in weight_names:
+            if weight in existing_weights:
+                raise ValueError(f"Weight {weight} already exists in the split_blendshape")
+        split_map_dir = self.split_blendshape.add_target_dir(name=split_map_name)
+        parent_index = split_map_dir.index
+        # we need to add the weights to the split map
+        for weight, suffix in zip(weight_names, suffices):
+            weight_name_dir = self.split_blendshape.add_target_dir(name=suffix, parent_index=parent_index)
+            self.split_blendshape.add_target(weight, parent_directory=weight_name_dir)
+        # we need to update the split maps order attribute
+        split_maps_order = self.read_split_maps_order_attribute()
+        split_maps_order.append(split_map_name)
+        self.write_split_maps_order_attribute(split_maps_order)
+        return split_map_dir.name
+
+    def add_weights_to_split_map(self, split_map_name: str, weights_list: list):
+        """
+        Add a weight to a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map to add the weights to.
+            weights_list (list): A list of weight names to add to the split map.
+        Returns:
+            None
+        """
+        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        if not split_map_dir:
+            raise ValueError(f"Split map {split_map_name} does not have a target directory")
+        if len(split_map_dir) > 1:
+            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
+        parent_index = split_map_dir[0].index
+        for weight_name in weights_list:
+            # we need to add the weight to the split map
+            weight_name_dir = self.split_blendshape.add_target_dir(name=weight_name, parent_index=parent_index)
+            self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
+
+    def create_split_group(self, split_group_name: str, split_maps_list: list = []):
+        """
+        Create a new split group in the split_blendshape.
+        Parameters:
+            split_group_name (str): The name of the split group to create.
+            split_maps_list (list): A list of split maps to add to the split group. Default is None.
+        Returns:
+            str: The name of the created split group.
+        """
+        split_groups = self.read_split_groups_attributes()
+        # we need to create a target directory for the split group
+        split_groups[split_group_name] = split_maps_list
+        self.write_split_groups_attributes(split_groups)
+        self.update_split_map_attributes_from_groups()
+        return split_group_name
+
+    def add_split_map_to_split_group(self, split_group_name: str, split_map_name: str):
+        """
+        Add a split map to a split group in the split_blendshape.
+        Parameters:
+            split_group_name (str): The name of the split group to add the split maps to.
+            split_map_name (str): The name of the split map to add to the split group.
+        Returns:
+            None
+        """
+        if split_map_name not in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} does not exist")
+        split_groups = self.read_split_groups_attributes()
+        if split_group_name not in split_groups:
+            raise ValueError(f"Split group {split_group_name} does not exist")
+        # we need to add the split map to the split group
+        existing_split_maps = split_groups[split_group_name]
+        if split_map_name in existing_split_maps:
+            raise ValueError(f"Split map {split_map_name} already exists in split group {split_group_name}")
+        existing_split_maps.append(split_map_name)
+        split_groups[split_group_name] = existing_split_maps
+        self.write_split_groups_attributes(split_groups)
+        self.update_split_map_attributes_from_groups()
+
+    def remove_split_map_from_split_group(self, split_group_name: str, split_map_name: str):
+        """
+        Remove a split map from a split group in the split_blendshape.
+        Parameters:
+            split_group_name (str): The name of the split group to remove the split maps from.
+            split_map_name (str): The name of the split map to remove from the split group.
+        Returns:
+            None
+        """
+        if split_map_name not in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} does not exist")
+        split_groups = self.read_split_groups_attributes()
+        if split_group_name not in split_groups:
+            raise ValueError(f"Split group {split_group_name} does not exist")
+        # we need to remove the split maps from the split group
+        existing_split_maps = split_groups[split_group_name]
+        if split_map_name not in existing_split_maps:
+            raise ValueError(f"Split map {split_map_name} does not exist in split group {split_group_name}")
+        existing_split_maps.remove(split_map_name)
+        if len(existing_split_maps) == 0:
+            self.remove_split_group(split_group_name)
+            return
+
+        split_groups[split_group_name] = existing_split_maps
+        self.write_split_groups_attributes(split_groups)
+
+    def remove_split_group(self, split_group_name: str):
+        """
+        Remove a split group from the split_blendshape.
+        Parameters:
+            split_group_name (str): The name of the split group to remove.
+        Returns:
+            None
+        """
+        split_groups = self.read_split_groups_attributes()
+        if split_group_name not in split_groups:
+            raise ValueError(f"Split group {split_group_name} does not exist")
+        # we need to remove the split group
+        del split_groups[split_group_name]
+        self.write_split_groups_attributes(split_groups)
+        self.update_split_map_attributes_from_groups()
+
+    def create_split_maps_meshes(self):
+        """
+        Create a duplicate of the mesh with a blendshape for each mesh.
+        Returns:
+            None
+        """
+        split_maps = self.get_split_maps()
+        if not split_maps:
+            raise ValueError("No split maps found to create a split maps mesh")
+        # duplicate the mesh
+        split_mesh_base_name = f"{self.base_mesh.split('|')[-1]}_split_maps"
+        mesh_to_connect = None
+        # we need to create a group where we will move the split maps meshes
+        split_maps_group = f"{self.base_mesh.split('|')[-1]}_split_maps_grp"
+        if not cmds.objExists(split_maps_group):
+            split_maps_group = cmds.group(name=split_maps_group, empty=True)
+        for split_map in split_maps:
+            blendshape_name = f"{split_map}_blendShape"
+            split_mesh_name = f"{split_mesh_base_name}_{split_map}"
+            split_mesh = self.duplicate_base_mesh_neutral_state(split_mesh_name)
+            split_mesh = cmds.parent(split_mesh, split_maps_group)[0]
+            split_map_blendshape = cmds.blendShape(split_mesh, name=blendshape_name)
+            split_map_blendshape = Blendshape(split_map_blendshape[0])
+            self.split_map_blendshapes[split_map] = split_map_blendshape.name
+            for suffix, weight in zip(self.get_split_map_suffices(split_map),
+            self.get_split_map_weights(split_map)):
+                suffix_weight = split_map_blendshape.add_target(suffix)
+                # we need to connect the weight maps to the split map blendshape
+                self.split_blendshape.transfer_weight_map(source_weight_id = weight.id,
+                                                          target_blendshape=split_map_blendshape.name,
+                                                          target_weight_id=suffix_weight.id)
+                if mesh_to_connect is None:
+                    self.split_blendshape_to_connect = split_map_blendshape.name
+                    mesh_to_connect = split_mesh
+                    continue
+                # we need to connect the ,esh_to connect to the target
+                split_map_blendshape.connect_mesh_to_target(suffix_weight.id, mesh_to_connect)
+            mesh_to_connect = split_mesh
+        self.split_bake_mesh = split_mesh
+        return split_maps_group
+
+    def split_shapes(self):
+        """
+        Create a new editor and add all the split shapes to it.
+        """
+        editor_name = f"{self.name}_split"
+        mesh = self.base_mesh
+        split_editor = self.create_new(name=editor_name, base_mesh=mesh)
+        split_editor_blendshape = split_editor.blendshape
+        split_meshes_group = self.create_split_maps_meshes()
+        for shape in self.shapes:
+            split_shape_poses = self.get_split_shape_poses(shape)
+            for split_shape_pose_name, suffices in split_shape_poses.items():
+                self.set_split_pose_from_suffices(suffices)
+                committed_shape = split_editor.commit_shape(split_shape_pose_name)
+                committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
+                if not committed_weight:
+                    raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
+                
+
+
+
+    def get_split_shape_poses(self, shape_name) -> dict:
+        """
+        Get the split shape poses for a given shape.
+        Parameters:
+            shape_name (str): The name of the shape to get the split shape poses for.
+        Returns:
+            dict: A dictionary with the split shape poses for the given shape.
+        """
+        split_shape_poses = {}
+        shape = self.get_shape(shape_name)
+        split_groups = self.read_split_groups_attributes()
+        if not shape:
+            return split_shape_poses
+        shape_split_maps = set()
+        for primary in shape.primaries:
+            split_group = self.get_primary_split_group(primary)
+            if split_group == "NoSplit":
+                continue
+            split_maps = split_groups.get(split_group, [])
+            shape_split_maps = shape_split_maps.union(set(split_maps))
+        split_weights = list()
+        for split_map in shape_split_maps:
+            split_weights.append([str(w) for w in self.get_split_map_weights(split_map)])
+        split_possible_combos = list(product(*split_weights))
+        for combo_suffices in split_possible_combos:
+            print(f"Generating name for split shape pose: {shape_name} with suffices: {combo_suffices}")
+            split_shape_pose_name = self.generate_name_for_split_shape_pose(shape_name, combo_suffices)
+            split_shape_poses[split_shape_pose_name] = combo_suffices
+            print(f"Generated name for split shape pose: {split_shape_pose_name} with suffices: {combo_suffices}")
+        return split_shape_poses
+
+    def generate_name_for_split_shape_pose(self, shape_name: str, suffices: list) -> str:
+        """
+        Generate a name for a split shape pose based on the shape name and suffices.
+        Parameters:
+            shape_name (str): The name of the shape.
+            suffices (list): A list of suffices for the split shape pose.
+        Returns:
+            str: The generated name for the split shape pose.
+        """
+        shape = self.get_shape(shape_name)
+        tokens = list()
+        split_groups = self.read_split_groups_attributes()  
+        for primary, parent in zip(shape.primaries, shape.parents):
+            shape_split_group = self.get_primary_split_group(primary)
+            split_token = parent
+            parent_value = parent.str_values[0]
+            if shape_split_group == "NoSplit":
+                tokens.append(split_token)
+                continue
+            split_maps = split_groups.get(shape_split_group, [])
+            for split_map in split_maps:
+                for suffix in suffices:
+                    split_map_name, split_map_suffix = suffix.split("_")
+                    if split_map_name == split_map:
+                        split_token = f"{split_token}{split_map_suffix}"
+            if parent_value != "100":
+                split_token = f"{split_token}{parent_value}"
+            tokens.append(split_token)
+        return "_".join(tokens)
+
+    def set_value_to_all_split_blendshapes(self, value: float):
+        for split_blendshape in self.split_map_blendshapes.values():
+            split_blendshape = Blendshape(split_blendshape)
+            for weight in split_blendshape.get_weights():
+                split_blendshape.set_weight_value(weight, value)
+
+    def set_split_pose_from_suffices(self, suffices: list):
+        """
+        Set the split pose for a given shape based on the suffices.
+        Parameters:
+            shape_name (str): The name of the shape to set the split pose for.
+            suffices (list): A list of suffices for the split pose.
+        Returns:
+            None
+        """
+        self.set_value_to_all_split_blendshapes(1.0) # this will make the shape pass through the split maps
+        for suffix in suffices:
+            split_map_name, split_map_suffix = suffix.split("_")
+            
+            split_blendshape_name = self.split_map_blendshapes.get(split_map_name)
+            if not split_blendshape_name:
+                raise ValueError(f"Split map {split_map_name} does not have a corresponding split blendshape")
+            split_blendshape = Blendshape(split_blendshape_name)
+            for weight in split_blendshape.get_weights():
+                print(f"Checking weight {weight} for split map {split_map_name} with suffix {split_map_suffix}")
+                if weight == split_map_suffix:
+                    print(f"Setting weight {weight} to 1.0 for split map {split_map_name} with suffix {split_map_suffix}")
+                    split_blendshape.set_weight_value(weight, 1.0)
+                    continue
+                split_blendshape.set_weight_value(weight, 0.0)
+
+    def export_split_data(self, export_path: str):
+        """
+        Export the split data to a directory.
+        Parameters:
+            export_path (str): The path to export the split data to.
+        Returns:
+            None
+        """
+        self.export_split_settings(export_path)
+        self.export_split_maps_weights(export_path)
+
+    def import_split_data(self, import_path: str):
+        """
+        Import the split data from a directory.
+        Parameters:
+            import_path (str): The path to import the split data from.
+        Returns:
+            None
+        """
+        self.import_split_maps_weights(import_path)
+        self.import_split_settings(import_path)
+
+    def export_split_settings(self, export_path: str):
+        """
+        Export the split settings to a directory.
+        Parameters:
+            export_path (str): The path to export the split settings to.
+        Returns:
+            None
+        """
+        if not os.path.exists(export_path):
+            os.makedirs(export_path)
+        split_groups = self.read_split_groups_attributes()
+        split_maps_order = self.read_split_maps_order_attribute()
+        # we need to get the split group associations for each primary shape
+        split_map_associations = {}
+        for primary in self.get_primary_shapes():
+            group = self.get_primary_split_group(primary)
+            split_map_associations[primary] = group
+        split_settings = {
+            "split_groups": split_groups,
+            "split_maps_order": split_maps_order,
+            "split_map_associations": split_map_associations
+        }
+        # we need to write the split settings to a json file
+        export_file = os.path.join(export_path, "split_settings.json")
+        with open(export_file, "w") as f:
+            json.dump(split_settings, f, indent=4)
+
+    def import_split_settings(self, import_path: str):
+        """
+        Import the split settings from a directory.
+        Parameters:
+            import_path (str): The path to import the split settings from.
+        Returns:
+            None
+        """
+        import_file = os.path.join(import_path, "split_settings.json")
+        if os.path.exists(import_file):
+            with open(import_file, "r") as f:
+                split_settings = json.load(f)
+            split_groups = split_settings.get("split_groups", {})
+            split_maps_order = split_settings.get("split_maps_order", [])
+            split_map_associations = split_settings.get("split_map_associations", {})
+            self.write_split_groups_attributes(split_groups)
+            self.write_split_maps_order_attribute(split_maps_order)
+            self.update_split_map_attributes_from_groups()
+            primary_shapes = self.get_primary_shapes()
+            for primary, group in split_map_associations.items():
+                if primary not in primary_shapes:
+                    print(f"Primary shape {primary} does not exist in the blendshape. Skipping association.")
+                    continue
+                self.set_primary_split_group(primary, group)
+            
+    def export_split_maps_weights(self, export_path: str):
+        """
+        Export the split maps to a directory.
+        Parameters:
+            export_path (str): The path to export the split maps to.
+        Returns:
+            None
+        """
+        if not os.path.exists(export_path):
+            os.makedirs(export_path)
+        split_maps_weights = {}
+        for split_map in self.get_split_maps():
+            split_map_weights = self.get_split_map_weights(split_map)
+            split_map_data = {}
+            for weight in split_map_weights:
+                weight_map_values = self.split_blendshape.get_weight_map_values(weight.id)
+                split_map_data[weight] = weight_map_values
+            split_maps_weights[split_map] = split_map_data
+        # we need to write the split maps weights to a json file
+        export_file = os.path.join(export_path, "split_maps_weights.json")
+        with open(export_file, "w") as f:
+            json.dump(split_maps_weights, f, indent=4)
+
+    def import_split_maps_weights(self, import_path: str):
+        """
+        Import the split maps from a directory.
+        Parameters:
+            import_path (str): The path to import the split maps from.
+        Returns:
+            None    
+        """
+        self.clear_all_split_maps()
+        import_file = os.path.join(import_path, "split_maps_weights.json")
+        if os.path.exists(import_file):
+            with open(import_file, "r") as f:
+                split_maps_weights = json.load(f)
+            for split_map, split_map_data in split_maps_weights.items():
+                split_map_suffices = [x.split("_")[-1] for x in split_map_data.keys()]
+                self.create_split_map(split_map, split_map_suffices)
+                for weight, weight_map_values in split_map_data.items():
+                    weight = self.split_blendshape.get_weight_by_name(weight)
+                    if weight is None:
+                        raise ValueError(f"Weight {weight} does not exist in the split_blendshape")
+                    self.split_blendshape.set_weight_map_values(weight.id, weight_map_values)
+
+    def clear_all_split_maps(self):
+        """
+        Clear all the split maps in the split_blendshape.
+        Returns:
+            None
+        """
+        for split_map in self.get_split_maps():
+            self.delete_split_map(split_map)
+
+    def connect_shape_to_split_map_blendshapes(self, shape_name: str):
+        """
+        Connect a shape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to connect to the split_maps_blendshape.
+        """
+        # check if the shape exists in the blendshape
+        shape_weight = self.blendshape.get_weight_by_name(shape_name)
+        if not shape_weight:
+            raise ValueError(f"Shape {shape_name} does not exist")
+        if not self.split_blendshape_to_connect:
+            raise ValueError("No split map blendshape to connect to")
+        # we need to connect the shape to all the split map blendshape targets
+        split_blendshape = Blendshape(self.split_blendshape_to_connect)
+        for weight in split_blendshape.get_weights():
+            self.blendshape.connect_target_to_blendshape_target(input_target_index=shape_weight.id,
+                                                                output_blendshape_name=split_blendshape.name,
+                                                                output_target_index=weight.id)
+        
+
+    def copy_split_weight_map_values(self, shape_name: str):
+        """
+        Copy a weight from the split_blendshape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to copy the weight map from."""
+        self.copy_blendshape_weight_map_values(self.split_blendshape,
+                                               shape_name)
+
+    def paste_split_weight_map_values(self, shape_name: str):
+        """
+        Paste a weight from the split_blendshape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to paste the weight map to."""
+        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name)
+
+    def paste_inverted_split_weight_map_values(self, shape_name: str):
+        """
+        Paste an inverted weight from the split_blendshape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to paste the weight map to."""
+        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, invert=True)
+
+    def add_split_weight_map_values(self, shape_name: str):
+        """
+        Add a weight from the split_blendshape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to add the weight map to."""
+        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, add=True)
+
+    def subtract_split_weight_map_values(self, shape_name: str):
+        """
+        Subtract a weight from the split_blendshape to the split_maps_blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to subtract the weight map from."""
+        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, add=False)
 
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):
