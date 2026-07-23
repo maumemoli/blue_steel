@@ -202,12 +202,12 @@ class BlueSteelEditor(object):
         blend_name = self.heat_map_blendshape_name
         heat_mesh_name = self.heat_map_mesh
         if blend_name and cmds.objExists(blend_name):
-            print(f"Deleting heat map blendshape '{self.heat_map_blendshape_name}' and mesh '{heat_mesh_name}'.")
+            #print(f"Deleting heat map blendshape '{self.heat_map_blendshape_name}' and mesh '{heat_mesh_name}'.")
             cmds.delete(blend_name)
             self.heat_map_blendshape = None
         if self.heat_map_mesh:
             if cmds.objExists(heat_mesh_name):
-                print(f"Deleting heat map mesh '{heat_mesh_name}'.")
+                #print(f"Deleting heat map mesh '{heat_mesh_name}'.")
                 cmds.delete(heat_mesh_name)
 
     def _disconnect_heat_map_blendshape_target(self):
@@ -782,7 +782,7 @@ class BlueSteelEditor(object):
         # we create a group to hold the edit mesh and the extracted mesh
         group_name = f"{work_shape_name}_extractionGroup"
         group  = cmds.createNode("transform", name=group_name)
-        print(f"Created extraction group '{group_name}' for work shape '{work_shape_name}'.")
+        #print(f"Created extraction group '{group_name}' for work shape '{work_shape_name}'.")
         cmds.parent(edit_mesh, group)
         cmds.parent(extracted_mesh, group)
 
@@ -792,7 +792,7 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to unlock
         """
-        print(f"Removing shape '{shape_name}' from locked shapes.")
+        #print(f"Removing shape '{shape_name}' from locked shapes.")
         shape = self.network.get_shape(shape_name)
         if shape is None:
             raise ValueError(f"Shape '{shape_name}' not found in the network.")
@@ -933,7 +933,7 @@ class BlueSteelEditor(object):
             work_shape_name (str): The name of the work shape to connect
             shape_name (str): The name of the primary shape to connect to
         """
-        print(f"Connecting work shape '{work_shape_name}' to primary shape '{shape_name}' for direct manipulation.")
+        #print(f"Connecting work shape '{work_shape_name}' to primary shape '{shape_name}' for direct manipulation.")
         work_shape_weight = self.work_blendshape.get_weight_by_name(work_shape_name)
         if work_shape_weight is None:
             raise ValueError(f"Work shape '{work_shape_name}' not found in blendshape.")
@@ -942,11 +942,11 @@ class BlueSteelEditor(object):
             raise ValueError(f"Shape '{shape_name}' not found in blendshape.")
         # let's check if there is a driven key already. If there is we need to remove it before creating a new one
         driver = self.work_blendshape.get_weight_driver(work_shape_weight)
-        print(f"Existing driver for work shape '{work_shape_name}': {driver}")
+        #print(f"Existing driver for work shape '{work_shape_name}': {driver}")
         if driver and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
             cmds.delete(driver)
-        else:
-            print(f"No existing driven key found for work shape '{work_shape_name}'. Creating new driven key connection.")
+            # else:
+            #     print(f"No existing driven key found for work shape '{work_shape_name}'. Creating new driven key connection.")
         # if the drive still exists that means that some manual connections were made
         # and we need to disconnect them before creating the driven key connection
         input_connection = cmds.listConnections(f"{self.work_blendshape.name}.{work_shape_name}", source=True, destination=False, plugs=True) or []
@@ -954,7 +954,7 @@ class BlueSteelEditor(object):
             cmds.disconnectAttr(conn, f"{self.work_blendshape.name}.{work_shape_name}")
 
         # we need to create a set driven key connection between the work shape and the primary shape
-        print(f"Creating driven key from '{self.work_blendshape.name}.{work_shape_name}' to '{self.blendshape.name}.{shape_name}'")
+        # print(f"Creating driven key from '{self.work_blendshape.name}.{work_shape_name}' to '{self.blendshape.name}.{shape_name}'")
         cmds.setDrivenKeyframe(f"{self.work_blendshape.name}.{work_shape_name}",
                         currentDriver=f"{self.blendshape.name}.{shape_name}",
                         driverValue=0, value=0)
@@ -966,7 +966,7 @@ class BlueSteelEditor(object):
 
         cmds.keyTangent(driver, index =(0, 0), inTangentType="linear", outTangentType="linear")
         cmds.keyTangent(driver, index =(1, 1), inTangentType="linear", outTangentType="linear")
-        print("Driven key connection created successfully.")
+        # print("Driven key connection created successfully.")
         work_shape_name_base = f"{shape_name}_WS_"
         if work_shape_name.startswith(work_shape_name_base):
             return # we don't need to rename this.
@@ -3034,7 +3034,7 @@ class BlueSteelEditor(object):
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
         if cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
-            print(f"Primary {primary} already has an attribute in the split settings node")
+            #print(f"Primary {primary} already has an attribute in the split settings node")
             return
 
         split_groups = self.read_split_groups_attributes()
@@ -3052,7 +3052,7 @@ class BlueSteelEditor(object):
         """ add a string attribute that contains a json format list with the order of the split groups.
         The attribute will be added to the split settings node.
         """
-        print("Adding split groups order attribute to the split settings node")
+        #print("Adding split groups order attribute to the split settings node")
         # check if the split group attriute node exists
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
@@ -3060,9 +3060,6 @@ class BlueSteelEditor(object):
         group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
                                                     self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER,
                                                     "[]")
-        if group_attribute is None:
-            print(f"Failed to add split groups order attribute {self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER} to {self.split_attr_grp}")
-
 
     def _add_split_group_attribute(self):
         """ add a string attribute that contains a json format dictionary with the name of the group
@@ -3076,8 +3073,7 @@ class BlueSteelEditor(object):
         group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
                                                     self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
                                                     "{}")
-        if group_attribute is None:
-            print(f"Failed to add split groups attribute {self.SPLIT_GRP_ATTR_STRING_IDENTIFIER} to {self.split_attr_grp}")
+
 
     def read_split_groups_attributes(self) -> dict:
         """ read the split groups attribute and return a dictionary with the name of the group
@@ -3447,8 +3443,9 @@ class BlueSteelEditor(object):
             split_map_blendshape = cmds.blendShape(split_mesh, name=blendshape_name)
             split_map_blendshape = Blendshape(split_map_blendshape[0])
             self.split_map_blendshapes[split_map] = split_map_blendshape.name
-            for suffix, weight in zip(self.get_split_map_suffices(split_map),
-            self.get_split_map_weights(split_map)):
+            split_map_suffices = self.get_split_map_suffices(split_map)
+            split_map_weights = self.get_split_map_weights(split_map)
+            for suffix, weight in zip(split_map_suffices, split_map_weights):
                 suffix_weight = split_map_blendshape.add_target(suffix)
                 # we need to connect the weight maps to the split map blendshape
                 self.split_blendshape.transfer_weight_map(source_weight_id = weight.id,
@@ -3464,18 +3461,19 @@ class BlueSteelEditor(object):
         self.split_bake_mesh = split_mesh
         return split_maps_group
 
+    @undoable
     def split_shapes(self):
         """
         Create a new editor and add all the split shapes to it.
         """
-        
-        cmds.cycleCheck(e=False)
+        # let's time it
+        start_time = time.time()
+        mode = cmds.evaluationManager(query=True, mode=True)[0]
         editor_name = f"{self.name}_split"
         mesh = self.base_mesh
-        split_editor = self.create_new(editor_name=editor_name, mesh_name=mesh)
-        split_editor_blendshape = split_editor.blendshape
-        split_meshes_group = self.create_split_maps_meshes()
-        self.zero_out()
+        split_editor = None
+        split_meshes_group = None
+
         # --- Start the progress bar ---
         gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
         sorted_shapes = utilities.sort_for_insertion(list(self.blendshape.get_weights()), self.separator)
@@ -3487,31 +3485,92 @@ class BlueSteelEditor(object):
                         status="Splitting {}/{}".format(0, total_shapes),
                         maxValue=total_shapes)
         try:
-            for shape in utilities.sort_for_insertion(self.blendshape.get_weights()):
+            split_editor = self.create_new(editor_name=editor_name, mesh_name=mesh)
+            split_editor_blendshape = split_editor.blendshape
+            split_editor_base_mesh = split_editor.base_mesh
+            split_meshes_group = self.create_split_maps_meshes()
+            self.zero_out()
+
+            split_groups = self.read_split_groups_attributes()
+            primary_split_group_cache = {
+                primary: self.get_primary_split_group(primary)
+                for primary in self.get_primary_shapes()
+            }
+            split_weight_names_cache = {
+                split_map: [str(w) for w in self.get_split_map_weights(split_map)]
+                for split_map in self.get_split_maps()
+            }
+            split_blendshape_cache = {
+                split_map: Blendshape(split_blendshape_name)
+                for split_map, split_blendshape_name in self.split_map_blendshapes.items()
+            }
+            split_blendshape_weight_names_cache = {
+                split_map: list(split_blendshape.get_weights())
+                for split_map, split_blendshape in split_blendshape_cache.items()
+            }
+            split_pose_runtime_cache = {
+                "state": {split_map: "__UNINITIALIZED__" for split_map in split_blendshape_cache},
+                "blendshapes": split_blendshape_cache,
+                "weight_names": split_blendshape_weight_names_cache,
+            }
+            split_connect_blendshape = Blendshape(self.split_blendshape_to_connect)
+            split_connect_weights = split_connect_blendshape.get_weights()
+            
+            cmds.evaluationManager(mode="off")
+            cmds.cycleCheck(e=False)
+            cmds.refresh(suspend=True)
+            for shape in sorted_shapes:
+                if cmds.progressBar(gMainProgressBar, query=True, isCancelled=True):
+                    break
                 cmds.progressBar(gMainProgressBar,
                         edit=True,
                         step=1,
                         status=f'Splitting shape: {shape}...')
-                split_shape_poses = self.get_split_shape_poses(shape)
-                self.connect_shape_to_split_map_blendshapes(shape)
+                split_shape_poses = self.get_split_shape_poses(
+                    shape,
+                    split_groups=split_groups,
+                    primary_split_group_cache=primary_split_group_cache,
+                    split_weight_names_cache=split_weight_names_cache,
+                )
+                self.connect_shape_to_split_map_blendshapes(
+                    shape,
+                    split_blendshape=split_connect_blendshape,
+                    split_weights=split_connect_weights,
+                )
                 for split_shape_pose_name, suffices in split_shape_poses.items():
-                    self.set_split_pose_from_suffices(suffices)
-                    committed_shape = split_editor.commit_shape(split_shape_pose_name, split_editor.base_mesh)
-                    committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
-                    if not committed_weight:
-                        raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
-                    split_editor_blendshape.connect_mesh_to_target(committed_weight.id, self.split_bake_mesh)
-                    split_editor_blendshape.disconnect_mesh_from_target(committed_weight.id)
+                    self.set_split_pose_from_suffices(suffices, runtime_cache=split_pose_runtime_cache)
+                    committed_shape = split_editor.commit_shape(split_shape_pose_name, split_editor_base_mesh)
+                    if committed_shape is None:
+                        continue
+                    committed_weight_id = getattr(committed_shape, "weight_id", None)
+                    if committed_weight_id is None:
+                        committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
+                        if not committed_weight:
+                            raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
+                        committed_weight_id = committed_weight.id
+                    split_editor_blendshape.connect_mesh_to_target(committed_weight_id, self.split_bake_mesh)
+                    split_editor_blendshape.disconnect_mesh_from_target(committed_weight_id)
 
         except Exception as e:
             print(f"Error while splitting shapes: {e}")
+            traceback.print_exc()
         finally:
+            end_time = time.time()
+            print(f"Splitting shapes took {end_time - start_time} seconds")
+            cmds.evaluationManager(mode=mode)
+            cmds.refresh(suspend=False)
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
-            split_editor.zero_out()
-            cmds.delete(split_meshes_group)
+            if split_editor:
+                split_editor.zero_out()
+            if split_meshes_group and cmds.objExists(split_meshes_group):
+                cmds.delete(split_meshes_group)
             cmds.cycleCheck(e=True)
                 
-    def get_split_shape_poses(self, shape_name) -> dict:
+    def get_split_shape_poses(self,
+                              shape_name,
+                              split_groups: dict = None,
+                              primary_split_group_cache: dict = None,
+                              split_weight_names_cache: dict = None) -> dict:
         """
         Get the split shape poses for a given shape.
         Parameters:
@@ -3521,26 +3580,55 @@ class BlueSteelEditor(object):
         """
         split_shape_poses = {}
         shape = self.get_shape(shape_name)
-        split_groups = self.read_split_groups_attributes()
+        split_groups = split_groups if split_groups is not None else self.read_split_groups_attributes()
+        primary_split_group_cache = primary_split_group_cache or {}
+        split_weight_names_cache = split_weight_names_cache or {}
         if not shape:
             return split_shape_poses
-        shape_split_maps = set()
+
+        shape_split_maps = []
+        seen_split_maps = set()
         for primary in shape.primaries:
-            split_group = self.get_primary_split_group(primary)
+            split_group = primary_split_group_cache.get(primary)
+            if split_group is None:
+                split_group = self.get_primary_split_group(primary)
+                primary_split_group_cache[primary] = split_group
             if split_group == "NoSplit":
                 continue
             split_maps = split_groups.get(split_group, [])
-            shape_split_maps = shape_split_maps.union(set(split_maps))
+            for split_map in split_maps:
+                if split_map not in seen_split_maps:
+                    shape_split_maps.append(split_map)
+                    seen_split_maps.add(split_map)
+
         split_weights = list()
         for split_map in shape_split_maps:
-            split_weights.append([str(w) for w in self.get_split_map_weights(split_map)])
+            split_map_weights = split_weight_names_cache.get(split_map)
+            if split_map_weights is None:
+                split_map_weights = [str(w) for w in self.get_split_map_weights(split_map)]
+                split_weight_names_cache[split_map] = split_map_weights
+            split_weights.append(split_map_weights)
+
         split_possible_combos = list(product(*split_weights))
+        split_parent_maps = {
+            primary: split_groups.get(primary_split_group_cache.get(primary, "NoSplit"), [])
+            for primary in shape.primaries
+        }
         for combo_suffices in split_possible_combos:
-            split_shape_pose_name = self.generate_name_for_split_shape_pose(shape_name, combo_suffices)
+            split_shape_pose_name = self.generate_name_for_split_shape_pose(
+                shape_name,
+                combo_suffices,
+                shape=shape,
+                split_parent_maps=split_parent_maps,
+            )
             split_shape_poses[split_shape_pose_name] = combo_suffices
         return split_shape_poses
 
-    def generate_name_for_split_shape_pose(self, shape_name: str, suffices: list) -> str:
+    def generate_name_for_split_shape_pose(self,
+                                           shape_name: str,
+                                           suffices: list,
+                                           shape: Shape = None,
+                                           split_parent_maps: dict = None) -> str:
         """
         Generate a name for a split shape pose based on the shape name and suffices.
         Parameters:
@@ -3549,22 +3637,28 @@ class BlueSteelEditor(object):
         Returns:
             str: The generated name for the split shape pose.
         """
-        shape = self.get_shape(shape_name)
+        shape = shape if shape is not None else self.get_shape(shape_name)
         tokens = list()
-        split_groups = self.read_split_groups_attributes()  
+        split_parent_maps = split_parent_maps or {}
+
+        split_suffixes_by_map = {}
+        for suffix in suffices:
+            split_map_name, split_map_suffix = suffix.rsplit("_", 1)
+            split_suffixes_by_map[split_map_name] = split_map_suffix
+
         for primary, parent in zip(shape.primaries, shape.parents):
-            shape_split_group = self.get_primary_split_group(primary)
             split_token = primary
             parent_value = parent.str_values[0]
-            if shape_split_group == "NoSplit":
+            split_maps = split_parent_maps.get(primary)
+            if not split_maps:
                 tokens.append(parent)
                 continue
-            split_maps = split_groups.get(shape_split_group, [])
+
             for split_map in split_maps:
-                for suffix in suffices:
-                    split_map_name, split_map_suffix = suffix.split("_")
-                    if split_map_name == split_map:
-                        split_token = f"{split_token}{split_map_suffix}"
+                split_map_suffix = split_suffixes_by_map.get(split_map)
+                if split_map_suffix is not None:
+                    split_token = f"{split_token}{split_map_suffix}"
+
             if parent_value != "100":
                 split_token = f"{split_token}{parent_value}"
             tokens.append(split_token)
@@ -3576,7 +3670,7 @@ class BlueSteelEditor(object):
             for weight in split_blendshape.get_weights():
                 split_blendshape.set_weight_value(weight, value)
 
-    def set_split_pose_from_suffices(self, suffices: list):
+    def set_split_pose_from_suffices(self, suffices: list, runtime_cache: dict = None):
         """
         Set the split pose for a given shape based on the suffices.
         Parameters:
@@ -3585,19 +3679,48 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
-        self.set_value_to_all_split_blendshapes(1.0) # this will make the shape pass through the split maps
+        if runtime_cache is None:
+            self.set_value_to_all_split_blendshapes(1.0) # this will make the shape pass through the split maps
+            for suffix in suffices:
+                split_map_name, split_map_suffix = suffix.rsplit("_", 1)
+
+                split_blendshape_name = self.split_map_blendshapes.get(split_map_name)
+                if not split_blendshape_name:
+                    raise ValueError(f"Split map {split_map_name} does not have a corresponding split blendshape")
+                split_blendshape = Blendshape(split_blendshape_name)
+                for weight in split_blendshape.get_weights():
+                    if weight == split_map_suffix:
+                        split_blendshape.set_weight_value(weight, 1.0)
+                        continue
+                    split_blendshape.set_weight_value(weight, 0.0)
+            return
+
+        state = runtime_cache["state"]
+        blendshapes = runtime_cache["blendshapes"]
+        weight_names = runtime_cache["weight_names"]
+
+        desired_state = {}
         for suffix in suffices:
-            split_map_name, split_map_suffix = suffix.split("_")
-            
-            split_blendshape_name = self.split_map_blendshapes.get(split_map_name)
-            if not split_blendshape_name:
-                raise ValueError(f"Split map {split_map_name} does not have a corresponding split blendshape")
-            split_blendshape = Blendshape(split_blendshape_name)
-            for weight in split_blendshape.get_weights():
-                if weight == split_map_suffix:
+            split_map_name, split_map_suffix = suffix.rsplit("_", 1)
+            desired_state[split_map_name] = split_map_suffix
+
+        for split_map_name, split_blendshape in blendshapes.items():
+            current_suffix = state.get(split_map_name)
+            target_suffix = desired_state.get(split_map_name)
+            if current_suffix == target_suffix:
+                continue
+
+            split_blendshape_weights = weight_names.get(split_map_name, [])
+            if target_suffix is None:
+                for weight in split_blendshape_weights:
                     split_blendshape.set_weight_value(weight, 1.0)
-                    continue
-                split_blendshape.set_weight_value(weight, 0.0)
+            else:
+                if not any(weight == target_suffix for weight in split_blendshape_weights):
+                    raise ValueError(f"Suffix {target_suffix} is not valid for split map {split_map_name}")
+                for weight in split_blendshape_weights:
+                    split_blendshape.set_weight_value(weight, 1.0 if weight == target_suffix else 0.0)
+
+            state[split_map_name] = target_suffix
 
     def export_split_data(self, export_path: str):
         """
@@ -3727,7 +3850,10 @@ class BlueSteelEditor(object):
         for split_map in self.get_split_maps():
             self.delete_split_map(split_map)
 
-    def connect_shape_to_split_map_blendshapes(self, shape_name: str):
+    def connect_shape_to_split_map_blendshapes(self,
+                                               shape_name: str,
+                                               split_blendshape: Blendshape = None,
+                                               split_weights: list = None):
         """
         Connect a shape to the split_maps_blendshape.
         Parameters:
@@ -3740,8 +3866,9 @@ class BlueSteelEditor(object):
         if not self.split_blendshape_to_connect:
             raise ValueError("No split map blendshape to connect to")
         # we need to connect the shape to all the split map blendshape targets
-        split_blendshape = Blendshape(self.split_blendshape_to_connect)
-        for weight in split_blendshape.get_weights():
+        split_blendshape = split_blendshape or Blendshape(self.split_blendshape_to_connect)
+        split_weights = split_weights or split_blendshape.get_weights()
+        for weight in split_weights:
             self.blendshape.connect_target_to_blendshape_target(input_target_index=shape_weight.id,
                                                                 output_blendshape_name=split_blendshape.name,
                                                                 output_target_index=weight.id)
