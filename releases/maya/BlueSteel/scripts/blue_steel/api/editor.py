@@ -3476,20 +3476,40 @@ class BlueSteelEditor(object):
         split_editor_blendshape = split_editor.blendshape
         split_meshes_group = self.create_split_maps_meshes()
         self.zero_out()
-        for shape in utilities.sort_for_insertion(self.blendshape.get_weights()):
-            split_shape_poses = self.get_split_shape_poses(shape)
-            self.connect_shape_to_split_map_blendshapes(shape)
-            for split_shape_pose_name, suffices in split_shape_poses.items():
-                self.set_split_pose_from_suffices(suffices)
-                committed_shape = split_editor.commit_shape(split_shape_pose_name, split_editor.base_mesh)
-                committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
-                if not committed_weight:
-                    raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
-                split_editor_blendshape.connect_mesh_to_target(committed_weight.id, self.split_bake_mesh)
-                split_editor_blendshape.disconnect_mesh_from_target(committed_weight.id)
-        split_editor.zero_out()
-        cmds.delete(split_meshes_group)
-        cmds.cycleCheck(e=True)
+        # --- Start the progress bar ---
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        sorted_shapes = utilities.sort_for_insertion(list(self.blendshape.get_weights()), self.separator)
+        total_shapes = len(sorted_shapes)
+
+        cmds.progressBar(gMainProgressBar, edit=True,
+                        beginProgress=True,
+                        isInterruptable=True,
+                        status="Splitting {}/{}".format(0, total_shapes),
+                        maxValue=total_shapes)
+        try:
+            for shape in utilities.sort_for_insertion(self.blendshape.get_weights()):
+                cmds.progressBar(gMainProgressBar,
+                        edit=True,
+                        step=1,
+                        status=f'Splitting shape: {shape}...')
+                split_shape_poses = self.get_split_shape_poses(shape)
+                self.connect_shape_to_split_map_blendshapes(shape)
+                for split_shape_pose_name, suffices in split_shape_poses.items():
+                    self.set_split_pose_from_suffices(suffices)
+                    committed_shape = split_editor.commit_shape(split_shape_pose_name, split_editor.base_mesh)
+                    committed_weight = split_editor_blendshape.get_weight_by_name(committed_shape)
+                    if not committed_weight:
+                        raise ValueError(f"Committed shape {split_shape_pose_name} does not have a corresponding weight in the split editor blendshape")
+                    split_editor_blendshape.connect_mesh_to_target(committed_weight.id, self.split_bake_mesh)
+                    split_editor_blendshape.disconnect_mesh_from_target(committed_weight.id)
+
+        except Exception as e:
+            print(f"Error while splitting shapes: {e}")
+        finally:
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            split_editor.zero_out()
+            cmds.delete(split_meshes_group)
+            cmds.cycleCheck(e=True)
                 
     def get_split_shape_poses(self, shape_name) -> dict:
         """
