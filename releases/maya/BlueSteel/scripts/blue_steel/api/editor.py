@@ -3725,6 +3725,8 @@ class BlueSteelEditor(object):
         self.export_split_settings(export_path)
         self.export_split_maps_weights(export_path)
 
+    @pause_shape_editor
+    @undoable
     def import_split_data(self, import_path: str):
         """
         Import the split data from a directory.
@@ -3736,6 +3738,8 @@ class BlueSteelEditor(object):
         self.import_split_maps_weights(import_path)
         self.import_split_settings(import_path)
 
+    @pause_shape_editor
+    @undoable
     def export_split_settings(self, export_path: str):
         """
         Export the split settings to a directory.

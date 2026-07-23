@@ -3728,14 +3728,14 @@ class MainWindow(QMainWindow):
 			self._set_status("No system selected.", warning=True)
 			return
 
-		file_path, _ = QFileDialog.getOpenFileName(self, "Select Split Settings File", filter="JSON Files (*.json)")
-		if not file_path:
+		directory = QFileDialog.getExistingDirectory(self, "Select Split Settings Directory")
+		if not directory:
 			self._set_status("Import cancelled.")
 			return
 
 		self._clear_trackers_for_scene_operation()
 		try:
-			self.current_editor.import_split_settings(file_path)
+			self.current_editor.import_split_data(directory)
 		except Exception as exc:
 			self._set_status(f"Error importing split settings: {exc}", error=True)
 			return
@@ -3744,28 +3744,28 @@ class MainWindow(QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
-		self._set_status(f"Imported split settings from '{file_path}'.")
+		self._set_status(f"Imported split settings from '{directory}'.")
 
 	def _export_split_settings(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
 
-		file_path, _ = QFileDialog.getSaveFileName(self, "Select Export Split Settings File", filter="JSON Files (*.json)")
-		if not file_path:
+		directory = QFileDialog.getExistingDirectory(self, "Select Export Split Settings Directory")
+		if not directory:
 			self._set_status("Export cancelled.")
 			return
 
 		self._clear_trackers_for_scene_operation()
 		try:
-			self.current_editor.export_split_settings(file_path)
+			self.current_editor.export_split_data(directory)
 		except Exception as exc:
 			self._set_status(f"Error exporting split settings: {exc}", error=True)
 			return
 		finally:
 			self._restart_trackers_after_scene_operation()
 
-		self._set_status(f"Exported split settings to '{file_path}'.")
+		self._set_status(f"Exported split settings to '{directory}'.")
 
 	def _export_objs(self) -> None:
 		if self.current_editor is None:
