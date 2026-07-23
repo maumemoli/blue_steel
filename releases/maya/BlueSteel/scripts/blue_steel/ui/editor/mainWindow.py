@@ -3611,10 +3611,18 @@ class MainWindow(QMainWindow):
 		import_objs_action.triggered.connect(self._import_objs)
 		import_menu.addAction(import_objs_action)
 
+		import_split_settings_action = QAction("Import Split Settings", self)
+		import_split_settings_action.triggered.connect(self._import_split_settings)
+		import_menu.addAction(import_split_settings_action)
+
 		export_menu = file_menu.addMenu("Export")
 		export_objs_action = QAction("Export Objs", self)
 		export_objs_action.triggered.connect(self._export_objs)
 		export_menu.addAction(export_objs_action)
+
+		export_split_settings_action = QAction("Export Split Settings", self)
+		export_split_settings_action.triggered.connect(self._export_split_settings)
+		export_menu.addAction(export_split_settings_action)
 
 		utilities_menu = menu_bar.addMenu("Utilities")
 		self.rename_editor_action = QAction("Rename Editor", self)
@@ -3714,6 +3722,50 @@ class MainWindow(QMainWindow):
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
 		self._set_status(f"Imported all OBJs from '{directory}' as shapes.")
+
+	def _import_split_settings(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		file_path, _ = QFileDialog.getOpenFileName(self, "Select Split Settings File", filter="JSON Files (*.json)")
+		if not file_path:
+			self._set_status("Import cancelled.")
+			return
+
+		self._clear_trackers_for_scene_operation()
+		try:
+			self.current_editor.import_split_settings(file_path)
+		except Exception as exc:
+			self._set_status(f"Error importing split settings: {exc}", error=True)
+			return
+		finally:
+			self._restart_trackers_after_scene_operation()
+
+		self._reload_shapes_from_editor()
+		self._reload_editor_menu()
+		self._set_status(f"Imported split settings from '{file_path}'.")
+
+	def _export_split_settings(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		file_path, _ = QFileDialog.getSaveFileName(self, "Select Export Split Settings File", filter="JSON Files (*.json)")
+		if not file_path:
+			self._set_status("Export cancelled.")
+			return
+
+		self._clear_trackers_for_scene_operation()
+		try:
+			self.current_editor.export_split_settings(file_path)
+		except Exception as exc:
+			self._set_status(f"Error exporting split settings: {exc}", error=True)
+			return
+		finally:
+			self._restart_trackers_after_scene_operation()
+
+		self._set_status(f"Exported split settings to '{file_path}'.")
 
 	def _export_objs(self) -> None:
 		if self.current_editor is None:
