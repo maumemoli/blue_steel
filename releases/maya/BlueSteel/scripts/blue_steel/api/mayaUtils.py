@@ -298,6 +298,51 @@ def undoable(func):
             cmds.undoInfo(closeChunk=True)
     return wrapper
 
+def _get_shape_editor_ui():
+    """Return the currently open Shape Editor UI type and name.
+    Returns:
+        tuple[str | None, str | None]: (ui_type, ui_name)
+        where ui_type is either "workspaceControl" or "window".
+    """
+    controls = cmds.lsUI(type="workspaceControl") or []
+    for control in controls:
+        if "shapePanel" in control:
+            return control
+    return None
+
+
+def pause_shape_editor(func):
+    """Decorator that temporarily closes Shape Editor for faster batch operations.
+
+    If the Shape Editor is open, it is closed before running the wrapped function,
+    then reopened afterward (only if it was originally open).
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        ui_name = _get_shape_editor_ui()
+        was_open = ui_name is not None
+
+        if was_open:
+            try:
+                cmds.deleteUI(ui_name)
+            except Exception as e:
+                cmds.warning(f"Could not close Shape Editor '{ui_name}': {e}")
+
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if was_open:
+                print(f"Shape Editor '{ui_name}' was closed; attempting to restore...")
+                try:
+                    cmds.ShapeEditor()
+                except Exception as e:
+                    cmds.warning(f"Could not restore Shape Editor: {e}")
+
+            else:
+                print("Shape Editor was not open before; no need to restore.")
+
+    return wrapper
+
 def get_mesh_bounding_box(mesh_name: str, world = True):
     """
     Get the bounding box of a mesh.

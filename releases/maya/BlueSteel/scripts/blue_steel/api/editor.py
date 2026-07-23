@@ -6,7 +6,7 @@ import sys
 import json
 
 from . import attrUtils
-from .mayaUtils import undoable
+from .mayaUtils import undoable, pause_shape_editor
 from .container import Container
 from .blendshape import Blendshape, Weight
 from ..logic.shape import Shape
@@ -49,7 +49,6 @@ VERBOSE = False
 TIMED = False
 
 class BlueSteelEditor(object):
-    SHAPE_EDITOR_PANEL = "shapePanel1Window"
     MAIN_BLENDSHAPE_STRING_IDENTIFIER = "mainBlendShape"
     SPLIT_BLENDSHAPE_STRING_IDENTIFIER = "splitBlendShape"
     WORK_BLENDSHAPE_STRING_IDENTIFIER = "workBlendShape"
@@ -1448,7 +1447,19 @@ class BlueSteelEditor(object):
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
             return True
 
+    def get_shape_editor_panel(self):
+        """
+        Get the shape editor panel if it exists.
+        Returns:
+            str: The name of the shape editor panel, or None if it doesn't exist
+        """
+        controls = cmds.lsUI(type="workspaceControl")
+        for c in controls:
+            if "shapePanel" in c:
+                return c
+        return None
 
+    @pause_shape_editor
     @undoable
     def commit_shapes(self, selected: list, close_shape_editor: bool = True):
         """
@@ -1519,9 +1530,6 @@ class BlueSteelEditor(object):
 
             # we need to get the downstream shapes for the selected shapes.
             # close the shape editor if it's open
-            shape_editor_exists = cmds.window(self.SHAPE_EDITOR_PANEL, exists=True)
-            if shape_editor_exists and close_shape_editor:
-                cmds.deleteUI(self.SHAPE_EDITOR_PANEL)
             if not valid_meshes:
                 raise ValueError("No valid shapes to commit. Please check the selected meshes and ensure they have valid names.")
 
@@ -1532,8 +1540,6 @@ class BlueSteelEditor(object):
                 self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes, progress_bar_message="Restoring locked {0} shapes...")
                 if extraction_group:
                     cmds.delete(extraction_group)
-            if shape_editor_exists and close_shape_editor:
-                cmds.ShapeEditor()
             if TIMED:
                 print(f"Finished committing {len(valid_meshes)} shapes on {len(selected)} Restored: {len(extracted_locked_meshes) if extracted_locked_meshes else 0} locked shapes in {time.time() - start:.2f} seconds.")
             cmds.select(clear=True)
@@ -1790,7 +1796,7 @@ class BlueSteelEditor(object):
         
         return imported_meshes[0]
 
-
+    @pause_shape_editor
     @undoable
     def import_objs(self, import_directory: str,):
         """
@@ -1801,10 +1807,6 @@ class BlueSteelEditor(object):
             list: A list of invalid file paths that could not be imported
         """
         invalid_files = []
-        # we need to close the shape editor if it's open
-        shape_editor_exists = cmds.window(self.SHAPE_EDITOR_PANEL, exists=True)
-        if shape_editor_exists:
-            cmds.deleteUI(self.SHAPE_EDITOR_PANEL)
         # getting all the OBJ files in the directory
         obj_files = [f for f in os.listdir(import_directory) if f.endswith(".obj")]
 
@@ -2803,41 +2805,6 @@ class BlueSteelEditor(object):
         self.node_network_container.add_member(combo_node)
         return combo_node
 
-    def unfreeze_shape_editor(self):
-        """Unfreeze the shape editor panel to allow it to refresh after being frozen.
-        This is useful when committing multiple shapes to the rig.
-        """
-        widget = self._get_shape_editor_widget()
-        if widget:
-            widget.setVisible(True)
-            widget.blockSignals(False)
-            widget.setUpdatesEnabled(True)
-
-    def _get_shape_editor_widget(self):
-        """Get the shape editor widget.
-        Returns:
-            QtWidgets.QWidget: The shape editor widget.
-        """
-        shape_editor_panel = self.SHAPE_EDITOR_PANEL
-        if not cmds.window(shape_editor_panel, exists=True):
-            return None
-        shape_editor_widget = omui.MQtUtil.findControl(shape_editor_panel)
-        if not shape_editor_widget:
-            return None
-        shape_editor_widget = wrapInstance(int(shape_editor_widget), QtWidgets.QWidget)
-        return shape_editor_widget
-
-
-    def freeze_shape_editor(self):
-        """Freeze the shape editor panel to avoid it from refreshing while we are making changes.
-        This is useful when committing multiple shapes to the rig.
-        """
-        widget = self._get_shape_editor_widget()
-        if widget:
-            widget.setVisible(False)
-            widget.blockSignals(True)
-            widget.setUpdatesEnabled(False)
-
     def create_remap_value_node(self, shape: Shape):
         """Create a remapValue node for the given inbetween shape.
         This function will also check if there are sibling inbetween shapes and adjust
@@ -3065,7 +3032,7 @@ class BlueSteelEditor(object):
         """ add a string attribute that contains a json format dictionary with the name of the group
         and the list of split maps assigned to that group. The attribute will be added to the split settings node.
         """
-        print("Adding split groups attribute to the split settings node")
+        # print("Adding split groups attribute to the split settings node")
         # check if the split group attriute node exists
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
@@ -3461,6 +3428,7 @@ class BlueSteelEditor(object):
         self.split_bake_mesh = split_mesh
         return split_maps_group
 
+    @pause_shape_editor
     @undoable
     def split_shapes(self):
         """
@@ -3469,10 +3437,12 @@ class BlueSteelEditor(object):
         # let's time it
         start_time = time.time()
         mode = cmds.evaluationManager(query=True, mode=True)[0]
-        editor_name = f"{self.name}_split"
+        editor_name = f"{self.name.replace('_blueSteelEditor', '')}_split"
         mesh = self.base_mesh
         split_editor = None
         split_meshes_group = None
+        split_success = False
+        split_cancelled = False
 
         # --- Start the progress bar ---
         gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
@@ -3521,6 +3491,7 @@ class BlueSteelEditor(object):
             cmds.refresh(suspend=True)
             for shape in sorted_shapes:
                 if cmds.progressBar(gMainProgressBar, query=True, isCancelled=True):
+                    split_cancelled = True
                     break
                 cmds.progressBar(gMainProgressBar,
                         edit=True,
@@ -3551,6 +3522,9 @@ class BlueSteelEditor(object):
                     split_editor_blendshape.connect_mesh_to_target(committed_weight_id, self.split_bake_mesh)
                     split_editor_blendshape.disconnect_mesh_from_target(committed_weight_id)
 
+            if not split_cancelled:
+                split_success = True
+
         except Exception as e:
             print(f"Error while splitting shapes: {e}")
             traceback.print_exc()
@@ -3564,6 +3538,24 @@ class BlueSteelEditor(object):
                 split_editor.zero_out()
             if split_meshes_group and cmds.objExists(split_meshes_group):
                 cmds.delete(split_meshes_group)
+
+            if split_success and split_editor and cmds.objExists(self.container.name):
+                choice = cmds.confirmDialog(
+                    title="Split Completed",
+                    message=f"Keep combined editor '{self.container.name}'?",
+                    button=["Keep", "Delete"],
+                    defaultButton="Keep",
+                    cancelButton="Keep",
+                    dismissString="Keep"
+                )
+
+                if choice == "Delete":
+                    dir_indices = self.get_shape_editor_directory_index(self.container.name)
+                    for dir_index in sorted(dir_indices, reverse=True):
+                        self.remove_shape_editor_directory(dir_index)
+                    if cmds.objExists(self.container.name):
+                        cmds.delete(self.container.name)
+
             cmds.cycleCheck(e=True)
                 
     def get_split_shape_poses(self,
