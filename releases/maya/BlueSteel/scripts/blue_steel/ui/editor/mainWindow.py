@@ -24,7 +24,7 @@ from maya import cmds
 
 from ... import env
 from ...api.editor import BlueSteelEditor
-from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker
+from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker, ControllerTracker
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from .controllerLayoutWindow import ControllerLayoutWindow
@@ -89,6 +89,9 @@ if env.MAYA_VERSION > 2024:
 		QVBoxLayout,
 		QWidget,
 		QComboBox,
+		QListWidget,
+		QListWidgetItem,
+		QTabWidget,
 	)
 	from shiboken6 import wrapInstance
 else:
@@ -120,6 +123,9 @@ else:
 		QVBoxLayout,
 		QWidget,
 		QComboBox,
+		QListWidget,
+		QListWidgetItem,
+		QTabWidget,
 	)
 	from shiboken2 import wrapInstance
 
@@ -2367,6 +2373,83 @@ class InlineWorkshapeRenameEditor(QLineEdit):
 		super().focusOutEvent(event)
 
 
+class SplitPrimaryAssignmentsTree(QTreeWidget):
+	"""Tree that keeps a selected batch intact while its group cell is edited."""
+
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self._edit_selection: List[str] = []
+
+	def mousePressEvent(self, event) -> None:  # noqa: N802
+		item = self.itemAt(event.pos())
+		column = self.columnAt(event.pos().x())
+		selected_items = self.selectedItems()
+		open_group_editor = (
+			item is not None
+			and column == 1
+			and event.button() == Qt.LeftButton
+			and not event.modifiers()
+		)
+		preserve_selection = (
+			open_group_editor
+			and item in selected_items
+			and len(selected_items) > 1
+		)
+		if item is not None and column == 1:
+			self._edit_selection = [selected.text(0) for selected in selected_items]
+			if item.text(0) not in self._edit_selection:
+				self._edit_selection = [item.text(0)]
+		super().mousePressEvent(event)
+		if preserve_selection:
+			for selected in selected_items:
+				selected.setSelected(True)
+		if open_group_editor:
+			QTimer.singleShot(0, lambda current_item=item: self.editItem(current_item, 1))
+
+	def assignment_targets(self, item: QTreeWidgetItem) -> List[str]:
+		selected_names = [selected.text(0) for selected in self.selectedItems()]
+		if item.text(0) in self._edit_selection:
+			selected_names = self._edit_selection
+		return selected_names or [item.text(0)]
+
+
+class SplitPrimaryGroupDelegate(QStyledItemDelegate):
+	"""Transient split-group combo editor for the assignment tree."""
+
+	assignmentCommitted = Signal(str, object)
+
+	def __init__(self, tree: SplitPrimaryAssignmentsTree) -> None:
+		super().__init__(tree)
+		self._tree = tree
+		self._group_names: List[str] = []
+
+	def set_group_names(self, group_names: Sequence[str]) -> None:
+		self._group_names = ["NoSplit"] + [str(name) for name in group_names]
+
+	def createEditor(self, parent, option, index):  # noqa: N802
+		if index.column() != 1:
+			return None
+		self._tree._edit_selection = [item.text(0) for item in self._tree.selectedItems()]
+		editor = QComboBox(parent)
+		editor.addItems(self._group_names)
+		editor.activated.connect(lambda _index, combo=editor: self._commit_combo_editor(combo))
+		QTimer.singleShot(0, editor.showPopup)
+		return editor
+
+	def _commit_combo_editor(self, editor: QComboBox) -> None:
+		self.commitData.emit(editor)
+		self.closeEditor.emit(editor)
+
+	def setEditorData(self, editor, index) -> None:  # noqa: N802
+		editor.setCurrentText(str(index.data(Qt.EditRole) or "NoSplit"))
+
+	def setModelData(self, editor, model, index) -> None:  # noqa: N802
+		group_name = editor.currentText()
+		model.setData(index, group_name, Qt.EditRole)
+		item = self._tree.itemFromIndex(index)
+		self.assignmentCommitted.emit(group_name, self._tree.assignment_targets(item))
+
+
 class MainWindow(QMainWindow):
 	"""Main Blue Steel editor window."""
 
@@ -2385,6 +2468,8 @@ class MainWindow(QMainWindow):
 		self.scene_editor_tracker: Optional[BlueSteelEditorsTracker] = None
 		self.blendshape_tracker: Optional[BlendShapeNodeTracker] = None
 		self.work_blendshape_tracker: Optional[BlendShapeNodeTracker] = None
+		self.split_attr_grp_tracker: Optional[ControllerTracker] = None
+		self._split_attr_refresh_pending = False
 
 		self._shape_model = ShapeItemsModel(self)
 		self._work_shape_model = WorkShapeItemsModel(self)
@@ -2439,6 +2524,15 @@ class MainWindow(QMainWindow):
 		self._tools_panel_expanded_width = 200
 		self._tools_panel_compact_icon_size = QSize(24, 24)
 		self._tools_panel_expanded_icon_size = QSize(18, 18)
+		self.main_tabs: Optional[QTabWidget] = None
+		self.split_primary_search: Optional[QLineEdit] = None
+		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsTree] = None
+		self._split_primary_delegate: Optional[SplitPrimaryGroupDelegate] = None
+		self.split_groups_list: Optional[QListWidget] = None
+		self.split_group_maps_list: Optional[QListWidget] = None
+		self.split_maps_list: Optional[QListWidget] = None
+		self.split_map_weights_list: Optional[QListWidget] = None
+		self.split_map_weight_stats_label: Optional[QLabel] = None
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -2501,10 +2595,23 @@ class MainWindow(QMainWindow):
 		controls_layout.addWidget(self.heat_map_switch)
 		root_layout.addLayout(controls_layout)
 
+		self.main_tabs = QTabWidget(self)
+		root_layout.addWidget(self.main_tabs, 1)
+
+		editor_tab = QWidget(self)
+		editor_tab_layout = QVBoxLayout(editor_tab)
+		editor_tab_layout.setContentsMargins(0, 0, 0, 0)
+		editor_tab_layout.setSpacing(0)
+		self.main_tabs.addTab(editor_tab, "Editor")
+
+		split_settings_tab = QWidget(self)
+		self._build_split_settings_tab(split_settings_tab)
+		self.main_tabs.addTab(split_settings_tab, "Split Settings")
+
 		splitter = QSplitter(Qt.Horizontal)
 		self._main_splitter = splitter
 		splitter.setChildrenCollapsible(True)
-		root_layout.addWidget(splitter, 1)
+		editor_tab_layout.addWidget(splitter, 1)
 		self._build_tools_panel(splitter)
 
 		primaries_panel = QWidget()
@@ -2746,6 +2853,102 @@ class MainWindow(QMainWindow):
 		self.status_bar = QStatusBar(self)
 		self.setStatusBar(self.status_bar)
 		self.status_bar.showMessage("Ready")
+
+	def _build_split_settings_tab(self, parent_widget: QWidget) -> None:
+		layout = QHBoxLayout(parent_widget)
+		layout.setContentsMargins(6, 6, 6, 6)
+		layout.setSpacing(8)
+
+		primaries_group = QGroupBox("Primary Split Group Assignments")
+		primaries_layout = QVBoxLayout(primaries_group)
+		self.split_primary_search = QLineEdit()
+		self.split_primary_search.setPlaceholderText("Search primaries...")
+		primaries_layout.addWidget(self.split_primary_search)
+		self.split_primaries_tree = SplitPrimaryAssignmentsTree()
+		self.split_primaries_tree.setColumnCount(2)
+		self.split_primaries_tree.setHeaderLabels(["Primary", "Split Group"])
+		self.split_primaries_tree.setRootIsDecorated(False)
+		self.split_primaries_tree.setAlternatingRowColors(True)
+		self.split_primaries_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+		self.split_primaries_tree.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+		self._split_primary_delegate = SplitPrimaryGroupDelegate(self.split_primaries_tree)
+		self.split_primaries_tree.setItemDelegate(self._split_primary_delegate)
+		primaries_layout.addWidget(self.split_primaries_tree, 1)
+		layout.addWidget(primaries_group, 2)
+
+		right_column = QWidget(parent_widget)
+		right_layout = QVBoxLayout(right_column)
+		right_layout.setContentsMargins(0, 0, 0, 0)
+		right_layout.setSpacing(8)
+
+		split_groups_group = QGroupBox("Split Group Panel")
+		split_groups_layout = QVBoxLayout(split_groups_group)
+		split_groups_lists_layout = QHBoxLayout()
+		self.split_groups_list = QListWidget()
+		self.split_groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
+		self.split_groups_list.setToolTip("Select a split group")
+		split_groups_lists_layout.addWidget(self.split_groups_list, 1)
+		self.split_group_maps_list = QListWidget()
+		self.split_group_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
+		self.split_group_maps_list.setToolTip("Split maps assigned to the selected split group")
+		split_groups_lists_layout.addWidget(self.split_group_maps_list, 1)
+		split_groups_layout.addLayout(split_groups_lists_layout, 1)
+
+		split_groups_controls_top = QHBoxLayout()
+		self.split_group_add_button = QPushButton("Create Group")
+		self.split_group_remove_button = QPushButton("Remove Group")
+		split_groups_controls_top.addWidget(self.split_group_add_button)
+		split_groups_controls_top.addWidget(self.split_group_remove_button)
+		split_groups_layout.addLayout(split_groups_controls_top)
+
+		split_groups_controls_bottom = QHBoxLayout()
+		self.split_group_add_map_button = QPushButton("Add Map")
+		self.split_group_remove_map_button = QPushButton("Remove Map")
+		self.split_group_map_up_button = QPushButton("Move Up")
+		self.split_group_map_down_button = QPushButton("Move Down")
+		split_groups_controls_bottom.addWidget(self.split_group_add_map_button)
+		split_groups_controls_bottom.addWidget(self.split_group_remove_map_button)
+		split_groups_controls_bottom.addWidget(self.split_group_map_up_button)
+		split_groups_controls_bottom.addWidget(self.split_group_map_down_button)
+		split_groups_layout.addLayout(split_groups_controls_bottom)
+		right_layout.addWidget(split_groups_group, 1)
+
+		split_maps_group = QGroupBox("Split Maps")
+		split_maps_layout = QVBoxLayout(split_maps_group)
+		split_maps_lists_layout = QHBoxLayout()
+		self.split_maps_list = QListWidget()
+		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
+		self.split_maps_list.setToolTip("All split maps")
+		split_maps_lists_layout.addWidget(self.split_maps_list, 1)
+		self.split_map_weights_list = QListWidget()
+		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
+		self.split_map_weights_list.setToolTip("Weights (suffixes) for selected split map")
+		split_maps_lists_layout.addWidget(self.split_map_weights_list, 1)
+		split_maps_layout.addLayout(split_maps_lists_layout, 1)
+
+		self.split_map_weight_stats_label = QLabel("Select a split-map weight to inspect vertex weight stats.")
+		split_maps_layout.addWidget(self.split_map_weight_stats_label)
+
+		split_maps_controls_top = QHBoxLayout()
+		self.split_map_add_button = QPushButton("Add Split Map")
+		self.split_map_rename_button = QPushButton("Rename Split Map")
+		self.split_map_remove_button = QPushButton("Remove Split Map")
+		split_maps_controls_top.addWidget(self.split_map_add_button)
+		split_maps_controls_top.addWidget(self.split_map_rename_button)
+		split_maps_controls_top.addWidget(self.split_map_remove_button)
+		split_maps_layout.addLayout(split_maps_controls_top)
+
+		split_maps_controls_bottom = QHBoxLayout()
+		self.split_map_weight_add_button = QPushButton("Add Weight")
+		self.split_map_weight_rename_button = QPushButton("Rename Weight")
+		self.split_map_weight_remove_button = QPushButton("Remove Weight")
+		split_maps_controls_bottom.addWidget(self.split_map_weight_add_button)
+		split_maps_controls_bottom.addWidget(self.split_map_weight_rename_button)
+		split_maps_controls_bottom.addWidget(self.split_map_weight_remove_button)
+		split_maps_layout.addLayout(split_maps_controls_bottom)
+		right_layout.addWidget(split_maps_group, 1)
+
+		layout.addWidget(right_column, 3)
 
 	def _apply_primaries_branch_icons(self) -> None:
 		"""Use fixed-size item icons for folders; hide branch glyphs tied to indentation."""
@@ -3120,6 +3323,29 @@ class MainWindow(QMainWindow):
 		self.primaries_view.itemClicked.connect(self._on_primaries_item_clicked)
 		self.primaries_view.itemDoubleClicked.connect(self._on_primaries_item_double_clicked)
 		self.primaries_view.customContextMenuRequested.connect(self._show_primaries_context_menu)
+		if self.split_primary_search is not None:
+			self.split_primary_search.textChanged.connect(self._on_split_primary_search_changed)
+		if self._split_primary_delegate is not None:
+			self._split_primary_delegate.assignmentCommitted.connect(self._on_primary_split_group_changed)
+		if self.split_groups_list is not None:
+			self.split_groups_list.currentTextChanged.connect(self._on_split_group_selection_changed)
+		if self.split_maps_list is not None:
+			self.split_maps_list.currentTextChanged.connect(self._on_split_map_selection_changed)
+		if self.split_map_weights_list is not None:
+			self.split_map_weights_list.currentTextChanged.connect(self._on_split_map_weight_selection_changed)
+		if hasattr(self, "split_group_add_button"):
+			self.split_group_add_button.clicked.connect(self._on_create_split_group_clicked)
+			self.split_group_remove_button.clicked.connect(self._on_remove_split_group_clicked)
+			self.split_group_add_map_button.clicked.connect(self._on_add_split_map_to_group_clicked)
+			self.split_group_remove_map_button.clicked.connect(self._on_remove_split_map_from_group_clicked)
+			self.split_group_map_up_button.clicked.connect(self._on_move_split_group_map_up_clicked)
+			self.split_group_map_down_button.clicked.connect(self._on_move_split_group_map_down_clicked)
+			self.split_map_add_button.clicked.connect(self._on_add_split_map_clicked)
+			self.split_map_rename_button.clicked.connect(self._on_rename_split_map_clicked)
+			self.split_map_remove_button.clicked.connect(self._on_remove_split_map_clicked)
+			self.split_map_weight_add_button.clicked.connect(self._on_add_split_map_weight_clicked)
+			self.split_map_weight_rename_button.clicked.connect(self._on_rename_split_map_weight_clicked)
+			self.split_map_weight_remove_button.clicked.connect(self._on_remove_split_map_weight_clicked)
 
 		self._apply_shapes_name_sort()
 		self._sort_primaries_tree()
@@ -3241,6 +3467,480 @@ class MainWindow(QMainWindow):
 			self.connect_simplex_controllers_action.setEnabled(activate)
 		if self.prepare_for_publishing_action is not None:
 			self.prepare_for_publishing_action.setEnabled(activate)
+		if self.main_tabs is not None:
+			self.main_tabs.setTabEnabled(1, activate)
+
+	def _set_split_settings_enabled(self, enabled: bool) -> None:
+		for widget in [
+			self.split_primary_search,
+			self.split_primaries_tree,
+			self.split_groups_list,
+			self.split_group_maps_list,
+			self.split_maps_list,
+			self.split_map_weights_list,
+			getattr(self, "split_group_add_button", None),
+			getattr(self, "split_group_remove_button", None),
+			getattr(self, "split_group_add_map_button", None),
+			getattr(self, "split_group_remove_map_button", None),
+			getattr(self, "split_group_map_up_button", None),
+			getattr(self, "split_group_map_down_button", None),
+			getattr(self, "split_map_add_button", None),
+			getattr(self, "split_map_rename_button", None),
+			getattr(self, "split_map_remove_button", None),
+			getattr(self, "split_map_weight_add_button", None),
+			getattr(self, "split_map_weight_rename_button", None),
+			getattr(self, "split_map_weight_remove_button", None),
+		]:
+			if widget is not None:
+				widget.setEnabled(enabled)
+
+	def _reload_split_settings_from_editor(self) -> None:
+		if self.current_editor is None:
+			if self.split_primaries_tree is not None:
+				self.split_primaries_tree.clear()
+			if self.split_groups_list is not None:
+				self.split_groups_list.clear()
+			if self.split_group_maps_list is not None:
+				self.split_group_maps_list.clear()
+			if self.split_maps_list is not None:
+				self.split_maps_list.clear()
+			if self.split_map_weights_list is not None:
+				self.split_map_weights_list.clear()
+			if self.split_map_weight_stats_label is not None:
+				self.split_map_weight_stats_label.setText("No active system.")
+			self._set_split_settings_enabled(False)
+			return
+
+		self._set_split_settings_enabled(True)
+		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+		except Exception:
+			split_groups = {}
+
+		group_names = sorted(str(name) for name in split_groups.keys())
+		try:
+			primaries = [
+				str(attr)
+				for attr in (cmds.listAttr(self.current_editor.split_attr_grp, userDefined=True) or [])
+				if cmds.getAttr(f"{self.current_editor.split_attr_grp}.{attr}", type=True) == "enum"
+			]
+		except Exception:
+			primaries = []
+		primaries.sort(key=str.lower)
+
+		if self.split_primaries_tree is not None:
+			selected_primaries = {item.text(0) for item in self.split_primaries_tree.selectedItems()}
+			self.split_primaries_tree.blockSignals(True)
+			self.split_primaries_tree.clear()
+			if self._split_primary_delegate is not None:
+				self._split_primary_delegate.set_group_names(group_names)
+			for primary in primaries:
+				try:
+					current_group = self.current_editor.get_primary_split_group(primary)
+				except Exception:
+					current_group = "NoSplit"
+				item = QTreeWidgetItem([primary, current_group if current_group in ["NoSplit"] + group_names else "NoSplit"])
+				item.setFlags(item.flags() | Qt.ItemIsEditable)
+				self.split_primaries_tree.addTopLevelItem(item)
+				item.setSelected(primary in selected_primaries)
+			self.split_primaries_tree.blockSignals(False)
+			self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
+
+		if self.split_groups_list is not None:
+			selected_group = self.split_groups_list.currentItem().text() if self.split_groups_list.currentItem() else ""
+			self.split_groups_list.blockSignals(True)
+			self.split_groups_list.clear()
+			for group_name in group_names:
+				self.split_groups_list.addItem(group_name)
+			self.split_groups_list.blockSignals(False)
+			if selected_group and selected_group in group_names:
+				matching = self.split_groups_list.findItems(selected_group, Qt.MatchExactly)
+				if matching:
+					self.split_groups_list.setCurrentItem(matching[0])
+			elif self.split_groups_list.count() > 0:
+				self.split_groups_list.setCurrentRow(0)
+
+		if self.split_maps_list is not None:
+			selected_map = self.split_maps_list.currentItem().text() if self.split_maps_list.currentItem() else ""
+			all_split_maps = sorted(self.current_editor.get_split_maps())
+			self.split_maps_list.blockSignals(True)
+			self.split_maps_list.clear()
+			for split_map_name in all_split_maps:
+				self.split_maps_list.addItem(split_map_name)
+			self.split_maps_list.blockSignals(False)
+			if selected_map and selected_map in all_split_maps:
+				matching = self.split_maps_list.findItems(selected_map, Qt.MatchExactly)
+				if matching:
+					self.split_maps_list.setCurrentItem(matching[0])
+			elif self.split_maps_list.count() > 0:
+				self.split_maps_list.setCurrentRow(0)
+
+		self._on_split_group_selection_changed(self._selected_split_group_name())
+		self._on_split_map_selection_changed(self._selected_split_map_name())
+
+	def _selected_split_group_name(self) -> Optional[str]:
+		if self.split_groups_list is None or self.split_groups_list.currentItem() is None:
+			return None
+		return self.split_groups_list.currentItem().text().strip()
+
+	def _selected_split_map_name(self) -> Optional[str]:
+		if self.split_maps_list is None or self.split_maps_list.currentItem() is None:
+			return None
+		return self.split_maps_list.currentItem().text().strip()
+
+	def _selected_split_map_weight_suffix(self) -> Optional[str]:
+		if self.split_map_weights_list is None or self.split_map_weights_list.currentItem() is None:
+			return None
+		item = self.split_map_weights_list.currentItem()
+		raw_suffix = item.data(Qt.UserRole)
+		if raw_suffix:
+			return str(raw_suffix)
+		return item.text().strip()
+
+	def _on_split_primary_search_changed(self, text: str) -> None:
+		if self.split_primaries_tree is None:
+			return
+		query = str(text or "").strip().lower()
+		for row in range(self.split_primaries_tree.topLevelItemCount()):
+			item = self.split_primaries_tree.topLevelItem(row)
+			item.setHidden(bool(query and query not in item.text(0).lower()))
+
+	def _on_primary_split_group_changed(self, group_name: str, primary_names) -> None:
+		if self.current_editor is None:
+			return
+		target_names = [str(name) for name in primary_names]
+		try:
+			for primary_name in target_names:
+				self.current_editor.set_primary_split_group(primary_name, group_name)
+		except Exception as exc:
+			self._set_status(f"Error updating split group assignment: {exc}", error=True)
+			self._reload_split_settings_from_editor()
+			return
+		if self.split_primaries_tree is not None:
+			for row in range(self.split_primaries_tree.topLevelItemCount()):
+				item = self.split_primaries_tree.topLevelItem(row)
+				if item.text(0) in target_names:
+					item.setText(1, group_name)
+		self._set_status(f"Assigned {len(target_names)} primary shape(s) to split group '{group_name}'.")
+
+	def _on_split_group_selection_changed(self, group_name: str) -> None:
+		if self.split_group_maps_list is None:
+			return
+		self.split_group_maps_list.clear()
+		if self.current_editor is None or not group_name:
+			return
+		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+		except Exception:
+			split_groups = {}
+		for split_map_name in split_groups.get(group_name, []):
+			self.split_group_maps_list.addItem(str(split_map_name))
+
+	def _on_split_map_selection_changed(self, split_map_name: str) -> None:
+		if self.split_map_weights_list is None:
+			return
+		self.split_map_weights_list.clear()
+		if self.split_map_weight_stats_label is not None:
+			self.split_map_weight_stats_label.setText("Select a split-map weight to inspect vertex weight stats.")
+		if self.current_editor is None or not split_map_name:
+			return
+		try:
+			suffices = self.current_editor.get_split_map_suffices(split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error reading split map weights: {exc}", error=True)
+			return
+		for raw_suffix in suffices:
+			display_suffix = str(raw_suffix)
+			prefix = f"{split_map_name}_"
+			if display_suffix.startswith(prefix):
+				display_suffix = display_suffix[len(prefix):]
+			item = QListWidgetItem(display_suffix)
+			item.setData(Qt.UserRole, str(raw_suffix))
+			self.split_map_weights_list.addItem(item)
+
+	def _on_split_map_weight_selection_changed(self, _weight_suffix: str) -> None:
+		if self.split_map_weight_stats_label is None:
+			return
+		if self.current_editor is None:
+			self.split_map_weight_stats_label.setText("No active system.")
+			return
+		split_map_name = self._selected_split_map_name()
+		weight_suffix = self._selected_split_map_weight_suffix()
+		if not split_map_name or not weight_suffix:
+			self.split_map_weight_stats_label.setText("Select a split-map weight to inspect vertex weight stats.")
+			return
+		prefix = f"{split_map_name}_"
+		weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{split_map_name}_{weight_suffix}"
+		weight = self.current_editor.split_blendshape.get_weight_by_name(weight_name)
+		if weight is None:
+			self.split_map_weight_stats_label.setText(f"Weight '{weight_name}' not found.")
+			return
+		values = self.current_editor.split_blendshape.get_weight_map_values(weight.id)
+		if not values:
+			self.split_map_weight_stats_label.setText(f"Weight '{weight_name}' has no values.")
+			return
+		minimum = min(values)
+		maximum = max(values)
+		average = sum(values) / float(len(values))
+		self.split_map_weight_stats_label.setText(
+			f"{weight_name} | Vertices: {len(values)} | Min: {minimum:.4f} | Max: {maximum:.4f} | Avg: {average:.4f}"
+		)
+
+	def _on_create_split_group_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		group_name, ok = QInputDialog.getText(self, "Create Split Group", "Split group name:")
+		if not ok:
+			return
+		group_name = (group_name or "").strip()
+		if not group_name:
+			return
+		try:
+			self.current_editor.create_split_group(group_name, [])
+		except Exception as exc:
+			self._set_status(f"Error creating split group: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Created split group '{group_name}'.")
+
+	def _on_remove_split_group_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		group_name = self._selected_split_group_name()
+		if not group_name:
+			return
+		try:
+			self.current_editor.remove_split_group(group_name)
+		except Exception as exc:
+			self._set_status(f"Error removing split group: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Removed split group '{group_name}'.")
+
+	def _on_add_split_map_to_group_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		group_name = self._selected_split_group_name()
+		if not group_name:
+			self._set_status("Select a split group first.", warning=True)
+			return
+		all_maps = sorted(self.current_editor.get_split_maps())
+		split_groups = self.current_editor.read_split_groups_attributes()
+		existing_maps = set(split_groups.get(group_name, []))
+		available_maps = [name for name in all_maps if name not in existing_maps]
+		if not available_maps:
+			self._set_status(f"No available split maps to add to '{group_name}'.", warning=True)
+			return
+		split_map_name, ok = QInputDialog.getItem(self, "Add Map to Split Group", "Split map:", available_maps, 0, False)
+		if not ok or not split_map_name:
+			return
+		try:
+			self.current_editor.add_split_map_to_split_group(group_name, split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error adding split map to group: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Added split map '{split_map_name}' to group '{group_name}'.")
+
+	def _on_remove_split_map_from_group_clicked(self) -> None:
+		if self.current_editor is None or self.split_group_maps_list is None:
+			return
+		group_name = self._selected_split_group_name()
+		item = self.split_group_maps_list.currentItem()
+		if not group_name or item is None:
+			return
+		split_map_name = item.text().strip()
+		try:
+			self.current_editor.remove_split_map_from_split_group(group_name, split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error removing split map from group: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Removed split map '{split_map_name}' from group '{group_name}'.")
+
+	def _move_split_group_map(self, direction: int) -> None:
+		if self.current_editor is None or self.split_group_maps_list is None:
+			return
+		group_name = self._selected_split_group_name()
+		current_item = self.split_group_maps_list.currentItem()
+		if not group_name or current_item is None:
+			return
+		current_map = current_item.text().strip()
+		split_groups = self.current_editor.read_split_groups_attributes()
+		maps = list(split_groups.get(group_name, []))
+		if current_map not in maps:
+			return
+		index = maps.index(current_map)
+		new_index = index + direction
+		if new_index < 0 or new_index >= len(maps):
+			return
+		maps[index], maps[new_index] = maps[new_index], maps[index]
+		split_groups[group_name] = maps
+		try:
+			self.current_editor.write_split_groups_attributes(split_groups)
+			self.current_editor.update_split_map_attributes_from_groups()
+		except Exception as exc:
+			self._set_status(f"Error reordering split group maps: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Updated map order in split group '{group_name}'.")
+
+	def _on_move_split_group_map_up_clicked(self) -> None:
+		self._move_split_group_map(-1)
+
+	def _on_move_split_group_map_down_clicked(self) -> None:
+		self._move_split_group_map(1)
+
+	def _on_add_split_map_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name, ok = QInputDialog.getText(self, "Add Split Map", "Split map name:")
+		if not ok:
+			return
+		split_map_name = (split_map_name or "").strip()
+		if not split_map_name:
+			return
+		suffices_text, ok = QInputDialog.getText(
+			self,
+			"Add Split Map Weights",
+			"Weight suffices (comma-separated, optional):",
+			text="L,R",
+		)
+		if not ok:
+			return
+		suffices = [token.strip() for token in str(suffices_text).split(",") if token.strip()]
+		try:
+			self.current_editor.create_split_map(split_map_name, suffices)
+		except Exception as exc:
+			self._set_status(f"Error adding split map: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Added split map '{split_map_name}'.")
+
+	def _on_rename_split_map_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		current_name = self._selected_split_map_name()
+		if not current_name:
+			return
+		new_name, ok = QInputDialog.getText(self, "Rename Split Map", "New split map name:", text=current_name)
+		if not ok:
+			return
+		new_name = (new_name or "").strip()
+		if not new_name or new_name == current_name:
+			return
+		try:
+			self.current_editor.rename_split_map(current_name, new_name)
+		except Exception as exc:
+			self._set_status(f"Error renaming split map: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Renamed split map '{current_name}' to '{new_name}'.")
+
+	def _on_remove_split_map_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		current_name = self._selected_split_map_name()
+		if not current_name:
+			return
+		try:
+			self.current_editor.delete_split_map(current_name)
+		except Exception as exc:
+			self._set_status(f"Error removing split map: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Removed split map '{current_name}'.")
+
+	def _add_weight_to_split_map(self, split_map_name: str, suffix_name: str) -> None:
+		split_blendshape = self.current_editor.split_blendshape
+		split_map_dirs = split_blendshape.get_target_dirs_by_name(split_map_name)
+		if len(split_map_dirs) != 1:
+			raise ValueError(f"Expected exactly one split-map directory named '{split_map_name}'.")
+		split_map_dir = split_map_dirs[0]
+		weight_name = f"{split_map_name}_{suffix_name}"
+		if split_blendshape.get_weight_by_name(weight_name) is not None:
+			raise ValueError(f"Weight '{weight_name}' already exists.")
+		suffix_dir = split_blendshape.add_target_dir(name=suffix_name, parent_index=split_map_dir.index)
+		split_blendshape.add_target(weight_name, parent_directory=suffix_dir)
+
+	def _remove_weight_from_split_map(self, split_map_name: str, suffix_name: str) -> None:
+		split_blendshape = self.current_editor.split_blendshape
+		split_map_dirs = split_blendshape.get_target_dirs_by_name(split_map_name)
+		if len(split_map_dirs) != 1:
+			raise ValueError(f"Expected exactly one split-map directory named '{split_map_name}'.")
+		split_map_dir = split_map_dirs[0]
+		child_dirs = split_blendshape.get_target_dir_child_target_dirs(split_map_dir)
+		target_dir = None
+		for child_dir in child_dirs:
+			if child_dir.name == suffix_name or child_dir.name == f"{split_map_name}_{suffix_name}":
+				target_dir = child_dir
+				break
+		if target_dir is None:
+			raise ValueError(f"Suffix '{suffix_name}' not found in split map '{split_map_name}'.")
+		for weight in split_blendshape.get_target_dir_child_weights(target_dir):
+			split_blendshape.remove_target(weight)
+		split_blendshape.remove_target_dir(target_dir)
+
+	def _on_add_split_map_weight_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._selected_split_map_name()
+		if not split_map_name:
+			self._set_status("Select a split map first.", warning=True)
+			return
+		suffix_name, ok = QInputDialog.getText(self, "Add Split Map Weight", "Weight suffix name:")
+		if not ok:
+			return
+		suffix_name = (suffix_name or "").strip()
+		if not suffix_name:
+			return
+		try:
+			self._add_weight_to_split_map(split_map_name, suffix_name)
+		except Exception as exc:
+			self._set_status(f"Error adding split-map weight: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Added weight '{split_map_name}_{suffix_name}'.")
+
+	def _on_rename_split_map_weight_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._selected_split_map_name()
+		old_suffix = self._selected_split_map_weight_suffix()
+		if not split_map_name or not old_suffix:
+			return
+		prefix = f"{split_map_name}_"
+		base_old_suffix = old_suffix[len(prefix):] if old_suffix.startswith(prefix) else old_suffix
+		new_suffix, ok = QInputDialog.getText(self, "Rename Split Map Weight", "New weight suffix:", text=base_old_suffix)
+		if not ok:
+			return
+		new_suffix = (new_suffix or "").strip()
+		if not new_suffix or new_suffix == base_old_suffix:
+			return
+		try:
+			self.current_editor.rename_split_map_suffix(split_map_name, base_old_suffix, new_suffix)
+		except Exception as exc:
+			self._set_status(f"Error renaming split-map weight: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Renamed weight '{split_map_name}_{base_old_suffix}' to '{split_map_name}_{new_suffix}'.")
+
+	def _on_remove_split_map_weight_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._selected_split_map_name()
+		suffix_name = self._selected_split_map_weight_suffix()
+		if not split_map_name or not suffix_name:
+			return
+		prefix = f"{split_map_name}_"
+		base_suffix = suffix_name[len(prefix):] if suffix_name.startswith(prefix) else suffix_name
+		try:
+			self._remove_weight_from_split_map(split_map_name, base_suffix)
+		except Exception as exc:
+			self._set_status(f"Error removing split-map weight: {exc}", error=True)
+			return
+		self._reload_split_settings_from_editor()
+		self._set_status(f"Removed weight '{split_map_name}_{base_suffix}'.")
 
 	def _show_controller_layout_window(self) -> None:
 		if self._controller_layout_window is None:
@@ -5549,6 +6249,39 @@ class MainWindow(QMainWindow):
 			self.work_blendshape_tracker.deleteLater()
 		self.work_blendshape_tracker = None
 
+	def _setup_split_attr_grp_tracker(self) -> None:
+		self._clear_split_attr_grp_tracker()
+		if self.current_editor is None or not cmds.objExists(self.current_editor.split_attr_grp):
+			return
+		self.split_attr_grp_tracker = ControllerTracker(self.current_editor.split_attr_grp, parent=self)
+		self.split_attr_grp_tracker.attributeChanged.connect(self._schedule_split_attr_grp_refresh)
+		self.split_attr_grp_tracker.attributeAdded.connect(self._schedule_split_attr_grp_refresh)
+		self.split_attr_grp_tracker.attributeRemoved.connect(self._schedule_split_attr_grp_refresh)
+		self.split_attr_grp_tracker.nodeDeleted.connect(self._on_split_attr_grp_deleted)
+		self.split_attr_grp_tracker.start()
+
+	def _clear_split_attr_grp_tracker(self) -> None:
+		self._split_attr_refresh_pending = False
+		if isinstance(self.split_attr_grp_tracker, ControllerTracker):
+			self.split_attr_grp_tracker.kill()
+			self.split_attr_grp_tracker.deleteLater()
+			self.split_attr_grp_tracker = None
+
+	def _schedule_split_attr_grp_refresh(self, *_args) -> None:
+		if self._split_attr_refresh_pending:
+			return
+		self._split_attr_refresh_pending = True
+		QTimer.singleShot(60, self._reload_split_settings_from_tracker)
+
+	def _reload_split_settings_from_tracker(self) -> None:
+		self._split_attr_refresh_pending = False
+		if self.current_editor is not None:
+			self._reload_split_settings_from_editor()
+
+	def _on_split_attr_grp_deleted(self, _node_name: str) -> None:
+		self._clear_split_attr_grp_tracker()
+		self._reload_split_settings_from_editor()
+
 	def _reload_editor_menu(self) -> None:
 		current_name = self.current_editor.name if self.current_editor else self.EMPTY_SYSTEM_LABEL
 		names = []
@@ -5844,6 +6577,7 @@ class MainWindow(QMainWindow):
 			self._primary_subset_proxy.clear_selected_names()
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
+			self._reload_split_settings_from_editor()
 			self._update_delegate_name_columns()
 			self._update_info_labels()
 			self._update_work_shape_button_panel()
@@ -5855,6 +6589,7 @@ class MainWindow(QMainWindow):
 			self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
+			self._reload_split_settings_from_editor()
 			self._update_related_shape_highlights_from_selection()
 			self._update_delegate_name_columns()
 			self._update_info_labels()
@@ -5892,6 +6627,7 @@ class MainWindow(QMainWindow):
 			>>> win.set_current_editor("myCharacter_blueSteel_container")
 		"""
 		self._clear_blendshape_tracker()
+		self._clear_split_attr_grp_tracker()
 
 		if not name or not cmds.objExists(name):
 			if self.heat_map_switch is not None:
@@ -5903,6 +6639,7 @@ class MainWindow(QMainWindow):
 			self._shape_model.rebuild_from_editor(None)
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
+			self._reload_split_settings_from_editor()
 			self._update_delegate_name_columns()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
@@ -5929,6 +6666,7 @@ class MainWindow(QMainWindow):
 			self._update_window_title()
 			self._reload_shapes_from_editor()
 			self._setup_blendshape_tracker()
+			self._setup_split_attr_grp_tracker()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
 			if self._controller_layout_window is not None:
@@ -5940,6 +6678,7 @@ class MainWindow(QMainWindow):
 			self._shape_model.rebuild_from_editor(None)
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
+			self._reload_split_settings_from_editor()
 			self._update_delegate_name_columns()
 			self._update_tools_button_panel()
 			self._reload_editor_menu()
@@ -5973,6 +6712,7 @@ class MainWindow(QMainWindow):
 			self._controller_layout_window.deleteLater()
 			self._controller_layout_window = None
 		self._clear_blendshape_tracker()
+		self._clear_split_attr_grp_tracker()
 		self._clear_scene_editor_tracker()
 		super().closeEvent(event)
 
