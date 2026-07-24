@@ -3430,9 +3430,11 @@ class BlueSteelEditor(object):
 
     @pause_shape_editor
     @undoable
-    def split_shapes(self):
+    def split_shapes(self)-> str:
         """
         Create a new editor and add all the split shapes to it.
+        Returns:
+            str: The name of the new editor.
         """
         # let's time it
         start_time = time.time()
@@ -3441,8 +3443,6 @@ class BlueSteelEditor(object):
         mesh = self.base_mesh
         split_editor = None
         split_meshes_group = None
-        split_success = False
-        split_cancelled = False
 
         # --- Start the progress bar ---
         gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
@@ -3522,8 +3522,6 @@ class BlueSteelEditor(object):
                     split_editor_blendshape.connect_mesh_to_target(committed_weight_id, self.split_bake_mesh)
                     split_editor_blendshape.disconnect_mesh_from_target(committed_weight_id)
 
-            if not split_cancelled:
-                split_success = True
 
         except Exception as e:
             print(f"Error while splitting shapes: {e}")
@@ -3537,26 +3535,9 @@ class BlueSteelEditor(object):
             if split_editor:
                 split_editor.zero_out()
             if split_meshes_group and cmds.objExists(split_meshes_group):
-                cmds.delete(split_meshes_group)
-
-            if split_success and split_editor and cmds.objExists(self.container.name):
-                choice = cmds.confirmDialog(
-                    title="Split Completed",
-                    message=f"Keep combined editor '{self.container.name}'?",
-                    button=["Keep", "Delete"],
-                    defaultButton="Keep",
-                    cancelButton="Keep",
-                    dismissString="Keep"
-                )
-
-                if choice == "Delete":
-                    dir_indices = self.get_shape_editor_directory_index(self.container.name)
-                    for dir_index in sorted(dir_indices, reverse=True):
-                        self.remove_shape_editor_directory(dir_index)
-                    if cmds.objExists(self.container.name):
-                        cmds.delete(self.container.name)
-
+                cmds.delete(split_meshes_group)  
             cmds.cycleCheck(e=True)
+            return split_editor.name
                 
     def get_split_shape_poses(self,
                               shape_name,

@@ -3611,18 +3611,10 @@ class MainWindow(QMainWindow):
 		import_objs_action.triggered.connect(self._import_objs)
 		import_menu.addAction(import_objs_action)
 
-		import_split_settings_action = QAction("Import Split Settings", self)
-		import_split_settings_action.triggered.connect(self._import_split_settings)
-		import_menu.addAction(import_split_settings_action)
-
 		export_menu = file_menu.addMenu("Export")
 		export_objs_action = QAction("Export Objs", self)
 		export_objs_action.triggered.connect(self._export_objs)
 		export_menu.addAction(export_objs_action)
-
-		export_split_settings_action = QAction("Export Split Settings", self)
-		export_split_settings_action.triggered.connect(self._export_split_settings)
-		export_menu.addAction(export_split_settings_action)
 
 		utilities_menu = menu_bar.addMenu("Utilities")
 		self.rename_editor_action = QAction("Rename Editor", self)
@@ -3635,6 +3627,21 @@ class MainWindow(QMainWindow):
 		recover_editor_action.setToolTip("Not available yet in the Model/View editor.")
 		recover_editor_action.setEnabled(False)
 		utilities_menu.addAction(recover_editor_action)
+
+		split_shapes_menu = menu_bar.addMenu("Split Shapes")
+		split_shapes_menu.setToolTip("Split shapes into multiple shapes based on the current split settings.")
+
+		import_split_data_action = QAction("Import Split Data", self)
+		import_split_data_action.triggered.connect(self._import_split_data)
+		split_shapes_menu.addAction(import_split_data_action)
+
+		export_split_data_action = QAction("Export Split Data", self)
+		export_split_data_action.triggered.connect(self._export_split_data)
+		split_shapes_menu.addAction(export_split_data_action)
+
+		split_shapes_action = QAction("Split Current System", self)
+		split_shapes_action.triggered.connect(self._on_split_shapes_requested)
+		split_shapes_menu.addAction(split_shapes_action)
 
 		collapsed = True
 		if cmds.nodeEditor("nodeEditorPanel1NodeEditorEd", exists=True):
@@ -3723,12 +3730,12 @@ class MainWindow(QMainWindow):
 		self._reload_editor_menu()
 		self._set_status(f"Imported all OBJs from '{directory}' as shapes.")
 
-	def _import_split_settings(self) -> None:
+	def _import_split_data(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
 
-		directory = QFileDialog.getExistingDirectory(self, "Select Split Settings Directory")
+		directory = QFileDialog.getExistingDirectory(self, "Select Split Data Directory")
 		if not directory:
 			self._set_status("Import cancelled.")
 			return
@@ -3737,21 +3744,52 @@ class MainWindow(QMainWindow):
 		try:
 			self.current_editor.import_split_data(directory)
 		except Exception as exc:
-			self._set_status(f"Error importing split settings: {exc}", error=True)
+			self._set_status(f"Error importing split data: {exc}", error=True)
 			return
 		finally:
 			self._restart_trackers_after_scene_operation()
 
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
-		self._set_status(f"Imported split settings from '{directory}'.")
+		self._set_status(f"Imported split data from '{directory}'.")
 
-	def _export_split_settings(self) -> None:
+	def _on_split_shapes_requested(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		combine_editor_name = self.current_editor.name
+		self._clear_trackers_for_scene_operation()
+		try:
+			split_editor_name = self.current_editor.split_shapes()
+
+
+		except Exception as exc:
+			self._set_status(f"Error splitting shapes: {exc}", error=True)
+			return
+		finally:
+			self._restart_trackers_after_scene_operation()
+
+		self._reload_shapes_from_editor()
+		self._set_status(f"Created new split editor '{split_editor_name}' from '{self.current_editor.name}'.")
+		self.set_current_editor(split_editor_name)
+		delete_reply = QMessageBox.question(
+			self,
+			"Delete Combined Editor?",
+			"Do you want to delete the original editor after splitting shapes?",
+			QMessageBox.Yes | QMessageBox.No,
+			QMessageBox.No,
+		)
+		if delete_reply == QMessageBox.Yes:
+			cmds.delete(combine_editor_name)
+			# we need to refresh the editor drop down menu.
+			self._reload_editor_menu()
+
+	def _export_split_data(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
 
-		directory = QFileDialog.getExistingDirectory(self, "Select Export Split Settings Directory")
+		directory = QFileDialog.getExistingDirectory(self, "Select Export Split Data Directory")
 		if not directory:
 			self._set_status("Export cancelled.")
 			return
@@ -3760,12 +3798,12 @@ class MainWindow(QMainWindow):
 		try:
 			self.current_editor.export_split_data(directory)
 		except Exception as exc:
-			self._set_status(f"Error exporting split settings: {exc}", error=True)
+			self._set_status(f"Error exporting split data: {exc}", error=True)
 			return
 		finally:
 			self._restart_trackers_after_scene_operation()
 
-		self._set_status(f"Exported split settings to '{directory}'.")
+		self._set_status(f"Exported split data to '{directory}'.")
 
 	def _export_objs(self) -> None:
 		if self.current_editor is None:
