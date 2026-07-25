@@ -2938,24 +2938,26 @@ class BlueSteelEditor(object):
         enum_labels = enum_values[0].split(":") if enum_values[0] else []
         return enum_labels[enum_index] if enum_index < len(enum_labels) else "NoSplit"
 
-    def set_primary_split_group(self, primary: str, group: str):
+    @undoable
+    def set_primaries_split_group(self, primaries: list, group: str):
         """Set the split group assigned to a primary shape.
         Parameters:
-            primary (str): The name of the primary shape to set the split group for.
+            primaries (list): The names of the primary shapes to set the split group for.
             group (str): The name of the split group to assign to the primary shape.
         """
         if group is None or group == "":
             group = "NoSplit"
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
-        if not cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
-            raise ValueError(f"Primary {primary} does not have an attribute in the split settings node")
-        enum_values = cmds.attributeQuery(primary, node=self.split_attr_grp, listEnum=True) or [""]
-        enum_labels = enum_values[0].split(":") if enum_values[0] else []
-        if group not in enum_labels:
-            raise ValueError(f"Group {group} is not a valid split group for primary {primary}")
-        enum_index = enum_labels.index(group)
-        cmds.setAttr(f"{self.split_attr_grp}.{primary}", enum_index)
+        for primary in primaries:
+            if not cmds.attributeQuery(primary, node=self.split_attr_grp, exists=True):
+                raise ValueError(f"Primary {primary} does not have an attribute in the split settings node")
+            enum_values = cmds.attributeQuery(primary, node=self.split_attr_grp, listEnum=True) or [""]
+            enum_labels = enum_values[0].split(":") if enum_values[0] else []
+            if group not in enum_labels:
+                raise ValueError(f"Group {group} is not a valid split group for primary {primary}")
+            enum_index = enum_labels.index(group)
+            cmds.setAttr(f"{self.split_attr_grp}.{primary}", enum_index)
 
     def update_split_map_attributes_from_groups(self):
         """Update all primary split-map enum attributes from split groups.
@@ -3096,6 +3098,25 @@ class BlueSteelEditor(object):
         spit_map_weights = self.get_split_map_weights(split_map_name)
         self.normalize_shapes_weight_map_values(self.split_blendshape, spit_map_weights)
 
+    def is_split_map_normalized(self, split_map_name: str, tolerance: float = 1e-5) -> bool:
+        """Return whether the split-map weights sum to 1.0 at every vertex."""
+        split_map_weights = self.get_split_map_weights(split_map_name)
+        if not split_map_weights:
+            return False
+
+        weight_map_values = [
+            self.split_blendshape.get_weight_map_values(weight.id)
+            for weight in split_map_weights
+        ]
+        if not weight_map_values or len(weight_map_values[0]) == 0:
+            return False
+        vertex_count = len(weight_map_values[0])
+        if any(len(values) != vertex_count for values in weight_map_values):
+            return False
+
+        weight_sums = np.sum(np.asarray(weight_map_values, dtype=float), axis=0)
+        return bool(np.allclose(weight_sums, 1.0, rtol=0.0, atol=tolerance))
+
     def get_split_map_weights(self, split_map_name: str) -> list:
         """ get the weights of a split map in the split_blendshape.
         Parameters:
@@ -3177,6 +3198,7 @@ class BlueSteelEditor(object):
             split_maps_order[split_maps_order.index(old_name)] = new_name
         self.write_split_maps_order_attribute(split_maps_order)
 
+    @undoable
     def delete_split_map(self, split_map_name: str):
         """ delete a split map in the split_blendshape and in the split groups attribute.
         Parameters:
@@ -3771,7 +3793,7 @@ class BlueSteelEditor(object):
                 if primary not in primary_shapes:
                     print(f"Primary shape {primary} does not exist in the blendshape. Skipping association.")
                     continue
-                self.set_primary_split_group(primary, group)
+                self.set_primaries_split_group([primary], group)
             
     def export_split_maps_weights(self, export_path: str):
         """
@@ -3885,7 +3907,7 @@ class BlueSteelEditor(object):
         Subtract a weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to subtract the weight map from."""
-        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, add=False)
+        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, subtract=True)
 
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):

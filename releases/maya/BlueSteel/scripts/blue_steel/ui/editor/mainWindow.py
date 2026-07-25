@@ -2916,36 +2916,43 @@ class MainWindow(QMainWindow):
 		split_maps_group = QGroupBox("Split Maps")
 		split_maps_layout = QVBoxLayout(split_maps_group)
 		split_maps_lists_layout = QHBoxLayout()
+		split_maps_column = QVBoxLayout()
 		self.split_maps_list = QListWidget()
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_maps_list.setToolTip("All split maps")
-		split_maps_lists_layout.addWidget(self.split_maps_list, 1)
-		self.split_map_weights_list = QListWidget()
-		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_map_weights_list.setToolTip("Weights (suffixes) for selected split map")
-		split_maps_lists_layout.addWidget(self.split_map_weights_list, 1)
-		split_maps_layout.addLayout(split_maps_lists_layout, 1)
+		self.split_maps_list.setContextMenuPolicy(Qt.CustomContextMenu)
+		split_maps_column.addWidget(self.split_maps_list, 1)
 
-		self.split_map_weight_stats_label = QLabel("Select a split-map weight to inspect vertex weight stats.")
-		split_maps_layout.addWidget(self.split_map_weight_stats_label)
-
-		split_maps_controls_top = QHBoxLayout()
+		split_maps_controls = QHBoxLayout()
 		self.split_map_add_button = QPushButton("Add Split Map")
 		self.split_map_rename_button = QPushButton("Rename Split Map")
 		self.split_map_remove_button = QPushButton("Remove Split Map")
-		split_maps_controls_top.addWidget(self.split_map_add_button)
-		split_maps_controls_top.addWidget(self.split_map_rename_button)
-		split_maps_controls_top.addWidget(self.split_map_remove_button)
-		split_maps_layout.addLayout(split_maps_controls_top)
+		split_maps_controls.addWidget(self.split_map_add_button)
+		split_maps_controls.addWidget(self.split_map_rename_button)
+		split_maps_controls.addWidget(self.split_map_remove_button)
+		split_maps_column.addLayout(split_maps_controls)
+		split_maps_lists_layout.addLayout(split_maps_column, 1)
 
-		split_maps_controls_bottom = QHBoxLayout()
+		split_map_weights_column = QVBoxLayout()
+		self.split_map_weights_list = QListWidget()
+		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
+		self.split_map_weights_list.setToolTip("Weights (suffixes) for selected split map")
+		self.split_map_weights_list.setContextMenuPolicy(Qt.CustomContextMenu)
+		split_map_weights_column.addWidget(self.split_map_weights_list, 1)
+
+		split_map_weights_controls = QHBoxLayout()
 		self.split_map_weight_add_button = QPushButton("Add Weight")
 		self.split_map_weight_rename_button = QPushButton("Rename Weight")
 		self.split_map_weight_remove_button = QPushButton("Remove Weight")
-		split_maps_controls_bottom.addWidget(self.split_map_weight_add_button)
-		split_maps_controls_bottom.addWidget(self.split_map_weight_rename_button)
-		split_maps_controls_bottom.addWidget(self.split_map_weight_remove_button)
-		split_maps_layout.addLayout(split_maps_controls_bottom)
+		split_map_weights_controls.addWidget(self.split_map_weight_add_button)
+		split_map_weights_controls.addWidget(self.split_map_weight_rename_button)
+		split_map_weights_controls.addWidget(self.split_map_weight_remove_button)
+		split_map_weights_column.addLayout(split_map_weights_controls)
+		split_maps_lists_layout.addLayout(split_map_weights_column, 1)
+		split_maps_layout.addLayout(split_maps_lists_layout, 1)
+
+		self.split_map_weight_stats_label = QLabel("Select a split map to check normalization.")
+		split_maps_layout.addWidget(self.split_map_weight_stats_label)
 		right_layout.addWidget(split_maps_group, 1)
 
 		layout.addWidget(right_column, 3)
@@ -3331,8 +3338,10 @@ class MainWindow(QMainWindow):
 			self.split_groups_list.currentTextChanged.connect(self._on_split_group_selection_changed)
 		if self.split_maps_list is not None:
 			self.split_maps_list.currentTextChanged.connect(self._on_split_map_selection_changed)
+			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
 		if self.split_map_weights_list is not None:
 			self.split_map_weights_list.currentTextChanged.connect(self._on_split_map_weight_selection_changed)
+			self.split_map_weights_list.customContextMenuRequested.connect(self._show_split_map_weights_context_menu)
 		if hasattr(self, "split_group_add_button"):
 			self.split_group_add_button.clicked.connect(self._on_create_split_group_clicked)
 			self.split_group_remove_button.clicked.connect(self._on_remove_split_group_clicked)
@@ -3604,14 +3613,13 @@ class MainWindow(QMainWindow):
 		for row in range(self.split_primaries_tree.topLevelItemCount()):
 			item = self.split_primaries_tree.topLevelItem(row)
 			item.setHidden(bool(query and query not in item.text(0).lower()))
-
+	
 	def _on_primary_split_group_changed(self, group_name: str, primary_names) -> None:
 		if self.current_editor is None:
 			return
 		target_names = [str(name) for name in primary_names]
 		try:
-			for primary_name in target_names:
-				self.current_editor.set_primary_split_group(primary_name, group_name)
+			self.current_editor.set_primaries_split_group(target_names, group_name)
 		except Exception as exc:
 			self._set_status(f"Error updating split group assignment: {exc}", error=True)
 			self._reload_split_settings_from_editor()
@@ -3640,9 +3648,8 @@ class MainWindow(QMainWindow):
 		if self.split_map_weights_list is None:
 			return
 		self.split_map_weights_list.clear()
-		if self.split_map_weight_stats_label is not None:
-			self.split_map_weight_stats_label.setText("Select a split-map weight to inspect vertex weight stats.")
 		if self.current_editor is None or not split_map_name:
+			self._update_split_map_normalization_status()
 			return
 		try:
 			suffices = self.current_editor.get_split_map_suffices(split_map_name)
@@ -3657,34 +3664,104 @@ class MainWindow(QMainWindow):
 			item = QListWidgetItem(display_suffix)
 			item.setData(Qt.UserRole, str(raw_suffix))
 			self.split_map_weights_list.addItem(item)
+		self._update_split_map_normalization_status()
 
 	def _on_split_map_weight_selection_changed(self, _weight_suffix: str) -> None:
+		self._update_split_map_normalization_status()
+
+	def _update_split_map_normalization_status(self) -> None:
 		if self.split_map_weight_stats_label is None:
 			return
 		if self.current_editor is None:
 			self.split_map_weight_stats_label.setText("No active system.")
 			return
 		split_map_name = self._selected_split_map_name()
+		if not split_map_name:
+			self.split_map_weight_stats_label.setText("Select a split map to check normalization.")
+			return
+		try:
+			is_normalized = self.current_editor.is_split_map_normalized(split_map_name)
+		except Exception as exc:
+			self.split_map_weight_stats_label.setText(f"Normalization check failed: {exc}")
+			return
+		status = "Normalized" if is_normalized else "Not normalized"
+		self.split_map_weight_stats_label.setText(f"{split_map_name}: {status}")
+
+	def _show_split_maps_context_menu(self, pos) -> None:
+		if self.current_editor is None or self.split_maps_list is None:
+			return
+		item = self.split_maps_list.itemAt(pos)
+		if item is None:
+			return
+		self.split_maps_list.setCurrentItem(item)
+		menu = QMenu(self.split_maps_list)
+		remove_action = menu.addAction("Remove")
+		normalize_action = menu.addAction("Normalize Weights")
+		selected_action = menu.exec(self.split_maps_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_maps_list.viewport().mapToGlobal(pos))
+		if selected_action == remove_action:
+			self._on_remove_split_map_clicked()
+		elif selected_action == normalize_action:
+			self._on_normalize_split_map_weights_requested()
+
+	def _show_split_map_weights_context_menu(self, pos) -> None:
+		if self.current_editor is None or self.split_map_weights_list is None:
+			return
+		item = self.split_map_weights_list.itemAt(pos)
+		if item is None:
+			return
+		self.split_map_weights_list.setCurrentItem(item)
+		menu = QMenu(self.split_map_weights_list)
+		copy_action = menu.addAction("Copy Weight Map")
+		menu.addSeparator()
+		paste_action = menu.addAction("Paste Weight Map")
+		paste_inverted_action = menu.addAction("Paste Inverted")
+		add_action = menu.addAction("Add Copied Weights")
+		subtract_action = menu.addAction("Subtract Copied Weights")
+		can_paste = self.current_editor.copied_weight_map_values is not None
+		for action in [paste_action, paste_inverted_action, add_action, subtract_action]:
+			action.setEnabled(can_paste)
+		selected_action = menu.exec(self.split_map_weights_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_map_weights_list.viewport().mapToGlobal(pos))
+		operations = {
+			copy_action: ("copy_split_weight_map_values", "Copied"),
+			paste_action: ("paste_split_weight_map_values", "Pasted"),
+			paste_inverted_action: ("paste_inverted_split_weight_map_values", "Pasted inverted values to"),
+			add_action: ("add_split_weight_map_values", "Added copied values to"),
+			subtract_action: ("subtract_split_weight_map_values", "Subtracted copied values from"),
+		}
+		operation = operations.get(selected_action)
+		if operation is not None:
+			self._run_split_weight_map_operation(*operation)
+
+	def _run_split_weight_map_operation(self, method_name: str, status_verb: str) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._selected_split_map_name()
 		weight_suffix = self._selected_split_map_weight_suffix()
 		if not split_map_name or not weight_suffix:
-			self.split_map_weight_stats_label.setText("Select a split-map weight to inspect vertex weight stats.")
 			return
 		prefix = f"{split_map_name}_"
 		weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{split_map_name}_{weight_suffix}"
-		weight = self.current_editor.split_blendshape.get_weight_by_name(weight_name)
-		if weight is None:
-			self.split_map_weight_stats_label.setText(f"Weight '{weight_name}' not found.")
+		try:
+			getattr(self.current_editor, method_name)(weight_name)
+		except Exception as exc:
+			self._set_status(f"Error updating split-map weight: {exc}", error=True)
 			return
-		values = self.current_editor.split_blendshape.get_weight_map_values(weight.id)
-		if not values:
-			self.split_map_weight_stats_label.setText(f"Weight '{weight_name}' has no values.")
+		self._update_split_map_normalization_status()
+		self._set_status(f"{status_verb} weight map '{weight_name}'.")
+
+	def _on_normalize_split_map_weights_requested(self) -> None:
+		if self.current_editor is None:
 			return
-		minimum = min(values)
-		maximum = max(values)
-		average = sum(values) / float(len(values))
-		self.split_map_weight_stats_label.setText(
-			f"{weight_name} | Vertices: {len(values)} | Min: {minimum:.4f} | Max: {maximum:.4f} | Avg: {average:.4f}"
-		)
+		split_map_name = self._selected_split_map_name()
+		if not split_map_name:
+			return
+		try:
+			self.current_editor.normalize_split_map_weights(split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error normalizing split map: {exc}", error=True)
+			return
+		self._update_split_map_normalization_status()
+		self._set_status(f"Normalized split map '{split_map_name}'.")
 
 	def _on_create_split_group_clicked(self) -> None:
 		if self.current_editor is None:
