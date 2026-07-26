@@ -3327,6 +3327,34 @@ class BlueSteelEditor(object):
             weight_name_dir = self.split_blendshape.add_target_dir(name=weight_name, parent_index=parent_index)
             self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
 
+    @undoable
+    def rename_split_group(self, old_name: str, new_name: str):
+        """
+        Rename a split group in the split_blendshape.
+        Parameters:
+            old_name (str): The name of the split group to rename.
+            new_name (str): The new name of the split group.
+        Returns:
+            None
+        """
+        split_groups = self.read_split_groups_attributes()
+        split_groups_association = self.get_primaries_split_groups_association()
+        if old_name not in split_groups:
+            raise ValueError(f"Split group {old_name} does not exist")
+        if new_name in split_groups:
+            raise ValueError(f"Split group {new_name} already exists")
+        # we need to store the primaries with the old split group name and update them to the new split group name
+
+        # we need to rename the split group
+        split_groups[new_name] = split_groups.pop(old_name)
+        self.write_split_groups_attributes(split_groups)
+        self.update_split_map_attributes_from_groups()
+        for primary, group in split_groups_association.items():
+            if group == old_name:
+                self.set_primaries_split_group([primary], new_name)
+
+
+    @undoable
     def create_split_group(self, split_group_name: str, split_maps_list: list = []):
         """
         Create a new split group in the split_blendshape.
@@ -3343,6 +3371,7 @@ class BlueSteelEditor(object):
         self.update_split_map_attributes_from_groups()
         return split_group_name
 
+    @undoable
     def add_split_map_to_split_group(self, split_group_name: str, split_map_name: str):
         """
         Add a split map to a split group in the split_blendshape.
@@ -3366,6 +3395,7 @@ class BlueSteelEditor(object):
         self.write_split_groups_attributes(split_groups)
         self.update_split_map_attributes_from_groups()
 
+    @undoable
     def remove_split_map_from_split_group(self, split_group_name: str, split_map_name: str):
         """
         Remove a split map from a split group in the split_blendshape.
@@ -3392,6 +3422,7 @@ class BlueSteelEditor(object):
         split_groups[split_group_name] = existing_split_maps
         self.write_split_groups_attributes(split_groups)
 
+    @undoable
     def remove_split_group(self, split_group_name: str):
         """
         Remove a split group from the split_blendshape.
@@ -3741,6 +3772,16 @@ class BlueSteelEditor(object):
         self.import_split_maps_weights(import_path)
         self.import_split_settings(import_path)
 
+    def get_primaries_split_groups_association(self):
+        """
+        Creates a dictionary with all the primaries and their associated split groups.
+        """
+        split_map_associations = dict()
+        for primary in self.get_primary_shapes():
+            group = self.get_primary_split_group(primary)
+            split_map_associations[primary] = group
+        return split_map_associations
+    
     @pause_shape_editor
     @undoable
     def export_split_settings(self, export_path: str):
@@ -3756,10 +3797,7 @@ class BlueSteelEditor(object):
         split_groups = self.read_split_groups_attributes()
         split_maps_order = self.read_split_maps_order_attribute()
         # we need to get the split group associations for each primary shape
-        split_map_associations = {}
-        for primary in self.get_primary_shapes():
-            group = self.get_primary_split_group(primary)
-            split_map_associations[primary] = group
+        split_map_associations = self.get_primaries_split_groups_association()
         split_settings = {
             "split_groups": split_groups,
             "split_maps_order": split_maps_order,

@@ -1,6 +1,8 @@
 import json
 from . import env
-from packaging.version import Version
+from .version import Version
+
+
 try:
     import requests
 except ImportError:

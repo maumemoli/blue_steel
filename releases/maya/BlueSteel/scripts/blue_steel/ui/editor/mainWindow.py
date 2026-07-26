@@ -63,7 +63,7 @@ WINDOW = None
 SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
 	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide6.QtGui import QAction, QColor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
+	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
 		QMenu,
@@ -96,7 +96,7 @@ if env.MAYA_VERSION > 2024:
 	from shiboken6 import wrapInstance
 else:
 	from PySide2.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide2.QtGui import QColor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
+	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
 	from PySide2.QtWidgets import (
 		QAction,
 		QAbstractItemView,
@@ -141,6 +141,117 @@ def get_maya_main_window() -> Optional[QWidget]:
 	if main_window_ptr is None:
 		return None
 	return wrapInstance(int(main_window_ptr), QWidget)
+
+
+class SplitMapsDragList(QListWidget):
+	"""List of split maps that can be dragged into a split group."""
+
+	MIME_TYPE = "application/x-blue-steel-split-map"
+
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self.setDragEnabled(True)
+		self.setDragDropMode(QAbstractItemView.DragOnly)
+
+	def startDrag(self, supported_actions) -> None:  # noqa: N802
+		item = self.currentItem()
+		if item is None:
+			return
+		mime_data = QMimeData()
+		mime_data.setData(self.MIME_TYPE, item.text().encode("utf-8"))
+		drag = QDrag(self)
+		drag.setMimeData(mime_data)
+		if hasattr(drag, "exec"):
+			drag.exec(Qt.CopyAction)
+		else:
+			drag.exec_(Qt.CopyAction)
+
+
+class SplitGroupMapsList(QListWidget):
+	"""Ordered split-group maps with external add and drag-out removal."""
+
+	mapsChanged = Signal(list)
+	mapDraggedOut = Signal(str)
+
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self.setDragEnabled(True)
+		self.setAcceptDrops(True)
+		self.setDragDropMode(QAbstractItemView.DragDrop)
+		self.setDefaultDropAction(Qt.MoveAction)
+		self.setDropIndicatorShown(True)
+
+	def _map_names(self) -> List[str]:
+		return [self.item(row).text() for row in range(self.count())]
+
+	@staticmethod
+	def _event_position(event):
+		if hasattr(event, "position"):
+			return event.position().toPoint()
+		return event.pos()
+
+	def dragEnterEvent(self, event) -> None:  # noqa: N802
+		if event.source() is self or event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
+			event.acceptProposedAction()
+			return
+		event.ignore()
+
+	def dragMoveEvent(self, event) -> None:  # noqa: N802
+		if event.source() is self or event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
+			event.acceptProposedAction()
+			return
+		event.ignore()
+
+	def dropEvent(self, event) -> None:  # noqa: N802
+		if event.source() is self:
+			item = self.currentItem()
+			if item is None:
+				event.ignore()
+				return
+			old_row = self.row(item)
+			target_item = self.itemAt(self._event_position(event))
+			new_row = self.row(target_item) if target_item is not None else self.count()
+			item = self.takeItem(old_row)
+			if old_row < new_row:
+				new_row -= 1
+			self.insertItem(max(0, new_row), item)
+			self.setCurrentItem(item)
+			event.setDropAction(Qt.MoveAction)
+			event.accept()
+			self.mapsChanged.emit(self._map_names())
+			return
+
+		if event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
+			map_name = bytes(event.mimeData().data(SplitMapsDragList.MIME_TYPE)).decode("utf-8")
+			if map_name and not self.findItems(map_name, Qt.MatchExactly):
+				target_item = self.itemAt(self._event_position(event))
+				new_row = self.row(target_item) if target_item is not None else self.count()
+				self.insertItem(new_row, map_name)
+				self.setCurrentRow(new_row)
+				self.mapsChanged.emit(self._map_names())
+			event.setDropAction(Qt.CopyAction)
+			event.accept()
+			return
+
+		event.ignore()
+
+	def startDrag(self, supported_actions) -> None:  # noqa: N802
+		item = self.currentItem()
+		if item is None:
+			return
+		map_name = item.text()
+		mime_data = QMimeData()
+		mime_data.setData(SplitMapsDragList.MIME_TYPE, map_name.encode("utf-8"))
+		drag = QDrag(self)
+		drag.setMimeData(mime_data)
+		if hasattr(drag, "exec"):
+			result = drag.exec(Qt.MoveAction)
+		else:
+			result = drag.exec_(Qt.MoveAction)
+		if result == Qt.IgnoreAction and not self.viewport().rect().contains(
+			self.viewport().mapFromGlobal(QCursor.pos())
+		):
+			self.mapDraggedOut.emit(map_name)
 
 
 PRIMARY_TREE_SORT_VALUE_ROLE = Qt.UserRole + 905
@@ -2888,38 +2999,29 @@ class MainWindow(QMainWindow):
 		self.split_groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_groups_list.setToolTip("Select a split group")
 		split_groups_lists_layout.addWidget(self.split_groups_list, 1)
-		self.split_group_maps_list = QListWidget()
+		self.split_group_maps_list = SplitGroupMapsList()
 		self.split_group_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_group_maps_list.setToolTip("Split maps assigned to the selected split group")
+		self.split_group_maps_list.setToolTip("Drop split maps here, drag to reorder, or drag out to remove")
 		split_groups_lists_layout.addWidget(self.split_group_maps_list, 1)
 		split_groups_layout.addLayout(split_groups_lists_layout, 1)
 
 		split_groups_controls_top = QHBoxLayout()
-		self.split_group_add_button = QPushButton("Create Group")
+		self.split_group_add_button = QPushButton("Add Group")
 		self.split_group_remove_button = QPushButton("Remove Group")
+		self.split_group_rename_button = QPushButton("Rename Group")
 		split_groups_controls_top.addWidget(self.split_group_add_button)
 		split_groups_controls_top.addWidget(self.split_group_remove_button)
+		split_groups_controls_top.addWidget(self.split_group_rename_button)
 		split_groups_layout.addLayout(split_groups_controls_top)
-
-		split_groups_controls_bottom = QHBoxLayout()
-		self.split_group_add_map_button = QPushButton("Add Map")
-		self.split_group_remove_map_button = QPushButton("Remove Map")
-		self.split_group_map_up_button = QPushButton("Move Up")
-		self.split_group_map_down_button = QPushButton("Move Down")
-		split_groups_controls_bottom.addWidget(self.split_group_add_map_button)
-		split_groups_controls_bottom.addWidget(self.split_group_remove_map_button)
-		split_groups_controls_bottom.addWidget(self.split_group_map_up_button)
-		split_groups_controls_bottom.addWidget(self.split_group_map_down_button)
-		split_groups_layout.addLayout(split_groups_controls_bottom)
 		right_layout.addWidget(split_groups_group, 1)
 
 		split_maps_group = QGroupBox("Split Maps")
 		split_maps_layout = QVBoxLayout(split_maps_group)
 		split_maps_lists_layout = QHBoxLayout()
 		split_maps_column = QVBoxLayout()
-		self.split_maps_list = QListWidget()
+		self.split_maps_list = SplitMapsDragList()
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_maps_list.setToolTip("All split maps")
+		self.split_maps_list.setToolTip("All split maps; drag a map into the selected split group")
 		self.split_maps_list.setContextMenuPolicy(Qt.CustomContextMenu)
 		split_maps_column.addWidget(self.split_maps_list, 1)
 
@@ -3336,6 +3438,9 @@ class MainWindow(QMainWindow):
 			self._split_primary_delegate.assignmentCommitted.connect(self._on_primary_split_group_changed)
 		if self.split_groups_list is not None:
 			self.split_groups_list.currentTextChanged.connect(self._on_split_group_selection_changed)
+		if self.split_group_maps_list is not None:
+			self.split_group_maps_list.mapsChanged.connect(self._on_split_group_maps_changed)
+			self.split_group_maps_list.mapDraggedOut.connect(self._on_split_group_map_dragged_out)
 		if self.split_maps_list is not None:
 			self.split_maps_list.currentTextChanged.connect(self._on_split_map_selection_changed)
 			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
@@ -3345,10 +3450,7 @@ class MainWindow(QMainWindow):
 		if hasattr(self, "split_group_add_button"):
 			self.split_group_add_button.clicked.connect(self._on_create_split_group_clicked)
 			self.split_group_remove_button.clicked.connect(self._on_remove_split_group_clicked)
-			self.split_group_add_map_button.clicked.connect(self._on_add_split_map_to_group_clicked)
-			self.split_group_remove_map_button.clicked.connect(self._on_remove_split_map_from_group_clicked)
-			self.split_group_map_up_button.clicked.connect(self._on_move_split_group_map_up_clicked)
-			self.split_group_map_down_button.clicked.connect(self._on_move_split_group_map_down_clicked)
+			self.split_group_rename_button.clicked.connect(self._on_rename_split_group_clicked)
 			self.split_map_add_button.clicked.connect(self._on_add_split_map_clicked)
 			self.split_map_rename_button.clicked.connect(self._on_rename_split_map_clicked)
 			self.split_map_remove_button.clicked.connect(self._on_remove_split_map_clicked)
@@ -3489,10 +3591,7 @@ class MainWindow(QMainWindow):
 			self.split_map_weights_list,
 			getattr(self, "split_group_add_button", None),
 			getattr(self, "split_group_remove_button", None),
-			getattr(self, "split_group_add_map_button", None),
-			getattr(self, "split_group_remove_map_button", None),
-			getattr(self, "split_group_map_up_button", None),
-			getattr(self, "split_group_map_down_button", None),
+			getattr(self, "split_group_rename_button", None),
 			getattr(self, "split_map_add_button", None),
 			getattr(self, "split_map_rename_button", None),
 			getattr(self, "split_map_remove_button", None),
@@ -3794,79 +3893,69 @@ class MainWindow(QMainWindow):
 		self._reload_split_settings_from_editor()
 		self._set_status(f"Removed split group '{group_name}'.")
 
-	def _on_add_split_map_to_group_clicked(self) -> None:
+	def _on_rename_split_group_clicked(self) -> None:
 		if self.current_editor is None:
 			return
 		group_name = self._selected_split_group_name()
 		if not group_name:
-			self._set_status("Select a split group first.", warning=True)
 			return
-		all_maps = sorted(self.current_editor.get_split_maps())
-		split_groups = self.current_editor.read_split_groups_attributes()
-		existing_maps = set(split_groups.get(group_name, []))
-		available_maps = [name for name in all_maps if name not in existing_maps]
-		if not available_maps:
-			self._set_status(f"No available split maps to add to '{group_name}'.", warning=True)
+		new_name, ok = QInputDialog.getText(
+			self,
+			"Rename Split Group",
+			"Split group name:",
+			text=group_name,
+		)
+		if not ok:
 			return
-		split_map_name, ok = QInputDialog.getItem(self, "Add Map to Split Group", "Split map:", available_maps, 0, False)
-		if not ok or not split_map_name:
+		new_name = (new_name or "").strip()
+		if not new_name or new_name == group_name:
 			return
 		try:
-			self.current_editor.add_split_map_to_split_group(group_name, split_map_name)
+			self.current_editor.rename_split_group(group_name, new_name)
 		except Exception as exc:
-			self._set_status(f"Error adding split map to group: {exc}", error=True)
+			self._set_status(f"Error renaming split group: {exc}", error=True)
 			return
 		self._reload_split_settings_from_editor()
-		self._set_status(f"Added split map '{split_map_name}' to group '{group_name}'.")
+		matching = self.split_groups_list.findItems(new_name, Qt.MatchExactly)
+		if matching:
+			self.split_groups_list.setCurrentItem(matching[0])
+		self._set_status(f"Renamed split group '{group_name}' to '{new_name}'.")
 
-	def _on_remove_split_map_from_group_clicked(self) -> None:
+	def _on_split_group_maps_changed(self, map_names: List[str]) -> None:
 		if self.current_editor is None or self.split_group_maps_list is None:
 			return
 		group_name = self._selected_split_group_name()
-		item = self.split_group_maps_list.currentItem()
-		if not group_name or item is None:
+		if not group_name:
+			self._on_split_group_selection_changed("")
 			return
-		split_map_name = item.text().strip()
 		try:
-			self.current_editor.remove_split_map_from_split_group(group_name, split_map_name)
-		except Exception as exc:
-			self._set_status(f"Error removing split map from group: {exc}", error=True)
-			return
-		self._reload_split_settings_from_editor()
-		self._set_status(f"Removed split map '{split_map_name}' from group '{group_name}'.")
-
-	def _move_split_group_map(self, direction: int) -> None:
-		if self.current_editor is None or self.split_group_maps_list is None:
-			return
-		group_name = self._selected_split_group_name()
-		current_item = self.split_group_maps_list.currentItem()
-		if not group_name or current_item is None:
-			return
-		current_map = current_item.text().strip()
-		split_groups = self.current_editor.read_split_groups_attributes()
-		maps = list(split_groups.get(group_name, []))
-		if current_map not in maps:
-			return
-		index = maps.index(current_map)
-		new_index = index + direction
-		if new_index < 0 or new_index >= len(maps):
-			return
-		maps[index], maps[new_index] = maps[new_index], maps[index]
-		split_groups[group_name] = maps
-		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+			if group_name not in split_groups:
+				return
+			split_groups[group_name] = list(map_names)
 			self.current_editor.write_split_groups_attributes(split_groups)
 			self.current_editor.update_split_map_attributes_from_groups()
 		except Exception as exc:
-			self._set_status(f"Error reordering split group maps: {exc}", error=True)
+			self._set_status(f"Error updating split group maps: {exc}", error=True)
+			self._on_split_group_selection_changed(group_name)
 			return
-		self._reload_split_settings_from_editor()
-		self._set_status(f"Updated map order in split group '{group_name}'.")
+		self._set_status(f"Updated maps in split group '{group_name}'.")
 
-	def _on_move_split_group_map_up_clicked(self) -> None:
-		self._move_split_group_map(-1)
-
-	def _on_move_split_group_map_down_clicked(self) -> None:
-		self._move_split_group_map(1)
+	def _on_split_group_map_dragged_out(self, map_name: str) -> None:
+		if self.current_editor is None or self.split_group_maps_list is None:
+			return
+		group_name = self._selected_split_group_name()
+		if not group_name:
+			return
+		matching = self.split_group_maps_list.findItems(map_name, Qt.MatchExactly)
+		if not matching:
+			return
+		row = self.split_group_maps_list.row(matching[0])
+		self.split_group_maps_list.takeItem(row)
+		self._on_split_group_maps_changed([
+			self.split_group_maps_list.item(index).text()
+			for index in range(self.split_group_maps_list.count())
+		])
 
 	def _on_add_split_map_clicked(self) -> None:
 		if self.current_editor is None:
