@@ -311,6 +311,51 @@ def _get_shape_editor_ui():
     return None
 
 
+def get_softselection_values() -> list:
+    """Get the current soft selection as a dense vertex weight map.
+
+    Returns:
+        list: One weight per mesh vertex. Unselected vertices have a weight of 0.0.
+
+    Raises:
+        ValueError: If the selection contains vertices from more than one mesh.
+    """
+    rich_selection = om.MRichSelection()
+    om.MGlobal.getRichSelection(rich_selection)
+
+    selection = om.MSelectionList()
+    rich_selection.getSelection(selection)
+    iterator = om.MItSelectionList(selection, om.MFn.kMeshVertComponent)
+
+    weights = None
+    selected_mesh = None
+    while not iterator.isDone():
+        dag_path = om.MDagPath()
+        component = om.MObject()
+        iterator.getDagPath(dag_path, component)
+
+        mesh_name = dag_path.fullPathName()
+        if selected_mesh is None:
+            selected_mesh = mesh_name
+            weights = np.zeros(om.MFnMesh(dag_path).numVertices(), dtype=np.float64)
+        elif mesh_name != selected_mesh:
+            raise ValueError("Soft selection must contain vertices from only one mesh.")
+
+        component_fn = om.MFnSingleIndexedComponent(component)
+        has_weights = component_fn.hasWeights()
+        for component_index in range(component_fn.elementCount()):
+            vertex_index = component_fn.element(component_index)
+            weights[vertex_index] = (
+                component_fn.weight(component_index).influence()
+                if has_weights else 1.0
+            )
+
+        iterator.next()
+
+    return weights.tolist() if weights is not None else []
+
+
+
 def pause_shape_editor(func):
     """Decorator that temporarily closes Shape Editor for faster batch operations.
 

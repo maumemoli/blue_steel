@@ -56,6 +56,7 @@ class BlueSteelEditor(object):
     SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
     SPLIT_GRP_ATTR_STRING_IDENTIFIER = "splitGroups"
     SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
+    SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER = "splitMapEditMesh"
     FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
     NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
     BASE_MESH_STRING_IDENTIFIER = "baseMesh"
@@ -92,6 +93,8 @@ class BlueSteelEditor(object):
         self.deformers_node_states = {}
         self.split_blendshape_to_connect = None
         self.split_bake_mesh = None
+
+        self.split_map_edit_blendshape = None
         # Signals
         self.signals_connected = False
         # getting the blendshape nodes
@@ -453,6 +456,10 @@ class BlueSteelEditor(object):
             return self.container.name
         else:
             return None
+    @property
+    def split_map_edit_mesh(self):
+        return attrUtils.get_message_attr(self.container.name, self.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
+        
     @property
     def main_blendshape_name(self):
         return attrUtils.get_message_attr(self.container.name, self.MAIN_BLENDSHAPE_STRING_IDENTIFIER)
@@ -1023,6 +1030,24 @@ class BlueSteelEditor(object):
         else:
             blendshape.set_weight_map_values(weight.id, self.copied_weight_map_values)
 
+    def convert_soft_selection_to_weight_map(self,
+                                             blendshape: Blendshape,
+                                             shape_name: str):
+        """
+        Convert the current soft selection to a weight map for a given shape in a blendshape.
+        Parameters:
+            blendshape (Blendshape): The blendshape containing the shape
+            shape_name (str): The name of the shape to convert the soft selection to a weight map for
+        """
+        # let's make sure that the shape exists in the blendshape
+        weights = mayaUtils.get_softselection_values()
+        if weights is None:
+            raise ValueError("No soft selection found.")
+        weight = blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {blendshape.name}.")
+        blendshape.set_weight_map_values(weight.id, weights)
+
     def copy_work_weight_map_values(self, shape_name: str):
         """
         Copy the weight values of a shape to be pasted later.
@@ -1063,6 +1088,14 @@ class BlueSteelEditor(object):
             shape_name (str): The name of the shape to paste the weight values to
         """
         self.paste_blendshape_weight_map_values_to_shape(self.work_blendshape, shape_name, subtract=True)
+
+    def convert_soft_selection_to_work_weight_map(self, shape_name: str):
+        """
+        Convert the current soft selection to a weight map for a given shape in the work blendshape.
+        Parameters:
+            shape_name (str): The name of the shape to convert the soft selection to a weight map for
+        """
+        self.convert_soft_selection_to_weight_map(self.work_blendshape, shape_name)
 
     def clear_work_weight_map_values(self, shape_name: str):
         """
@@ -2607,16 +2640,18 @@ class BlueSteelEditor(object):
         attrUtils.add_message_attr(container.name, cls.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
         attrUtils.add_tag(container.name, "lockedShapes", "")
         container.add_member(network_container.name)
+        # create the split map edit mesh attribute
+        attrUtils.add_message_attr(container.name, cls.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
 
         editor_group_name = f"{editor_name}_Blendshapes_GRP"
         editor_grp_id = cls.add_shape_editor_directory(editor_group_name)
 
         blendshape_names_suffices = ["mainBlendshape","splitBlendshape", "workBlendshape"]
-        message_attributeds = [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+        message_attributes = [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
                                cls.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
                                cls.WORK_BLENDSHAPE_STRING_IDENTIFIER]
         # create the blendshape node blendshape.
-        for suffix, message_attr in zip(blendshape_names_suffices, message_attributeds):
+        for suffix, message_attr in zip(blendshape_names_suffices, message_attributes):
             blendshape_name = f"{editor_name}_{suffix}"
             cls.add_new_blendshape_to_container(blendshape_name=blendshape_name,
                                                 mesh_name=mesh_name,
@@ -3808,6 +3843,61 @@ class BlueSteelEditor(object):
         with open(export_file, "w") as f:
             json.dump(split_settings, f, indent=4)
 
+    def create_split_map_edit_mesh(self):
+        """
+        Create a duplicate of the mesh with a blendshape for each split map.
+        The input mesh for each target is the base mesh.
+        """
+        # check if the attribute exists.
+        split_mesh_attr = self.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER
+        attrUtils.add_message_attr(self.name, split_mesh_attr)
+        split_map_edit_mesh_name = f"{self.base_mesh.split('|')[-1]}_{split_mesh_attr}"
+        split_map_edit_mesh = self.duplicate_base_mesh_neutral_state(split_map_edit_mesh_name)
+        # let's connect the split map edit mesh to the attribute
+        cmds.connectAttr(f"{split_map_edit_mesh}.message",f"{self.name}.{split_mesh_attr}", force=True)
+        # we need to add all the split maps
+
+    def clear_split_preview_blendshapes(self):
+        """
+        Delete all the blendshape nodes from the split map edit mesh. This is useful when importing split maps from another file.
+        """
+        if self.split_map_edit_mesh is None or not cmds.objExists(self.split_map_edit_mesh):
+            self.split_map_edit_blendshape = None
+            return
+
+        history = cmds.listHistory(self.split_map_edit_mesh, pruneDagObjects=True) or []
+        for node in history:
+            if cmds.nodeType(node) == "blendShape":
+                if node in [self.split_blendshape.name, self.blendshape.name, self.work_blendshape.name]:
+                    continue # skipping the main blendshape nodes
+                cmds.delete(node)
+
+    def create_split_map_edit_blendshape(self, split_map_name: str):
+        """
+        Create a blendshape node for the split map edit mesh. This is useful when importing split maps from another file.
+        """
+        if split_map_name not in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} does not exist")
+        if self.split_map_edit_mesh is None or not cmds.objExists(self.split_map_edit_mesh):
+            self.create_split_map_edit_mesh()
+        # we need to clear any existing blendshape nodes from the split map edit mesh
+        self.clear_split_preview_blendshapes()
+        # let's create a blendshape node for the split map edit mesh
+        split_map_edit_blendshape_name = f"{self.split_map_edit_mesh.split('|')[-1]}_blendShape"
+        split_map_edit_blendshape = cmds.blendShape(self.split_map_edit_mesh, name=split_map_edit_blendshape_name)[0]
+        self.split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        for weight in self.get_split_map_weights(split_map_name):
+            new_target_weight = self.split_map_edit_blendshape.add_target(weight)
+            # we need to transfer the weight maps from the split weight to the newly created weight.
+            self.split_blendshape.transfer_weight_map(source_weight_id = weight.id,
+                                                      target_weight_id = new_target_weight.id,
+                                                      target_blendshape = self.split_map_edit_blendshape.name,)
+            # now we need to connect the new_target_weight weight map to the 
+            # self.split_map_edit_blendshape.connect_weight_maps(source_weight_id = new_target_weight.id,
+            #                                                    target_weight_id = weight.id,
+            #                                                    target_blendshape = self.split_blendshape.name)
+            self.split_map_edit_blendshape.connect_mesh_to_target(new_target_weight.id, self.base_mesh)
+
     def import_split_settings(self, import_path: str):
         """
         Import the split settings from a directory.
@@ -3946,6 +4036,9 @@ class BlueSteelEditor(object):
         Parameters:
             shape_name (str): The name of the shape to subtract the weight map from."""
         self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, subtract=True)
+
+    def convert_soft_selection_to_split_weight_map(self, shape_name: str):
+        self.convert_soft_selection_to_weight_map(self.split_blendshape, shape_name)
 
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):

@@ -233,9 +233,11 @@ class Blendshape(object):
         Example:
             >>> blendshape = Blendshape.create("myBlendshape", "pCube1")
             >>> weight = blendshape.get_weight_by_name("Smile")
-            >>> blendshape.set_sculpt_target_index(.id)
+            >>> blendshape.set_sculpt_target_index(weight_index)
         """
-        cmds.sculptTarget(self.name, e=True, t=int(weight_index))
+        current_sculpt_target_index =self.get_sculpt_target_indices()[0] if len(self.get_sculpt_target_indices()) > 0 else -1
+        if current_sculpt_target_index != weight_index:
+            cmds.sculptTarget(self.name, e=True, t=int(weight_index))
 
     def get_sculpt_target_indices(self)->list:
         """
@@ -1668,12 +1670,53 @@ class Blendshape(object):
         self.set_weight_map_values(weight.id, weight_map_values)
 
 
+    def set_target_to_mask_painting_mode(self, target_id: int, target_value: int = 6000):
+        """
+        Puts the specified target into mask painting mode for the given weight.
+        Parameters:
+            target_id (int): The ID of the target to put into mask painting mode.
+            target_value (int): The target value for which to enable mask painting mode.
+                Default is 6000.
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> weight = blendshape.get_weight_by_name("Smile")
+            >>> blendshape.set_target_to_mask_painting_mode(weight.id, 6000)
+        """
+        # we need to select the blendshape mesh to be able to go into sculpting mode.
+        base = self.base
+        if cmds.nodeType(base) != "transform":
+            print(f"Warning: The base mesh '{base}' is not a transform node. Attempting to get its parent transform.")
+            base = cmds.listRelatives(base, p=True)[0]
+            
+        cmds.select(base, r=True)
+        # we need to set the target in edit mode to be able to paint the mask
+        self.set_sculpt_target_index(target_id)
+        # now we need to get in in sculpting mode
+        # Create the context if it doesn't exist
+        if not cmds.contextInfo("sculptMeshCacheContext", exists=True):
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext")
+
+
+        # Get into Sculpting mode.
+        cmds.setToolTo("sculptMeshCacheContext")
+        cmds.sculptMeshCacheCtx(
+            "sculptMeshCacheContext",
+            e=True,
+            displayMask = True,
+            displayFrozen= True,
+            mode="Mask",
+            strength=100
+        )
+
+
+
+
     def transfer_weight_map(self, source_weight_id: int, target_weight_id: int, target_blendshape: str = None):
         """
         Transfers the weight map from the source weight to the target weight in another blendshape node.
         Parameters:
-            source_weight (int): The weight to transfer the weight map from.
-            target_weight (int): The weight to transfer the weight map to.
+            source_weight_id (int): The weight to transfer the weight map from.
+            target_weight_id (int): The weight to transfer the weight map to.
             target_blendshape (str): The blendshape node to transfer the weight map to.
         Example:
             >>> blendshape1 = Blendshape("blendshape1")
@@ -1689,6 +1732,27 @@ class Blendshape(object):
         if not cmds.isConnected(output_attr, inputAttr):
             cmds.connectAttr(output_attr, inputAttr)
             cmds.disconnectAttr(output_attr, inputAttr)
+
+    def connect_weight_maps(self, source_weight_id: int, target_weight_id: int, target_blendshape: str = None):
+        """
+        Connects the weight map from the source weight to the target weight in another blendshape node.
+        Parameters:
+            source_weight (int): The weight to connect the weight map from.
+            target_weight (int): The weight to connect the weight map to.
+            target_blendshape (str): The blendshape node to connect the weight map to.
+        Example:
+            >>> blendshape1 = Blendshape("blendshape1")
+            >>> blendshape2 = Blendshape("blendshape2")
+            >>> blendshape1.connect_weight_maps(0, 0, "blendshape2")
+        """
+        if target_blendshape is None:
+            target_blendshape = self.name
+        output_attr = ('{0}.inputTarget[0].inputTargetGroup[{1}].targetWeights'.format(
+            self.name, source_weight_id))
+        inputAttr = ('{0}.inputTarget[0].inputTargetGroup[{1}].targetWeights'.format(
+            target_blendshape, target_weight_id))
+        if not cmds.isConnected(output_attr, inputAttr):
+            cmds.connectAttr(output_attr, inputAttr)
 
     def get_target_points(self, input_target_index: int, target_value: int = 6000):
         """
