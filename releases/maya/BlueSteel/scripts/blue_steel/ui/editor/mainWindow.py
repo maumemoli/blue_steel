@@ -63,7 +63,7 @@ WINDOW = None
 SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
 	from PySide6.QtCore import QAbstractListModel, QAbstractProxyModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
+	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
 		QMenu,
@@ -97,7 +97,7 @@ if env.MAYA_VERSION > 2024:
 	from shiboken6 import wrapInstance
 else:
 	from PySide2.QtCore import QAbstractListModel, QAbstractProxyModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication
+	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
 	from PySide2.QtWidgets import (
 		QAction,
 		QAbstractItemView,
@@ -167,6 +167,24 @@ class SplitMapsDragList(QListWidget):
 			drag.exec(Qt.CopyAction)
 		else:
 			drag.exec_(Qt.CopyAction)
+
+
+class SplitMapStatusDelegate(QStyledItemDelegate):
+	"""Keep the map's status color visible while the row is selected."""
+
+	def paint(self, painter, option, index) -> None:  # noqa: N802
+		if option.state & QStyle.State_Selected:
+			foreground = index.data(Qt.ForegroundRole)
+			if hasattr(foreground, "color"):
+				foreground = foreground.color()
+			if isinstance(foreground, QColor):
+				selected_foreground = foreground.darker(180)
+				option.palette.setColor(QPalette.Active, QPalette.HighlightedText, selected_foreground)
+				option.palette.setColor(QPalette.Inactive, QPalette.HighlightedText, selected_foreground)
+				font = option.font
+				font.setBold(True)
+				option.font = font
+		super().paint(painter, option, index)
 
 
 class SplitGroupMapsList(QListWidget):
@@ -3205,15 +3223,18 @@ class MainWindow(QMainWindow):
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_maps_list.setToolTip("All split maps; drag a map into the selected split group")
 		self.split_maps_list.setContextMenuPolicy(Qt.CustomContextMenu)
+		self.split_maps_list.setItemDelegate(SplitMapStatusDelegate(self.split_maps_list))
 		split_maps_column.addWidget(self.split_maps_list, 1)
 
 		split_maps_controls = QHBoxLayout()
 		self.split_map_add_button = QPushButton("Add Split Map")
 		self.split_map_rename_button = QPushButton("Rename Split Map")
 		self.split_map_remove_button = QPushButton("Remove Split Map")
+		self.split_map_check_normalization_button = QPushButton("Check Normalization")
 		split_maps_controls.addWidget(self.split_map_add_button)
 		split_maps_controls.addWidget(self.split_map_rename_button)
 		split_maps_controls.addWidget(self.split_map_remove_button)
+		split_maps_controls.addWidget(self.split_map_check_normalization_button)
 		split_maps_column.addLayout(split_maps_controls)
 		split_maps_lists_layout.addLayout(split_maps_column, 1)
 
@@ -3235,7 +3256,7 @@ class MainWindow(QMainWindow):
 		split_maps_lists_layout.addLayout(split_map_weights_column, 1)
 		split_maps_layout.addLayout(split_maps_lists_layout, 1)
 
-		self.split_map_weight_stats_label = QLabel("Select a split map to check normalization.")
+		self.split_map_weight_stats_label = QLabel("Press Check Normalization to check split maps.")
 		split_maps_layout.addWidget(self.split_map_weight_stats_label)
 		right_layout.addWidget(split_maps_group, 1)
 
@@ -3632,7 +3653,6 @@ class MainWindow(QMainWindow):
 			self.split_maps_list.currentTextChanged.connect(self._on_split_map_selection_changed)
 			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
 		if self.split_map_weights_list is not None:
-			self.split_map_weights_list.currentTextChanged.connect(self._on_split_map_weight_selection_changed)
 			self.split_map_weights_list.customContextMenuRequested.connect(self._show_split_map_weights_context_menu)
 		if hasattr(self, "split_group_add_button"):
 			self.split_group_add_button.clicked.connect(self._on_create_split_group_clicked)
@@ -3641,6 +3661,7 @@ class MainWindow(QMainWindow):
 			self.split_map_add_button.clicked.connect(self._on_add_split_map_clicked)
 			self.split_map_rename_button.clicked.connect(self._on_rename_split_map_clicked)
 			self.split_map_remove_button.clicked.connect(self._on_remove_split_map_clicked)
+			self.split_map_check_normalization_button.clicked.connect(self._check_split_maps_normalization)
 			self.split_map_weight_add_button.clicked.connect(self._on_add_split_map_weight_clicked)
 			self.split_map_weight_rename_button.clicked.connect(self._on_rename_split_map_weight_clicked)
 			self.split_map_weight_remove_button.clicked.connect(self._on_remove_split_map_weight_clicked)
@@ -3653,6 +3674,8 @@ class MainWindow(QMainWindow):
 			self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
 		if self._third_column_splitter is not None:
 			self._third_column_splitter.splitterMoved.connect(self._on_third_column_splitter_moved)
+		if self.main_tabs is not None:
+			self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
 
 	def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._sync_tools_panel_compact_mode_from_splitter()
@@ -3661,6 +3684,10 @@ class MainWindow(QMainWindow):
 	def _on_third_column_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._update_third_column_section_minimums()
 		self._update_delegate_name_columns()
+
+	def _on_main_tab_changed(self, index: int) -> None:
+		if self.main_tabs is not None and self.main_tabs.tabText(index) == "Split Settings":
+			self._check_split_maps_normalization()
 
 	def _update_third_column_section_minimums(self) -> None:
 		if self._third_column_splitter is None or not self._third_column_sections:
@@ -3782,6 +3809,7 @@ class MainWindow(QMainWindow):
 			getattr(self, "split_map_add_button", None),
 			getattr(self, "split_map_rename_button", None),
 			getattr(self, "split_map_remove_button", None),
+			getattr(self, "split_map_check_normalization_button", None),
 			getattr(self, "split_map_weight_add_button", None),
 			getattr(self, "split_map_weight_rename_button", None),
 			getattr(self, "split_map_weight_remove_button", None),
@@ -3791,21 +3819,28 @@ class MainWindow(QMainWindow):
 
 	def _reload_split_settings_from_editor(self) -> None:
 		if self.current_editor is None:
-			self._split_primaries_model.set_assignments([], {})
-			if self.split_groups_list is not None:
-				self.split_groups_list.clear()
-			if self.split_group_maps_list is not None:
-				self.split_group_maps_list.clear()
-			if self.split_maps_list is not None:
-				self.split_maps_list.clear()
-			if self.split_map_weights_list is not None:
-				self.split_map_weights_list.clear()
+			self._refresh_split_primary_assignments()
+			self._refresh_split_groups()
+			self._refresh_split_group_maps()
+			self._refresh_split_maps()
+			self._refresh_split_map_weights()
 			if self.split_map_weight_stats_label is not None:
 				self.split_map_weight_stats_label.setText("No active system.")
 			self._set_split_settings_enabled(False)
 			return
 
 		self._set_split_settings_enabled(True)
+		self._refresh_split_primary_assignments()
+		self._refresh_split_groups()
+		self._refresh_split_group_maps()
+		self._refresh_split_maps()
+		self._refresh_split_map_weights()
+
+	def _refresh_split_primary_assignments(self) -> None:
+		if self.current_editor is None:
+			self._split_primaries_model.set_assignments([], {})
+			return
+
 		try:
 			split_groups = self.current_editor.read_split_groups_attributes()
 		except Exception:
@@ -3834,37 +3869,90 @@ class MainWindow(QMainWindow):
 				self.split_primaries_tree.openPersistentEditor(self._split_primaries_model.index(row, 1))
 			self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
 
-		if self.split_groups_list is not None:
-			selected_group = self.split_groups_list.currentItem().text() if self.split_groups_list.currentItem() else ""
-			self.split_groups_list.blockSignals(True)
+	def _refresh_split_groups(self) -> None:
+		if self.split_groups_list is None:
+			return
+		if self.current_editor is None:
 			self.split_groups_list.clear()
-			for group_name in group_names:
-				self.split_groups_list.addItem(group_name)
-			self.split_groups_list.blockSignals(False)
-			if selected_group and selected_group in group_names:
-				matching = self.split_groups_list.findItems(selected_group, Qt.MatchExactly)
-				if matching:
-					self.split_groups_list.setCurrentItem(matching[0])
-			elif self.split_groups_list.count() > 0:
-				self.split_groups_list.setCurrentRow(0)
+			return
 
-		if self.split_maps_list is not None:
-			selected_map = self.split_maps_list.currentItem().text() if self.split_maps_list.currentItem() else ""
-			all_split_maps = sorted(self.current_editor.get_split_maps())
-			self.split_maps_list.blockSignals(True)
+		try:
+			group_names = sorted(str(name) for name in self.current_editor.read_split_groups_attributes().keys())
+		except Exception:
+			group_names = []
+
+		selected_group = self._selected_split_group_name() or ""
+		self.split_groups_list.blockSignals(True)
+		self.split_groups_list.clear()
+		for group_name in group_names:
+			self.split_groups_list.addItem(group_name)
+		self.split_groups_list.blockSignals(False)
+		if selected_group and selected_group in group_names:
+			matching = self.split_groups_list.findItems(selected_group, Qt.MatchExactly)
+			if matching:
+				self.split_groups_list.setCurrentItem(matching[0])
+		elif self.split_groups_list.count() > 0:
+			self.split_groups_list.setCurrentRow(0)
+
+	def _refresh_split_group_maps(self, group_name: Optional[str] = None) -> None:
+		if self.split_group_maps_list is None:
+			return
+		self.split_group_maps_list.clear()
+		group_name = group_name or self._selected_split_group_name()
+		if self.current_editor is None or not group_name:
+			return
+		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+		except Exception:
+			split_groups = {}
+		for split_map_name in split_groups.get(group_name, []):
+			self.split_group_maps_list.addItem(str(split_map_name))
+
+	def _refresh_split_maps(self) -> None:
+		if self.split_maps_list is None:
+			return
+		if self.current_editor is None:
 			self.split_maps_list.clear()
-			for split_map_name in all_split_maps:
-				self.split_maps_list.addItem(split_map_name)
-			self.split_maps_list.blockSignals(False)
-			if selected_map and selected_map in all_split_maps:
-				matching = self.split_maps_list.findItems(selected_map, Qt.MatchExactly)
-				if matching:
-					self.split_maps_list.setCurrentItem(matching[0])
-			elif self.split_maps_list.count() > 0:
-				self.split_maps_list.setCurrentRow(0)
+			return
 
-		self._on_split_group_selection_changed(self._selected_split_group_name())
-		self._on_split_map_selection_changed(self._selected_split_map_name())
+		selected_map = self._selected_split_map_name() or ""
+		all_split_maps = sorted(self.current_editor.get_split_maps())
+		self.split_maps_list.blockSignals(True)
+		self.split_maps_list.clear()
+		for split_map_name in all_split_maps:
+			self.split_maps_list.addItem(split_map_name)
+		self.split_maps_list.blockSignals(False)
+		if selected_map and selected_map in all_split_maps:
+			matching = self.split_maps_list.findItems(selected_map, Qt.MatchExactly)
+			if matching:
+				self.split_maps_list.setCurrentItem(matching[0])
+		elif self.split_maps_list.count() > 0:
+			self.split_maps_list.setCurrentRow(0)
+
+	def _refresh_split_map_weights(self, split_map_name: Optional[str] = None) -> None:
+		if self.split_map_weights_list is None:
+			return
+		self.split_map_weights_list.clear()
+		split_map_name = split_map_name or self._selected_split_map_name()
+		if self.current_editor is None or not split_map_name:
+			if self.split_map_weight_stats_label is not None:
+				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
+			return
+		try:
+			suffices = self.current_editor.get_split_map_suffices(split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error reading split map weights: {exc}", error=True)
+			return
+		for raw_suffix in suffices:
+			display_suffix = str(raw_suffix)
+			prefix = f"{split_map_name}_"
+			if display_suffix.startswith(prefix):
+				display_suffix = display_suffix[len(prefix):]
+			item = QListWidgetItem(display_suffix)
+			item.setData(Qt.UserRole, str(raw_suffix))
+			self.split_map_weights_list.addItem(item)
+		if self.split_map_weight_stats_label is not None:
+			self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 
 	def _selected_split_group_name(self) -> Optional[str]:
 		if self.split_groups_list is None or self.split_groups_list.currentItem() is None:
@@ -3906,60 +3994,40 @@ class MainWindow(QMainWindow):
 		self._set_status(f"Assigned {len(target_names)} primary shape(s) to split group '{group_name}'.")
 
 	def _on_split_group_selection_changed(self, group_name: str) -> None:
-		if self.split_group_maps_list is None:
-			return
-		self.split_group_maps_list.clear()
-		if self.current_editor is None or not group_name:
-			return
-		try:
-			split_groups = self.current_editor.read_split_groups_attributes()
-		except Exception:
-			split_groups = {}
-		for split_map_name in split_groups.get(group_name, []):
-			self.split_group_maps_list.addItem(str(split_map_name))
+		self._refresh_split_group_maps(group_name)
 
 	def _on_split_map_selection_changed(self, split_map_name: str) -> None:
-		if self.split_map_weights_list is None:
-			return
-		self.split_map_weights_list.clear()
-		if self.current_editor is None or not split_map_name:
-			self._update_split_map_normalization_status()
-			return
-		try:
-			suffices = self.current_editor.get_split_map_suffices(split_map_name)
-		except Exception as exc:
-			self._set_status(f"Error reading split map weights: {exc}", error=True)
-			return
-		for raw_suffix in suffices:
-			display_suffix = str(raw_suffix)
-			prefix = f"{split_map_name}_"
-			if display_suffix.startswith(prefix):
-				display_suffix = display_suffix[len(prefix):]
-			item = QListWidgetItem(display_suffix)
-			item.setData(Qt.UserRole, str(raw_suffix))
-			self.split_map_weights_list.addItem(item)
-		self._update_split_map_normalization_status()
+		self._refresh_split_map_weights(split_map_name)
 
-	def _on_split_map_weight_selection_changed(self, _weight_suffix: str) -> None:
-		self._update_split_map_normalization_status()
-
-	def _update_split_map_normalization_status(self) -> None:
+	def _check_split_maps_normalization(self, split_map_name = None) -> None:
+		print(f"Checking normalization for split map: {split_map_name}")
 		if self.split_map_weight_stats_label is None:
 			return
 		if self.current_editor is None:
 			self.split_map_weight_stats_label.setText("No active system.")
 			return
-		split_map_name = self._selected_split_map_name()
-		if not split_map_name:
-			self.split_map_weight_stats_label.setText("Select a split map to check normalization.")
+		if self.split_maps_list is None or self.split_maps_list.count() == 0:
+			self.split_map_weight_stats_label.setText("No split maps to check.")
 			return
-		try:
-			is_normalized = self.current_editor.is_split_map_normalized(split_map_name)
-		except Exception as exc:
-			self.split_map_weight_stats_label.setText(f"Normalization check failed: {exc}")
-			return
-		status = "Normalized" if is_normalized else "Not normalized"
-		self.split_map_weight_stats_label.setText(f"{split_map_name}: {status}")
+
+		normalized_count = 0
+		for row in range(self.split_maps_list.count()):
+			item = self.split_maps_list.item(row)
+			# we need to get th eforeground color
+			if split_map_name is not None and item.text() != split_map_name:
+				continue
+			try:
+				is_normalized = self.current_editor.is_split_map_normalized(item.text())
+			except Exception:
+				is_normalized = False
+			item.setForeground(QColor("#4ba66d" if is_normalized else "#d9534f"))
+			item.setToolTip("Normalized" if is_normalized else "Not normalized")
+			normalized_count += int(is_normalized)
+
+		total_count = self.split_maps_list.count()
+		self.split_map_weight_stats_label.setText(
+			f"Normalized: {normalized_count}/{total_count}; not normalized: {total_count - normalized_count}."
+		)
 
 	def _show_split_maps_context_menu(self, pos) -> None:
 		if self.current_editor is None or self.split_maps_list is None:
@@ -4022,7 +4090,6 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error updating split-map weight: {exc}", error=True)
 			return
-		self._update_split_map_normalization_status()
 		self._set_status(f"{status_verb} weight map '{weight_name}'.")
 
 	def _on_normalize_split_map_weights_requested(self) -> None:
@@ -4036,7 +4103,6 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error normalizing split map: {exc}", error=True)
 			return
-		self._update_split_map_normalization_status()
 		self._set_status(f"Normalized split map '{split_map_name}'.")
 
 	def _on_create_split_group_clicked(self) -> None:
@@ -4194,35 +4260,6 @@ class MainWindow(QMainWindow):
 		self._reload_split_settings_from_editor()
 		self._set_status(f"Removed split map '{current_name}'.")
 
-	def _add_weight_to_split_map(self, split_map_name: str, suffix_name: str) -> None:
-		split_blendshape = self.current_editor.split_blendshape
-		split_map_dirs = split_blendshape.get_target_dirs_by_name(split_map_name)
-		if len(split_map_dirs) != 1:
-			raise ValueError(f"Expected exactly one split-map directory named '{split_map_name}'.")
-		split_map_dir = split_map_dirs[0]
-		weight_name = f"{split_map_name}_{suffix_name}"
-		if split_blendshape.get_weight_by_name(weight_name) is not None:
-			raise ValueError(f"Weight '{weight_name}' already exists.")
-		suffix_dir = split_blendshape.add_target_dir(name=suffix_name, parent_index=split_map_dir.index)
-		split_blendshape.add_target(weight_name, parent_directory=suffix_dir)
-
-	def _remove_weight_from_split_map(self, split_map_name: str, suffix_name: str) -> None:
-		split_blendshape = self.current_editor.split_blendshape
-		split_map_dirs = split_blendshape.get_target_dirs_by_name(split_map_name)
-		if len(split_map_dirs) != 1:
-			raise ValueError(f"Expected exactly one split-map directory named '{split_map_name}'.")
-		split_map_dir = split_map_dirs[0]
-		child_dirs = split_blendshape.get_target_dir_child_target_dirs(split_map_dir)
-		target_dir = None
-		for child_dir in child_dirs:
-			if child_dir.name == suffix_name or child_dir.name == f"{split_map_name}_{suffix_name}":
-				target_dir = child_dir
-				break
-		if target_dir is None:
-			raise ValueError(f"Suffix '{suffix_name}' not found in split map '{split_map_name}'.")
-		for weight in split_blendshape.get_target_dir_child_weights(target_dir):
-			split_blendshape.remove_target(weight)
-		split_blendshape.remove_target_dir(target_dir)
 
 	def _on_add_split_map_weight_clicked(self) -> None:
 		if self.current_editor is None:
@@ -4238,11 +4275,12 @@ class MainWindow(QMainWindow):
 		if not suffix_name:
 			return
 		try:
-			self._add_weight_to_split_map(split_map_name, suffix_name)
+			self.current_editor.add_weights_to_split_map(split_map_name, [suffix_name])
 		except Exception as exc:
 			self._set_status(f"Error adding split-map weight: {exc}", error=True)
 			return
-		self._reload_split_settings_from_editor()
+		self._check_split_maps_normalization(split_map_name)
+		self._refresh_split_map_weights(split_map_name)
 		self._set_status(f"Added weight '{split_map_name}_{suffix_name}'.")
 
 	def _on_rename_split_map_weight_clicked(self) -> None:
@@ -4275,15 +4313,15 @@ class MainWindow(QMainWindow):
 		suffix_name = self._selected_split_map_weight_suffix()
 		if not split_map_name or not suffix_name:
 			return
-		prefix = f"{split_map_name}_"
-		base_suffix = suffix_name[len(prefix):] if suffix_name.startswith(prefix) else suffix_name
+		weight_name = f"{split_map_name}_{suffix_name}"
 		try:
-			self._remove_weight_from_split_map(split_map_name, base_suffix)
+			self.current_editor.remove_weight_from_split_map(split_map_name, weight_name)
 		except Exception as exc:
 			self._set_status(f"Error removing split-map weight: {exc}", error=True)
 			return
-		self._reload_split_settings_from_editor()
-		self._set_status(f"Removed weight '{split_map_name}_{base_suffix}'.")
+		self._check_split_maps_normalization(split_map_name)
+		self._refresh_split_map_weights(split_map_name)
+		self._set_status(f"Removed weight '{weight_name}'.")
 
 	def _show_controller_layout_window(self) -> None:
 		if self._controller_layout_window is None:
@@ -4794,8 +4832,11 @@ class MainWindow(QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
+		self._reload_split_settings_from_editor()
+		self._check_split_maps_normalization()
 		self._set_status(f"Imported split data from '{directory}'.")
 
+			
 	def _on_split_shapes_requested(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
@@ -7020,6 +7061,9 @@ class MainWindow(QMainWindow):
 		else:
 			self.set_current_editor(None)
 		self._set_status("Refreshed UI.")
+		# we need to check if we are in the split tab
+		if self.split_groups_list is not None and self.split_group_maps_list is not None:
+			self._reload_split_settings_from_editor()
 
 	def show_about(self) -> None:
 		QMessageBox.about(

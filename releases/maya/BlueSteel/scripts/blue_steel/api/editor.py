@@ -3180,21 +3180,19 @@ class BlueSteelEditor(object):
         """
         old_weight_name = f"{split_map_name}_{old_name}"
         new_weight_name = f"{split_map_name}_{new_name}"
-        if old_weight_name not in self.split_blendshape.get_weights_names():
-            raise ValueError(f"Weight {old_weight_name} does not exist in the split blendshape")
-        split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
+        split_maps_weights = self.get_split_map_weights(split_map_name)
+        old_weight = next((w for w in split_maps_weights if w == old_weight_name), None)
+        if old_weight is None:
+            raise ValueError(f"Weight {old_weight_name} does not exist in split map {split_map_name}")
+        if new_weight_name in split_maps_weights:
+            raise ValueError(f"Weight {new_weight_name} already exists in split map {split_map_name}")
+        print(f"Renaming weight {old_weight_name} to {new_weight_name} in split map {split_map_name}")
+        # we need to get the target directory for the split map
+        split_map_dir = self.split_blendshape.get_weight_parent_directory(old_weight)
         if not split_map_dir:
-            raise ValueError(f"Split map {split_map_name} does not have a target directory")
-        if len(split_map_dir) > 1:
-            raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
-        child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
-        for child_dir in child_target_dirs:
-            if child_dir.name == old_name:
-                self.split_blendshape.rename_target_dir(child_dir, new_name)
-                child_weights = self.split_blendshape.get_target_dir_child_weights(child_dir)
-                for child in child_weights:
-                    if child == old_weight_name:
-                        self.split_blendshape.rename_weight(child, new_weight_name)
+            raise ValueError(f"Weight {old_weight_name} does not have a target directory")
+        self.split_blendshape.rename_target_dir(split_map_dir, new_name)
+        self.split_blendshape.rename_weight(old_weight_name, new_weight_name)
 
     def rename_split_map(self, old_name: str, new_name: str):
         """ rename a split map in the split_blendshape and in the split groups attribute.
@@ -3342,12 +3340,13 @@ class BlueSteelEditor(object):
         self.write_split_maps_order_attribute(split_maps_order)
         return split_map_dir.name
 
-    def add_weights_to_split_map(self, split_map_name: str, weights_list: list):
+    @undoable
+    def add_weights_to_split_map(self, split_map_name: str, suffices_list: list):
         """
         Add a weight to a split map in the split_blendshape.
         Parameters:
             split_map_name (str): The name of the split map to add the weights to.
-            weights_list (list): A list of weight names to add to the split map.
+            suffices_list (list): A list of weight suffixes to add to the split map.
         Returns:
             None
         """
@@ -3357,9 +3356,10 @@ class BlueSteelEditor(object):
         if len(split_map_dir) > 1:
             raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
         parent_index = split_map_dir[0].index
-        for weight_name in weights_list:
+        for suffix in suffices_list:
+            weight_name = f"{split_map_name}_{suffix}"
             # we need to add the weight to the split map
-            weight_name_dir = self.split_blendshape.add_target_dir(name=weight_name, parent_index=parent_index)
+            weight_name_dir = self.split_blendshape.add_target_dir(name=suffix, parent_index=parent_index)
             self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
 
     @undoable
@@ -3456,6 +3456,36 @@ class BlueSteelEditor(object):
 
         split_groups[split_group_name] = existing_split_maps
         self.write_split_groups_attributes(split_groups)
+
+    @pause_shape_editor
+    @undoable
+    def remove_weight_from_split_map(self, split_map_name: str, weight_name: str):
+        """
+        Remove a target from a split map in the split_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map to remove the target from.
+            weight_name (str): The name of the weight to remove from the split map.
+        Returns:
+            None
+        """
+        if split_map_name not in self.get_split_maps():
+            raise ValueError(f"Split map {split_map_name} does not exist")
+        split_weights = self.get_split_map_weights(split_map_name)
+        weight_to_remove = None
+        for weight in split_weights:
+            if weight == weight_name:
+                weight_to_remove = weight
+                break
+        if weight_to_remove is None:
+            raise ValueError(f"Weight {weight_name} does not exist in split map {split_map_name}")
+        # we need to remove the weight from the split map
+        parent_dir = self.split_blendshape.get_weight_parent_directory(weight_to_remove)
+        if parent_dir is None:
+            raise ValueError(f"Weight {weight_name} does not have a parent directory")
+        
+        self.split_blendshape.remove_target(weight_to_remove)
+        self.split_blendshape.remove_target_dir(parent_dir)
+
 
     @undoable
     def remove_split_group(self, split_group_name: str):
