@@ -28,6 +28,11 @@ from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker, Cont
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from .controllerLayoutWindow import ControllerLayoutWindow
+from .splitSettings import (
+	SplitPrimaryAssignmentsModel,
+	SplitPrimaryAssignmentsView,
+	SplitPrimaryGroupDelegate,
+)
 from ..common import frameLayout
 from ...api.mayaUtils import undoable
 from ..common.icons import (
@@ -62,7 +67,7 @@ from ...mmtools import ui
 WINDOW = None
 SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
-	from PySide6.QtCore import QAbstractListModel, QAbstractProxyModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
+	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
 	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
@@ -96,7 +101,7 @@ if env.MAYA_VERSION > 2024:
 	)
 	from shiboken6 import wrapInstance
 else:
-	from PySide2.QtCore import QAbstractListModel, QAbstractProxyModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
+	from PySide2.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
 	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
 	from PySide2.QtWidgets import (
 		QAction,
@@ -1516,6 +1521,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._drag_range_px = 1
 		self._drag_target_indexes: List[QPersistentModelIndex] = []
 		self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
+		self._pending_primary_drag = None
 
 	def _open_drag_undo_chunk(self) -> None:
 		if self._undo_chunk_open:
@@ -1968,6 +1974,27 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._end_drag(self._drag_model, x_pos)
 		return True
 
+	def queue_primary_drag(self, model, index, event_pos, value_rect: QRect) -> None:
+		"""Remember a primary slider press until selection has been processed."""
+		self._pending_primary_drag = (model, QPersistentModelIndex(index), event_pos, QRect(value_rect))
+
+	def start_pending_primary_drag(self, x_pos: int) -> bool:
+		"""Start a queued primary slider drag after the standard drag threshold."""
+		if self._pending_primary_drag is None:
+			return False
+		model, index, start_pos, value_rect = self._pending_primary_drag
+		if abs(x_pos - start_pos.x()) < QGuiApplication.styleHints().startDragDistance():
+			return False
+		self._pending_primary_drag = None
+		if not index.isValid():
+			return False
+		self._start_drag(model, index, start_pos, value_rect)
+		self._set_drag_value_from_pos(model, x_pos)
+		return True
+
+	def cancel_pending_primary_drag(self) -> None:
+		self._pending_primary_drag = None
+
 	def editorEvent(self, event, model, option, index):  # noqa: N802
 		if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
 			return super().editorEvent(event, model, option, index)
@@ -1999,10 +2026,14 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return super().editorEvent(event, model, option, index)
 
 		value_rect, _ = self._area_rects(option, index)
-		drag_button = Qt.MiddleButton if isinstance(self.parent(), PrimaryTreeWidget) or bool(getattr(self.parent(), "_primary_slider_layout", False)) else Qt.LeftButton
+		is_primary_slider = isinstance(self.parent(), PrimaryTreeWidget)
+		drag_button = Qt.LeftButton
 
 		if event.type() == QEvent.MouseButtonPress:
 			if event.button() == drag_button and value_rect.contains(event.pos()):
+				if is_primary_slider:
+					self.queue_primary_drag(model, index, event.pos(), value_rect)
+					return super().editorEvent(event, model, option, index)
 				if not self._drag_active:
 					self._start_drag(model, index, event.pos(), value_rect)
 				else:
@@ -2455,7 +2486,51 @@ class ShapeTreeWidget(QTreeWidget):
 
 
 class PrimaryTreeWidget(QTreeWidget):
-	"""QTreeWidget that forwards drag move/release to primaries slider delegate."""
+	"""Primary tree with left-button sliders and middle-button item drags."""
+
+	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
+
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self._middle_drag_start_pos = None
+
+	def _selected_draggable_shape_names(self) -> List[str]:
+		shape_names: List[str] = []
+		for item in self.selectedItems():
+			if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+				continue
+			shape_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
+			if shape_name:
+				shape_names.append(shape_name)
+		return shape_names
+
+	def _start_primary_drag(self) -> None:
+		shape_names = self._selected_draggable_shape_names()
+		if not shape_names:
+			return
+		mime_data = QMimeData()
+		payload = "\n".join(shape_names).encode("utf-8")
+		mime_data.setData(self.DRAG_MIME_TYPE, payload)
+		mime_data.setText("\n".join(shape_names))
+		drag = QDrag(self)
+		drag.setMimeData(mime_data)
+		if hasattr(drag, "exec"):
+			drag.exec(Qt.CopyAction)
+		else:
+			drag.exec_(Qt.CopyAction)
+
+	def mousePressEvent(self, event):  # noqa: N802
+		if event.button() == Qt.MiddleButton:
+			item = self.itemAt(event.pos())
+			if (
+				item is not None
+				and item.isSelected()
+				and not bool(item.data(0, ShapeItemsModel.IsHeaderRole))
+			):
+				self._middle_drag_start_pos = event.pos()
+			event.accept()
+			return
+		super().mousePressEvent(event)
 
 	def mouseMoveEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
@@ -2463,14 +2538,31 @@ class PrimaryTreeWidget(QTreeWidget):
 			if delegate.external_drag_move(event.pos().x()):
 				event.accept()
 				return
+		if isinstance(delegate, SliderItemDelegate) and event.buttons() & Qt.LeftButton:
+			if delegate.start_pending_primary_drag(event.pos().x()):
+				event.accept()
+				return
+		if self._middle_drag_start_pos is not None and event.buttons() & Qt.MiddleButton:
+			delta = event.pos() - self._middle_drag_start_pos
+			if delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
+				self._middle_drag_start_pos = None
+				self._start_primary_drag()
+				event.accept()
+				return
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
+		if event.button() == Qt.MiddleButton:
+			self._middle_drag_start_pos = None
+			event.accept()
+			return
 		delegate = self.itemDelegateForColumn(0)
-		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.MiddleButton and delegate.is_drag_active():
+		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
 				event.accept()
 				return
+		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton:
+			delegate.cancel_pending_primary_drag()
 		super().mouseReleaseEvent(event)
 
 
@@ -2514,251 +2606,6 @@ class InlineWorkshapeRenameEditor(QLineEdit):
 		super().focusOutEvent(event)
 
 
-class SplitPrimaryAssignmentsModel(QAbstractProxyModel):
-	"""Expose shared primary slider rows with an additional split-group column."""
-
-	GroupRole = Qt.UserRole + 906
-	assignmentCommitted = Signal(str, object)
-
-	def __init__(self, parent=None) -> None:
-		super().__init__(parent)
-		self._group_names: List[str] = ["NoSplit"]
-		self._assignments: Dict[str, str] = {}
-
-	def setSourceModel(self, source_model) -> None:  # noqa: N802
-		old_model = self.sourceModel()
-		if old_model is not None:
-			try:
-				old_model.modelAboutToBeReset.disconnect(self.beginResetModel)
-				old_model.modelReset.disconnect(self.endResetModel)
-				old_model.dataChanged.disconnect(self._on_source_data_changed)
-			except Exception:
-				pass
-		self.beginResetModel()
-		super().setSourceModel(source_model)
-		self.endResetModel()
-		if source_model is not None:
-			source_model.modelAboutToBeReset.connect(self.beginResetModel)
-			source_model.modelReset.connect(self.endResetModel)
-			source_model.dataChanged.connect(self._on_source_data_changed)
-
-	def _on_source_data_changed(self, top_left, bottom_right, roles) -> None:
-		if self.rowCount() <= 0:
-			return
-		first_row = max(0, top_left.row())
-		last_row = min(self.rowCount() - 1, bottom_right.row())
-		self.dataChanged.emit(self.index(first_row, 0), self.index(last_row, 0), roles)
-
-	def set_assignments(self, group_names: Sequence[str], assignments: Dict[str, str]) -> None:
-		self.beginResetModel()
-		self._group_names = ["NoSplit"] + [str(name) for name in group_names]
-		self._assignments = {
-			str(name): str(group) if str(group) in self._group_names else "NoSplit"
-			for name, group in assignments.items()
-		}
-		self.endResetModel()
-
-	def set_search_text(self, text: str) -> None:
-		if self.sourceModel() is None:
-			return
-		self.beginResetModel()
-		self.sourceModel().set_search_text(text)
-		self.endResetModel()
-
-	def group_names(self) -> List[str]:
-		return list(self._group_names)
-
-	def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-		if parent.isValid() or self.sourceModel() is None:
-			return 0
-		return self.sourceModel().rowCount()
-
-	def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-		return 0 if parent.isValid() else 2
-
-	def index(self, row: int, column: int, parent: QModelIndex = QModelIndex()) -> QModelIndex:
-		if parent.isValid() or not (0 <= row < self.rowCount()) or not (0 <= column < 2):
-			return QModelIndex()
-		return self.createIndex(row, column)
-
-	def parent(self, _index: QModelIndex = QModelIndex()) -> QModelIndex:
-		return QModelIndex()
-
-	def mapToSource(self, proxy_index: QModelIndex) -> QModelIndex:  # noqa: N802
-		if not proxy_index.isValid() or self.sourceModel() is None:
-			return QModelIndex()
-		return self.sourceModel().index(proxy_index.row(), 0)
-
-	def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:  # noqa: N802
-		if not source_index.isValid() or source_index.model() is not self.sourceModel():
-			return QModelIndex()
-		return self.index(source_index.row(), 0)
-
-	def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
-		if not index.isValid():
-			return None
-		source_index = self.mapToSource(index)
-		if index.column() == 0:
-			return self.sourceModel().data(source_index, role)
-		if role == ShapeItemsModel.NameRole:
-			return self.sourceModel().data(source_index, ShapeItemsModel.NameRole)
-		if role in (Qt.DisplayRole, Qt.EditRole, self.GroupRole):
-			primary_name = str(self.sourceModel().data(source_index, ShapeItemsModel.NameRole) or "")
-			return self._assignments.get(primary_name, "NoSplit")
-		return None
-
-	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
-		if not index.isValid():
-			return False
-		if index.column() == 0:
-			return self.sourceModel().setData(self.mapToSource(index), value, role)
-		if role != Qt.EditRole:
-			return False
-		group_name = str(value)
-		if group_name not in self._group_names:
-			return False
-		primary_name = str(self.data(index, ShapeItemsModel.NameRole) or "")
-		return self.set_assignment_targets(group_name, [primary_name])
-
-	def set_assignment_targets(self, group_name: str, primary_names: Sequence[str]) -> bool:
-		if group_name not in self._group_names:
-			return False
-		target_names = list(dict.fromkeys(str(name) for name in primary_names if name))
-		changed_names = [
-			name for name in target_names
-			if self._assignments.get(name, "NoSplit") != group_name
-		]
-		if not changed_names:
-			return False
-
-		changed_name_set = set(changed_names)
-		for name in changed_names:
-			self._assignments[name] = group_name
-		for row in range(self.rowCount()):
-			index = self.index(row, 1)
-			if str(self.data(index, ShapeItemsModel.NameRole) or "") in changed_name_set:
-				self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole, self.GroupRole])
-		self.assignmentCommitted.emit(group_name, changed_names)
-		return True
-
-	def flags(self, index: QModelIndex):
-		if not index.isValid():
-			return Qt.NoItemFlags
-		if index.column() == 0:
-			return self.sourceModel().flags(self.mapToSource(index))
-		return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
-
-	def headerData(self, section: int, orientation, role: int = Qt.DisplayRole):  # noqa: N802
-		if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-			return "Primary" if section == 0 else "Split Group"
-		return None
-
-
-class SplitPrimaryAssignmentsView(QTableView):
-	"""Primary slider table with one persistent split-group chooser per row."""
-
-	_primary_slider_layout = True
-
-	def assignment_targets(self, clicked_index: QModelIndex) -> List[str]:
-		clicked_name = str(clicked_index.data(ShapeItemsModel.NameRole) or "")
-		selection_model = self.selectionModel()
-		if selection_model is None:
-			return [clicked_name] if clicked_name else []
-		selected_indexes = selection_model.selectedRows(0)
-		selected_names = [
-			str(index.data(ShapeItemsModel.NameRole) or "")
-			for index in selected_indexes
-		]
-		selected_names = [name for name in selected_names if name]
-		if clicked_name in selected_names:
-			return selected_names
-		return [clicked_name] if clicked_name else []
-
-	def restore_assignment_selection(self, primary_names: Sequence[str]) -> None:
-		selection_model = self.selectionModel()
-		if selection_model is None:
-			return
-		target_names = set(str(name) for name in primary_names)
-		selection_model.clearSelection()
-		for row in range(self.model().rowCount()):
-			index = self.model().index(row, 0)
-			if str(index.data(ShapeItemsModel.NameRole) or "") in target_names:
-				selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
-
-	def mouseMoveEvent(self, event) -> None:  # noqa: N802
-		delegate = self.itemDelegateForColumn(0)
-		if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
-			if delegate.external_drag_move(event.pos().x()):
-				event.accept()
-				return
-		super().mouseMoveEvent(event)
-
-	def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-		delegate = self.itemDelegateForColumn(0)
-		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.MiddleButton and delegate.is_drag_active():
-			if delegate.external_drag_end(event.pos().x()):
-				event.accept()
-				return
-		super().mouseReleaseEvent(event)
-
-
-class SplitPrimaryGroupCombo(QComboBox):
-	"""Compact persistent combo that keeps the table's batch selection intact."""
-
-	def __init__(self, view: SplitPrimaryAssignmentsView, model_index: QModelIndex, parent=None) -> None:
-		super().__init__(parent)
-		self._view = view
-		self._model_index = QPersistentModelIndex(model_index)
-		self.assignment_targets: List[str] = []
-		self.setFocusPolicy(Qt.NoFocus)
-		self.setFixedHeight(18)
-		self.setContentsMargins(0, 0, 0, 0)
-		self.setStyleSheet("QComboBox { margin: 0px; padding: 0px 4px; }")
-
-	def _capture_assignment_targets(self) -> None:
-		if self._model_index.isValid():
-			self.assignment_targets = self._view.assignment_targets(self._model_index)
-
-	def _restore_assignment_targets(self) -> None:
-		if self.assignment_targets:
-			self._view.restore_assignment_selection(self.assignment_targets)
-
-	def enterEvent(self, event) -> None:  # noqa: N802
-		self._capture_assignment_targets()
-		super().enterEvent(event)
-
-	def mousePressEvent(self, event) -> None:  # noqa: N802
-		if not self.assignment_targets:
-			self._capture_assignment_targets()
-		super().mousePressEvent(event)
-
-	def hidePopup(self) -> None:  # noqa: N802
-		super().hidePopup()
-		QTimer.singleShot(0, self._restore_assignment_targets)
-
-
-class SplitPrimaryGroupDelegate(QStyledItemDelegate):
-	"""Persistent split-group combo editor for assignment rows."""
-
-	def createEditor(self, parent, option, index):  # noqa: N802
-		if index.column() != 1:
-			return None
-		editor = SplitPrimaryGroupCombo(self.parent(), index, parent)
-		editor.addItems(index.model().group_names())
-		editor.activated.connect(lambda _index, combo=editor: self._commit_combo_editor(combo))
-		return editor
-
-	def _commit_combo_editor(self, editor: QComboBox) -> None:
-		self.commitData.emit(editor)
-
-	def setEditorData(self, editor, index) -> None:  # noqa: N802
-		editor.setCurrentText(str(index.data(Qt.EditRole) or "NoSplit"))
-
-	def setModelData(self, editor, model, index) -> None:  # noqa: N802
-		targets = editor.assignment_targets or [str(index.data(ShapeItemsModel.NameRole) or "")]
-		model.set_assignment_targets(editor.currentText(), targets)
-
-
 class MainWindow(QMainWindow):
 	"""Main Blue Steel editor window."""
 
@@ -2779,6 +2626,7 @@ class MainWindow(QMainWindow):
 		self.work_blendshape_tracker: Optional[BlendShapeNodeTracker] = None
 		self.split_attr_grp_tracker: Optional[ControllerTracker] = None
 		self._split_attr_refresh_pending = False
+		self._split_attr_full_refresh_pending = False
 
 		self._shape_model = ShapeItemsModel(self)
 		self._work_shape_model = WorkShapeItemsModel(self)
@@ -2806,6 +2654,8 @@ class MainWindow(QMainWindow):
 		self._syncing_shapes_tree = False
 		self._upstream_shapes_cache: Dict[str, Set[str]] = {}
 		self._downstream_shapes_cache: Dict[str, Set[str]] = {}
+		self._shapes_tree_expanded_headers: Dict[int, bool] = {}
+		self._shapes_tree_expanded_type_groups: Dict[tuple, bool] = {}
 		self._primary_tree_folder_open_icon = QIcon()
 		self._primary_tree_folder_closed_icon = QIcon()
 		self.tool_buttons: List[QPushButton] = []
@@ -2822,6 +2672,7 @@ class MainWindow(QMainWindow):
 		self._controller_layout_window: Optional[ControllerLayoutWindow] = None
 		self.heat_map_switch: Optional[QPushButton] = None
 		self._main_splitter: Optional[QSplitter] = None
+		self._editor_splitter: Optional[QSplitter] = None
 		self._third_column_splitter: Optional[QSplitter] = None
 		self._third_column_sections: List[QWidget] = []
 		self._tools_group: Optional[QGroupBox] = None
@@ -2829,12 +2680,20 @@ class MainWindow(QMainWindow):
 		self._tools_panel_button_labels: Dict[QPushButton, str] = {}
 		self._tools_panel_sections: List[frameLayout.FrameLayout] = []
 		self._tools_panel_section_labels: Dict[frameLayout.FrameLayout, str] = {}
+		self._shapes_header_buttons: List[QPushButton] = []
+		self._shapes_header_button_labels: Dict[QPushButton, str] = {}
+		self._shapes_header_full_width = 0
+		self._shapes_header_compact_mode = False
 		self._tools_panel_compact_mode = False
 		self._tools_panel_compact_threshold = 165
 		self._tools_panel_compact_width = 76
 		self._tools_panel_expanded_width = 200
 		self._tools_panel_compact_icon_size = QSize(24, 24)
 		self._tools_panel_expanded_icon_size = QSize(18, 18)
+		self._initial_splitter_layout_applied = False
+		self._initial_splitter_layout_timer = QTimer(self)
+		self._initial_splitter_layout_timer.setSingleShot(True)
+		self._initial_splitter_layout_timer.timeout.connect(self._apply_initial_splitter_layout)
 		self.main_tabs: Optional[QTabWidget] = None
 		self.split_primary_search: Optional[QLineEdit] = None
 		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsView] = None
@@ -2909,11 +2768,13 @@ class MainWindow(QMainWindow):
 
 		workspace_splitter = QSplitter(Qt.Horizontal)
 		workspace_splitter.setChildrenCollapsible(True)
+		self._allow_horizontal_collapse(workspace_splitter)
 		self._main_splitter = workspace_splitter
 		root_layout.addWidget(workspace_splitter, 1)
 		self._build_tools_panel(workspace_splitter)
 
 		self.main_tabs = QTabWidget(workspace_splitter)
+		self._allow_horizontal_collapse(self.main_tabs)
 		workspace_splitter.addWidget(self.main_tabs)
 		workspace_splitter.setStretchFactor(0, 0)
 		workspace_splitter.setStretchFactor(1, 1)
@@ -2931,6 +2792,8 @@ class MainWindow(QMainWindow):
 
 		splitter = QSplitter(Qt.Horizontal)
 		splitter.setChildrenCollapsible(True)
+		self._allow_horizontal_collapse(splitter)
+		self._editor_splitter = splitter
 		editor_tab_layout.addWidget(splitter, 1)
 
 		primaries_panel = QWidget()
@@ -2954,8 +2817,8 @@ class MainWindow(QMainWindow):
 		self.primaries_view.setRootIsDecorated(False)
 		self._apply_primaries_branch_icons()
 		self.primaries_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-		self.primaries_view.setDragEnabled(True)
-		self.primaries_view.setToolTip("Middle-drag a primary to adjust its value")
+		self.primaries_view.setDragEnabled(False)
+		self.primaries_view.setToolTip("Left-click to select or adjust sliders; middle-drag selected primaries to drag and drop them")
 		self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self._primaries_delegate = SliderItemDelegate(self.primaries_view)
 		self.primaries_view.setItemDelegateForColumn(0, self._primaries_delegate)
@@ -3036,6 +2899,16 @@ class MainWindow(QMainWindow):
 		self.shapes_highlight_related_button.setCheckable(True)
 		self.shapes_highlight_related_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_highlight_related_button, 1)
+		self._shapes_header_buttons = [
+			self.shapes_auto_pose_button,
+			self.shapes_downstream_button,
+			self.shapes_upstream_button,
+			self.shapes_highlight_related_button,
+		]
+		self._shapes_header_button_labels = {
+			button: button.text() for button in self._shapes_header_buttons
+		}
+		self._shapes_header_full_width = sum(button.sizeHint().width() for button in self._shapes_header_buttons)
 		shapes_layout.addLayout(shapes_header_layout)
 
 		shapes_layout.addWidget(self.shapes_view, 1)
@@ -3148,15 +3021,48 @@ class MainWindow(QMainWindow):
 		splitter.addWidget(primaries_panel)
 		splitter.addWidget(shapes_panel)
 		splitter.addWidget(third_column_panel)
-		splitter.setStretchFactor(0, 0)
+		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 1)
 		splitter.setStretchFactor(2, 2)
-		splitter.setSizes([340, 520, 360])
-		QTimer.singleShot(0, self._force_tools_panel_startup_compact_mode)
+		QTimer.singleShot(0, self._update_shapes_header_compact_mode)
 
 		self.status_bar = QStatusBar(self)
 		self.setStatusBar(self.status_bar)
 		self.status_bar.showMessage("Ready")
+
+	def showEvent(self, event):  # noqa: N802
+		super().showEvent(event)
+		self._schedule_initial_splitter_layout()
+
+	def _schedule_initial_splitter_layout(self) -> None:
+		if not self._initial_splitter_layout_applied:
+			self._initial_splitter_layout_timer.start(50)
+
+	def _apply_initial_splitter_layout(self) -> None:
+		if (
+			self._main_splitter is None
+			or self._editor_splitter is None
+			or self._third_column_splitter is None
+		):
+			return
+		if (
+			self._main_splitter.width() <= 0
+			or self._editor_splitter.width() <= 0
+			or self._third_column_splitter.height() <= 0
+		):
+			self._schedule_initial_splitter_layout()
+			return
+
+		self._initial_splitter_layout_applied = True
+		if self._main_splitter is not None:
+			self._main_splitter.setSizes([self._tools_panel_compact_width, 1220])
+		if self._editor_splitter is not None:
+			self._editor_splitter.setSizes([1, 1, 1])
+		if self._third_column_splitter is not None:
+			self._third_column_splitter.setSizes([500, 500, 500])
+		self._force_tools_panel_startup_compact_mode()
+		self._update_third_column_section_minimums()
+		self._update_shapes_header_compact_mode()
 
 	def _build_split_settings_tab(self, parent_widget: QWidget) -> None:
 		layout = QHBoxLayout(parent_widget)
@@ -3661,7 +3567,7 @@ class MainWindow(QMainWindow):
 			self.split_map_add_button.clicked.connect(self._on_add_split_map_clicked)
 			self.split_map_rename_button.clicked.connect(self._on_rename_split_map_clicked)
 			self.split_map_remove_button.clicked.connect(self._on_remove_split_map_clicked)
-			self.split_map_check_normalization_button.clicked.connect(self._check_split_maps_normalization)
+			self.split_map_check_normalization_button.clicked.connect(lambda: self._check_split_maps_normalization(split_map_name=None))
 			self.split_map_weight_add_button.clicked.connect(self._on_add_split_map_weight_clicked)
 			self.split_map_weight_rename_button.clicked.connect(self._on_rename_split_map_weight_clicked)
 			self.split_map_weight_remove_button.clicked.connect(self._on_remove_split_map_weight_clicked)
@@ -3672,6 +3578,8 @@ class MainWindow(QMainWindow):
 		self._update_work_shape_button_panel()
 		if self._main_splitter is not None:
 			self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+		if self._editor_splitter is not None:
+			self._editor_splitter.splitterMoved.connect(self._on_editor_splitter_moved)
 		if self._third_column_splitter is not None:
 			self._third_column_splitter.splitterMoved.connect(self._on_third_column_splitter_moved)
 		if self.main_tabs is not None:
@@ -3679,7 +3587,28 @@ class MainWindow(QMainWindow):
 
 	def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._sync_tools_panel_compact_mode_from_splitter()
+		self._update_shapes_header_compact_mode()
 		self._update_delegate_name_columns()
+
+	def _on_editor_splitter_moved(self, _pos: int, _index: int) -> None:
+		self._update_shapes_header_compact_mode()
+		self._update_delegate_name_columns()
+
+	def resizeEvent(self, event):  # noqa: N802
+		super().resizeEvent(event)
+		self._schedule_initial_splitter_layout()
+		self._update_shapes_header_compact_mode()
+
+	def _update_shapes_header_compact_mode(self) -> None:
+		if not self._shapes_header_buttons:
+			return
+		available_width = self.shapes_view.width()
+		compact = available_width < self._shapes_header_full_width
+		if compact == self._shapes_header_compact_mode:
+			return
+		self._shapes_header_compact_mode = compact
+		for button in self._shapes_header_buttons:
+			button.setText("" if compact else self._shapes_header_button_labels[button])
 
 	def _on_third_column_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._update_third_column_section_minimums()
@@ -3687,7 +3616,7 @@ class MainWindow(QMainWindow):
 
 	def _on_main_tab_changed(self, index: int) -> None:
 		if self.main_tabs is not None and self.main_tabs.tabText(index) == "Split Settings":
-			self._check_split_maps_normalization()
+			self._check_split_maps_normalization(split_map_name = None)
 
 	def _update_third_column_section_minimums(self) -> None:
 		if self._third_column_splitter is None or not self._third_column_sections:
@@ -3715,7 +3644,7 @@ class MainWindow(QMainWindow):
 					delta = remainder_width - sum(new_remainder)
 					new_remainder[-1] = max(1, new_remainder[-1] + delta)
 				else:
-					new_remainder = []
+					return
 				was_blocked = self._main_splitter.blockSignals(True)
 				try:
 					self._main_splitter.setSizes([self._tools_panel_compact_width] + new_remainder)
@@ -3847,18 +3776,8 @@ class MainWindow(QMainWindow):
 			split_groups = {}
 
 		group_names = sorted(str(name) for name in split_groups.keys())
-		try:
-			primaries = [
-				str(attr)
-				for attr in (cmds.listAttr(self.current_editor.split_attr_grp, userDefined=True) or [])
-				if cmds.getAttr(f"{self.current_editor.split_attr_grp}.{attr}", type=True) == "enum"
-			]
-		except Exception:
-			primaries = []
-		primaries.sort(key=str.lower)
-
 		assignments = {}
-		for primary in primaries:
+		for primary in self._split_primaries_model.primary_names():
 			try:
 				assignments[primary] = self.current_editor.get_primary_split_group(primary)
 			except Exception:
@@ -4013,7 +3932,6 @@ class MainWindow(QMainWindow):
 		normalized_count = 0
 		for row in range(self.split_maps_list.count()):
 			item = self.split_maps_list.item(row)
-			# we need to get th eforeground color
 			if split_map_name is not None and item.text() != split_map_name:
 				continue
 			try:
@@ -4119,7 +4037,9 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error creating split group: {exc}", error=True)
 			return
-		self._reload_split_settings_from_editor()
+		self._refresh_split_primary_assignments()
+		self._refresh_split_groups()
+		self._refresh_split_group_maps()
 		self._set_status(f"Created split group '{group_name}'.")
 
 	def _on_remove_split_group_clicked(self) -> None:
@@ -4133,7 +4053,9 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error removing split group: {exc}", error=True)
 			return
-		self._reload_split_settings_from_editor()
+		self._refresh_split_primary_assignments()
+		self._refresh_split_groups()
+		self._refresh_split_group_maps()
 		self._set_status(f"Removed split group '{group_name}'.")
 
 	def _on_rename_split_group_clicked(self) -> None:
@@ -4158,7 +4080,9 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error renaming split group: {exc}", error=True)
 			return
-		self._reload_split_settings_from_editor()
+		self._refresh_split_primary_assignments()
+		self._refresh_split_groups()
+		self._refresh_split_group_maps()
 		matching = self.split_groups_list.findItems(new_name, Qt.MatchExactly)
 		if matching:
 			self.split_groups_list.setCurrentItem(matching[0])
@@ -5466,8 +5390,8 @@ class MainWindow(QMainWindow):
 		self._syncing_shapes_tree = True
 		try:
 			selected_names = set(self._selected_shape_names_from_shapes_view())
-			expanded_headers = {}
-			expanded_type_groups = {}
+			expanded_headers = self._shapes_tree_expanded_headers
+			expanded_type_groups = self._shapes_tree_expanded_type_groups
 			for i in range(self.shapes_view.topLevelItemCount()):
 				header_item = self.shapes_view.topLevelItem(i)
 				header_level = int(header_item.data(0, ShapeItemsModel.LevelRole) or -1)
@@ -6620,29 +6544,49 @@ class MainWindow(QMainWindow):
 		if self.current_editor is None or not cmds.objExists(self.current_editor.split_attr_grp):
 			return
 		self.split_attr_grp_tracker = ControllerTracker(self.current_editor.split_attr_grp, parent=self)
-		self.split_attr_grp_tracker.attributeChanged.connect(self._schedule_split_attr_grp_refresh)
-		self.split_attr_grp_tracker.attributeAdded.connect(self._schedule_split_attr_grp_refresh)
-		self.split_attr_grp_tracker.attributeRemoved.connect(self._schedule_split_attr_grp_refresh)
+		self.split_attr_grp_tracker.attributeChanged.connect(self._schedule_split_attr_grp_value_refresh)
+		self.split_attr_grp_tracker.attributeAdded.connect(self._schedule_split_attr_grp_full_refresh)
+		self.split_attr_grp_tracker.attributeRemoved.connect(self._schedule_split_attr_grp_full_refresh)
 		self.split_attr_grp_tracker.nodeDeleted.connect(self._on_split_attr_grp_deleted)
 		self.split_attr_grp_tracker.start()
 
 	def _clear_split_attr_grp_tracker(self) -> None:
 		self._split_attr_refresh_pending = False
+		self._split_attr_full_refresh_pending = False
 		if isinstance(self.split_attr_grp_tracker, ControllerTracker):
 			self.split_attr_grp_tracker.kill()
 			self.split_attr_grp_tracker.deleteLater()
 			self.split_attr_grp_tracker = None
 
-	def _schedule_split_attr_grp_refresh(self, *_args) -> None:
+	def _schedule_split_attr_grp_value_refresh(self, attribute_name: str, _value) -> None:
+		"""Refresh only assignment values when a primary enum value changes."""
+		if self.current_editor is None:
+			return
+		try:
+			attribute_type = cmds.getAttr(f"{self.current_editor.split_attr_grp}.{attribute_name}", type=True)
+		except Exception:
+			attribute_type = None
+		self._schedule_split_attr_grp_refresh(full=attribute_type != "enum")
+
+	def _schedule_split_attr_grp_full_refresh(self, *_args) -> None:
+		self._schedule_split_attr_grp_refresh(full=True)
+
+	def _schedule_split_attr_grp_refresh(self, *, full: bool) -> None:
+		self._split_attr_full_refresh_pending |= full
 		if self._split_attr_refresh_pending:
 			return
 		self._split_attr_refresh_pending = True
 		QTimer.singleShot(60, self._reload_split_settings_from_tracker)
 
 	def _reload_split_settings_from_tracker(self) -> None:
+		full_refresh = self._split_attr_full_refresh_pending
 		self._split_attr_refresh_pending = False
+		self._split_attr_full_refresh_pending = False
 		if self.current_editor is not None:
-			self._reload_split_settings_from_editor()
+			if full_refresh:
+				self._reload_split_settings_from_editor()
+			else:
+				self._refresh_split_primary_assignments()
 
 	def _on_split_attr_grp_deleted(self, _node_name: str) -> None:
 		self._clear_split_attr_grp_tracker()
@@ -7117,6 +7061,7 @@ def show() -> MainWindow:
 		status_label.setStyleSheet("color: #e7b45a;")
 		status_label.setOpenExternalLinks(True)
 	WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
+	WINDOW.resize(1200, max(720, WINDOW.sizeHint().height()))
 	WINDOW.show()
 	if status_label is not None:
 		WINDOW.status_bar.addPermanentWidget(status_label)
