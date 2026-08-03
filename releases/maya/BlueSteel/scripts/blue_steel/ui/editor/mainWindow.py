@@ -51,6 +51,7 @@ from ..common.icons import (
 	ZERO_VALUE_ICON,
 	AUTO_POSE_ICON,
 	ADD_AT_POSE_ICON,
+	ANALYZE_ICON,
 	LOCK_ON_ICON,
 	LOCK_OFF_ICON,
 	HIGHLIGHT_ICON,
@@ -75,6 +76,7 @@ if env.MAYA_VERSION > 2024:
 		QFileDialog,
 		QGroupBox,
 		QHBoxLayout,
+		QHeaderView,
 		QInputDialog,
 		QLabel,
 		QLayout,
@@ -110,6 +112,7 @@ else:
 		QFileDialog,
 		QGroupBox,
 		QHBoxLayout,
+		QHeaderView,
 		QInputDialog,
 		QLabel,
 		QLayout,
@@ -2704,6 +2707,19 @@ class MainWindow(QMainWindow):
 		self.split_maps_list: Optional[QListWidget] = None
 		self.split_map_weights_list: Optional[QListWidget] = None
 		self.split_map_weight_stats_label: Optional[QLabel] = None
+		self._split_groups_group_widget: Optional[QGroupBox] = None
+		self._split_groups_splitter: Optional[QSplitter] = None
+		self._split_group_controls_widget: Optional[QWidget] = None
+		self._split_group_buttons: List[QPushButton] = []
+		self._split_group_button_labels: Dict[QPushButton, str] = {}
+		self._split_group_buttons_compact_mode = False
+		self._split_group_buttons_expanded_width = 0
+		self._split_maps_lists_splitter: Optional[QSplitter] = None
+		self._split_map_controls_widget: Optional[QWidget] = None
+		self._split_map_buttons: List[QPushButton] = []
+		self._split_map_button_labels: Dict[QPushButton, str] = {}
+		self._split_map_buttons_compact_mode = False
+		self._split_map_buttons_expanded_width = 0
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -3065,16 +3081,21 @@ class MainWindow(QMainWindow):
 		self._update_shapes_header_compact_mode()
 
 	def _build_split_settings_tab(self, parent_widget: QWidget) -> None:
-		layout = QHBoxLayout(parent_widget)
+		layout = QVBoxLayout(parent_widget)
 		layout.setContentsMargins(6, 6, 6, 6)
-		layout.setSpacing(8)
+		layout.setSpacing(0)
+		split_settings_splitter = QSplitter(Qt.Horizontal)
+		split_settings_splitter.setChildrenCollapsible(False)
+		layout.addWidget(split_settings_splitter, 1)
 
 		primaries_group = QGroupBox("Primary Split Group Assignments")
+		self._allow_horizontal_collapse(primaries_group)
 		primaries_layout = QVBoxLayout(primaries_group)
 		self.split_primary_search = QLineEdit()
 		self.split_primary_search.setPlaceholderText("Search primaries...")
 		primaries_layout.addWidget(self.split_primary_search)
 		self.split_primaries_tree = SplitPrimaryAssignmentsView()
+		self._allow_horizontal_collapse(self.split_primaries_tree)
 		self.split_primaries_tree.setModel(self._split_primaries_model)
 		self.split_primaries_tree.setAlternatingRowColors(True)
 		self.split_primaries_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -3083,69 +3104,136 @@ class MainWindow(QMainWindow):
 		self.split_primaries_tree.verticalHeader().setVisible(False)
 		self.split_primaries_tree.verticalHeader().setMinimumSectionSize(20)
 		self.split_primaries_tree.verticalHeader().setDefaultSectionSize(20)
-		self.split_primaries_tree.horizontalHeader().setStretchLastSection(True)
+		split_primaries_header = self.split_primaries_tree.horizontalHeader()
+		split_primaries_header.setStretchLastSection(False)
+		split_primaries_header.setSectionResizeMode(0, QHeaderView.Interactive)
+		split_primaries_header.setSectionResizeMode(1, QHeaderView.Interactive)
 		self.split_primaries_tree.setStyleSheet("QTableView::item { padding: 0px; }")
-		self.split_primaries_tree.setColumnWidth(0, 280)
 		self._split_primary_slider_delegate = SliderItemDelegate(self.split_primaries_tree)
 		self._split_primary_delegate = SplitPrimaryGroupDelegate(self.split_primaries_tree)
 		self.split_primaries_tree.setItemDelegateForColumn(0, self._split_primary_slider_delegate)
 		self.split_primaries_tree.setItemDelegateForColumn(1, self._split_primary_delegate)
 		primaries_layout.addWidget(self.split_primaries_tree, 1)
-		layout.addWidget(primaries_group, 2)
+		split_settings_splitter.addWidget(primaries_group)
 
 		right_column = QWidget(parent_widget)
+		self._allow_horizontal_collapse(right_column)
 		right_layout = QVBoxLayout(right_column)
 		right_layout.setContentsMargins(0, 0, 0, 0)
 		right_layout.setSpacing(8)
 
 		split_groups_group = QGroupBox("Split Group Panel")
-		split_groups_layout = QVBoxLayout(split_groups_group)
-		split_groups_lists_layout = QHBoxLayout()
+		self._allow_horizontal_collapse(split_groups_group)
+		split_groups_layout = QHBoxLayout(split_groups_group)
+		split_groups_splitter = QSplitter(Qt.Horizontal)
+		split_groups_splitter.setChildrenCollapsible(False)
+		split_groups_layout.addWidget(split_groups_splitter, 1)
+
+		split_group_controls_widget = QWidget()
+		self._allow_horizontal_collapse(split_group_controls_widget)
+		split_group_controls = QVBoxLayout(split_group_controls_widget)
+		split_group_controls.setContentsMargins(0, 0, 0, 0)
+		split_group_controls.setSpacing(4)
+		self.split_group_add_button = QPushButton("Add Group")
+		self.split_group_add_button.setIcon(ADD_ICON)
+		self.split_group_remove_button = QPushButton("Remove Group")
+		self.split_group_remove_button.setIcon(DELETE_ICON)
+		self.split_group_rename_button = QPushButton("Rename Group")
+		self.split_group_rename_button.setIcon(RENAME_ICON)
+		self._split_group_buttons = [
+			self.split_group_add_button,
+			self.split_group_remove_button,
+			self.split_group_rename_button,
+		]
+		self._split_group_button_labels = {
+			button: button.text() for button in self._split_group_buttons
+		}
+		for button in self._split_group_buttons:
+			button.setToolTip(self._split_group_button_labels[button])
+			button.setMinimumWidth(0)
+			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setIconSize(self._tools_panel_expanded_icon_size)
+			button.setFixedHeight(34)
+			split_group_controls.addWidget(button)
+		split_group_controls.addStretch(1)
+		split_groups_splitter.addWidget(split_group_controls_widget)
+
 		self.split_groups_list = QListWidget()
+		self._allow_horizontal_collapse(self.split_groups_list)
 		self.split_groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_groups_list.setToolTip("Select a split group")
-		split_groups_lists_layout.addWidget(self.split_groups_list, 1)
+		split_groups_splitter.addWidget(self.split_groups_list)
 		self.split_group_maps_list = SplitGroupMapsList()
+		self._allow_horizontal_collapse(self.split_group_maps_list)
 		self.split_group_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_group_maps_list.setToolTip("Drop split maps here, drag to reorder, or drag out to remove")
-		split_groups_lists_layout.addWidget(self.split_group_maps_list, 1)
-		split_groups_layout.addLayout(split_groups_lists_layout, 1)
-
-		split_groups_controls_top = QHBoxLayout()
-		self.split_group_add_button = QPushButton("Add Group")
-		self.split_group_remove_button = QPushButton("Remove Group")
-		self.split_group_rename_button = QPushButton("Rename Group")
-		split_groups_controls_top.addWidget(self.split_group_add_button)
-		split_groups_controls_top.addWidget(self.split_group_remove_button)
-		split_groups_controls_top.addWidget(self.split_group_rename_button)
-		split_groups_layout.addLayout(split_groups_controls_top)
+		split_groups_splitter.addWidget(self.split_group_maps_list)
+		split_groups_splitter.setStretchFactor(0, 0)
+		split_groups_splitter.setStretchFactor(1, 1)
+		split_groups_splitter.setStretchFactor(2, 1)
+		self._split_groups_group_widget = split_groups_group
+		self._split_groups_splitter = split_groups_splitter
+		self._split_group_controls_widget = split_group_controls_widget
+		self._split_group_buttons_expanded_width = max(
+			button.sizeHint().width() for button in self._split_group_buttons
+		)
 		right_layout.addWidget(split_groups_group, 1)
 
 		split_maps_group = QGroupBox("Split Maps")
+		self._allow_horizontal_collapse(split_maps_group)
 		split_maps_layout = QVBoxLayout(split_maps_group)
-		split_maps_lists_layout = QHBoxLayout()
-		split_maps_column = QVBoxLayout()
+		split_maps_lists_splitter = QSplitter(Qt.Horizontal)
+		split_maps_lists_splitter.setChildrenCollapsible(False)
+
+		split_map_controls_widget = QWidget()
+		self._allow_horizontal_collapse(split_map_controls_widget)
+		split_map_controls = QVBoxLayout(split_map_controls_widget)
+		split_map_controls.setContentsMargins(0, 0, 0, 0)
+		split_map_controls.setSpacing(4)
+		self.split_map_add_button = QPushButton("Add Split Map")
+		self.split_map_add_button.setIcon(ADD_ICON)
+		self.split_map_rename_button = QPushButton("Rename Split Map")
+		self.split_map_rename_button.setIcon(RENAME_ICON)
+		self.split_map_remove_button = QPushButton("Remove Split Map")
+		self.split_map_remove_button.setIcon(DELETE_ICON)
+		self.split_map_check_normalization_button = QPushButton("Check Normalization")
+		self.split_map_check_normalization_button.setIcon(ANALYZE_ICON)
+		self._split_map_buttons = [
+			self.split_map_add_button,
+			self.split_map_rename_button,
+			self.split_map_remove_button,
+			self.split_map_check_normalization_button,
+		]
+		self._split_map_button_labels = {
+			button: button.text() for button in self._split_map_buttons
+		}
+		for button in self._split_map_buttons:
+			button.setToolTip(self._split_map_button_labels[button])
+			button.setMinimumWidth(0)
+			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setIconSize(self._tools_panel_expanded_icon_size)
+			button.setFixedHeight(34)
+			split_map_controls.addWidget(button)
+		split_map_controls.addStretch(1)
+		split_maps_lists_splitter.addWidget(split_map_controls_widget)
+
 		self.split_maps_list = SplitMapsDragList()
+		self._allow_horizontal_collapse(self.split_maps_list)
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_maps_list.setToolTip("All split maps; drag a map into the selected split group")
 		self.split_maps_list.setContextMenuPolicy(Qt.CustomContextMenu)
 		self.split_maps_list.setItemDelegate(SplitMapStatusDelegate(self.split_maps_list))
-		split_maps_column.addWidget(self.split_maps_list, 1)
+		split_maps_lists_splitter.addWidget(self.split_maps_list)
 
-		split_maps_controls = QHBoxLayout()
-		self.split_map_add_button = QPushButton("Add Split Map")
-		self.split_map_rename_button = QPushButton("Rename Split Map")
-		self.split_map_remove_button = QPushButton("Remove Split Map")
-		self.split_map_check_normalization_button = QPushButton("Check Normalization")
-		split_maps_controls.addWidget(self.split_map_add_button)
-		split_maps_controls.addWidget(self.split_map_rename_button)
-		split_maps_controls.addWidget(self.split_map_remove_button)
-		split_maps_controls.addWidget(self.split_map_check_normalization_button)
-		split_maps_column.addLayout(split_maps_controls)
-		split_maps_lists_layout.addLayout(split_maps_column, 1)
-
+		split_map_weights_column_widget = QWidget()
+		self._allow_horizontal_collapse(split_map_weights_column_widget)
 		split_map_weights_column = QVBoxLayout()
+		split_map_weights_column_widget.setLayout(split_map_weights_column)
+		split_map_weights_column.setContentsMargins(0, 0, 0, 0)
 		self.split_map_weights_list = QListWidget()
+		self._allow_horizontal_collapse(self.split_map_weights_list)
 		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_map_weights_list.setToolTip("Weights (suffixes) for selected split map")
 		self.split_map_weights_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -3153,20 +3241,50 @@ class MainWindow(QMainWindow):
 
 		split_map_weights_controls = QHBoxLayout()
 		self.split_map_weight_add_button = QPushButton("Add Weight")
+		self.split_map_weight_add_button.setIcon(ADD_ICON)
 		self.split_map_weight_rename_button = QPushButton("Rename Weight")
+		self.split_map_weight_rename_button.setIcon(RENAME_ICON)
 		self.split_map_weight_remove_button = QPushButton("Remove Weight")
+		self.split_map_weight_remove_button.setIcon(DELETE_ICON)
+		for button in (
+			self.split_map_weight_add_button,
+			self.split_map_weight_rename_button,
+			self.split_map_weight_remove_button,
+		):
+			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 		split_map_weights_controls.addWidget(self.split_map_weight_add_button)
 		split_map_weights_controls.addWidget(self.split_map_weight_rename_button)
 		split_map_weights_controls.addWidget(self.split_map_weight_remove_button)
 		split_map_weights_column.addLayout(split_map_weights_controls)
-		split_maps_lists_layout.addLayout(split_map_weights_column, 1)
-		split_maps_layout.addLayout(split_maps_lists_layout, 1)
+		split_maps_lists_splitter.addWidget(split_map_weights_column_widget)
+		split_maps_lists_splitter.setStretchFactor(0, 0)
+		split_maps_lists_splitter.setStretchFactor(1, 1)
+		split_maps_lists_splitter.setStretchFactor(2, 1)
+		split_maps_layout.addWidget(split_maps_lists_splitter, 1)
+		self._split_maps_lists_splitter = split_maps_lists_splitter
+		self._split_map_controls_widget = split_map_controls_widget
+		self._split_map_buttons_expanded_width = max(
+			button.sizeHint().width() for button in self._split_map_buttons
+		)
+		shared_controls_width = max(
+			self._split_group_buttons_expanded_width,
+			self._split_map_buttons_expanded_width,
+		)
+		self._split_group_buttons_expanded_width = shared_controls_width
+		self._split_map_buttons_expanded_width = shared_controls_width
+		self._set_split_group_buttons_compact_mode(True)
+		self._set_split_map_buttons_compact_mode(True)
+		split_groups_splitter.setSizes([40, 1, 1])
+		split_maps_lists_splitter.setSizes([40, 1, 1])
 
 		self.split_map_weight_stats_label = QLabel("Press Check Normalization to check split maps.")
 		split_maps_layout.addWidget(self.split_map_weight_stats_label)
 		right_layout.addWidget(split_maps_group, 1)
 
-		layout.addWidget(right_column, 3)
+		split_settings_splitter.addWidget(right_column)
+		split_settings_splitter.setStretchFactor(0, 2)
+		split_settings_splitter.setStretchFactor(1, 3)
+		split_settings_splitter.setSizes([2, 3])
 
 	def _apply_primaries_branch_icons(self) -> None:
 		"""Use fixed-size item icons for folders; hide branch glyphs tied to indentation."""
@@ -3582,6 +3700,10 @@ class MainWindow(QMainWindow):
 			self._editor_splitter.splitterMoved.connect(self._on_editor_splitter_moved)
 		if self._third_column_splitter is not None:
 			self._third_column_splitter.splitterMoved.connect(self._on_third_column_splitter_moved)
+		if self._split_groups_splitter is not None:
+			self._split_groups_splitter.splitterMoved.connect(self._on_split_groups_splitter_moved)
+		if self._split_maps_lists_splitter is not None:
+			self._split_maps_lists_splitter.splitterMoved.connect(self._on_split_maps_splitter_moved)
 		if self.main_tabs is not None:
 			self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
 
@@ -3609,6 +3731,95 @@ class MainWindow(QMainWindow):
 		self._shapes_header_compact_mode = compact
 		for button in self._shapes_header_buttons:
 			button.setText("" if compact else self._shapes_header_button_labels[button])
+
+	def _set_splitter_first_pane_size(self, splitter: QSplitter, target_width: int) -> None:
+		sizes = splitter.sizes()
+		if len(sizes) < 3:
+			return
+		current_width = sizes[0]
+		target_width = max(1, min(target_width, current_width + sizes[1] - 1))
+		first_list_width = sizes[1] - (target_width - current_width)
+		was_blocked = splitter.blockSignals(True)
+		try:
+			splitter.setSizes([target_width, first_list_width, sizes[2]])
+		finally:
+			splitter.blockSignals(was_blocked)
+
+	def _on_split_groups_splitter_moved(self, pos: int, index: int) -> None:
+		if self._split_groups_splitter is None or index != 1:
+			return
+		compact_width = 40
+		expanded_width = self._split_group_buttons_expanded_width
+		compact = pos < (compact_width + expanded_width) // 2
+		self._set_split_group_buttons_compact_mode(compact)
+		self._set_splitter_first_pane_size(
+			self._split_groups_splitter,
+			compact_width if compact else expanded_width,
+		)
+
+	def _set_split_group_buttons_compact_mode(self, compact: bool) -> None:
+		if (
+			self._split_groups_group_widget is None
+			or self._split_group_controls_widget is None
+			or not self._split_group_buttons
+		):
+			return
+		if compact == self._split_group_buttons_compact_mode:
+			return
+		self._split_group_buttons_compact_mode = compact
+		for button in self._split_group_buttons:
+			button.setText(
+				"" if compact else self._split_group_button_labels[button]
+			)
+			button.setStyleSheet(
+				"text-align: center; padding-left: 0px;"
+				if compact
+				else "text-align: left; padding-left: 5px;"
+			)
+			button.setIconSize(
+				self._tools_panel_compact_icon_size
+				if compact
+				else self._tools_panel_expanded_icon_size
+			)
+			button.updateGeometry()
+
+	def _on_split_maps_splitter_moved(self, pos: int, index: int) -> None:
+		if self._split_maps_lists_splitter is None or index != 1:
+			return
+		compact_width = 40
+		expanded_width = self._split_map_buttons_expanded_width
+		compact = pos < (compact_width + expanded_width) // 2
+		self._set_split_map_buttons_compact_mode(compact)
+		self._set_splitter_first_pane_size(
+			self._split_maps_lists_splitter,
+			compact_width if compact else expanded_width,
+		)
+
+	def _set_split_map_buttons_compact_mode(self, compact: bool) -> None:
+		if (
+			self._split_maps_lists_splitter is None
+			or self._split_map_controls_widget is None
+			or not self._split_map_buttons
+		):
+			return
+		if compact == self._split_map_buttons_compact_mode:
+			return
+		self._split_map_buttons_compact_mode = compact
+		for button in self._split_map_buttons:
+			button.setText(
+				"" if compact else self._split_map_button_labels[button]
+			)
+			button.setStyleSheet(
+				"text-align: center; padding-left: 0px;"
+				if compact
+				else "text-align: left; padding-left: 5px;"
+			)
+			button.setIconSize(
+				self._tools_panel_compact_icon_size
+				if compact
+				else self._tools_panel_expanded_icon_size
+			)
+			button.updateGeometry()
 
 	def _on_third_column_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._update_third_column_section_minimums()
@@ -3768,6 +3979,7 @@ class MainWindow(QMainWindow):
 	def _refresh_split_primary_assignments(self) -> None:
 		if self.current_editor is None:
 			self._split_primaries_model.set_assignments([], {})
+			self._update_split_primary_group_column_width()
 			return
 
 		try:
@@ -3783,10 +3995,25 @@ class MainWindow(QMainWindow):
 			except Exception:
 				assignments[primary] = "NoSplit"
 		self._split_primaries_model.set_assignments(group_names, assignments)
+		self._update_split_primary_group_column_width()
 		if self.split_primaries_tree is not None:
 			for row in range(self._split_primaries_model.rowCount()):
 				self.split_primaries_tree.openPersistentEditor(self._split_primaries_model.index(row, 1))
 			self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
+
+	def _update_split_primary_group_column_width(self) -> None:
+		if self.split_primaries_tree is None:
+			return
+		options = ["Split Group"] + self._split_primaries_model.group_names()
+		font_metrics = self.split_primaries_tree.fontMetrics()
+		text_width = max(font_metrics.horizontalAdvance(option) for option in options)
+		style = self.split_primaries_tree.style()
+		arrow_width = style.pixelMetric(QStyle.PM_ScrollBarExtent)
+		frame_width = style.pixelMetric(QStyle.PM_ComboBoxFrameWidth) * 2
+		self.split_primaries_tree.horizontalHeader().resizeSection(
+			1,
+			text_width + arrow_width + frame_width + 16,
+		)
 
 	def _refresh_split_groups(self) -> None:
 		if self.split_groups_list is None:
@@ -4199,7 +4426,7 @@ class MainWindow(QMainWindow):
 		if not suffix_name:
 			return
 		try:
-			self.current_editor.add_weights_to_split_map(split_map_name, [suffix_name])
+			self.current_editor.add_weight_to_split_map(split_map_name, suffix_name)
 		except Exception as exc:
 			self._set_status(f"Error adding split-map weight: {exc}", error=True)
 			return
@@ -4223,7 +4450,7 @@ class MainWindow(QMainWindow):
 		if not new_suffix or new_suffix == base_old_suffix:
 			return
 		try:
-			self.current_editor.rename_split_map_suffix(split_map_name, base_old_suffix, new_suffix)
+			self.current_editor.rename_split_map_weight(split_map_name, base_old_suffix, new_suffix)
 		except Exception as exc:
 			self._set_status(f"Error renaming split-map weight: {exc}", error=True)
 			return

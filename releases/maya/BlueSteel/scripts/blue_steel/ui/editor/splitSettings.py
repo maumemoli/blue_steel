@@ -182,6 +182,34 @@ class SplitPrimaryAssignmentsView(QTableView):
 
 	_primary_slider_layout = True
 
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self._syncing_column_widths = False
+		self.horizontalHeader().sectionResized.connect(self._on_section_resized)
+
+	def _resize_section(self, section: int, width: int) -> None:
+		header = self.horizontalHeader()
+		self._syncing_column_widths = True
+		try:
+			header.resizeSection(section, max(header.minimumSectionSize(), width))
+		finally:
+			self._syncing_column_widths = False
+
+	def _on_section_resized(self, section: int, _old_width: int, new_width: int) -> None:
+		if self._syncing_column_widths or self.model() is None or self.model().columnCount() < 2:
+			return
+		other_section = 1 if section == 0 else 0
+		other_width = self.viewport().width() - new_width
+		self._resize_section(other_section, other_width)
+
+	def resizeEvent(self, event) -> None:  # noqa: N802
+		group_width = self.columnWidth(1) if self.model() is not None else 0
+		super().resizeEvent(event)
+		if self.model() is None or self.model().columnCount() < 2:
+			return
+		self._resize_section(1, group_width)
+		self._resize_section(0, self.viewport().width() - group_width)
+
 	def assignment_targets(self, clicked_index: QModelIndex) -> List[str]:
 		clicked_name = str(clicked_index.data(PRIMARY_NAME_ROLE) or "")
 		selection_model = self.selectionModel()
@@ -233,6 +261,7 @@ class SplitPrimaryGroupCombo(QComboBox):
 		self.setFocusPolicy(Qt.NoFocus)
 		self.setFixedHeight(18)
 		self.setContentsMargins(0, 0, 0, 0)
+		self.setSizeAdjustPolicy(QComboBox.AdjustToContents)
 		self.setStyleSheet("QComboBox { margin: 0px; padding: 0px 4px; }")
 
 	def _capture_assignment_targets(self) -> None:
@@ -251,6 +280,13 @@ class SplitPrimaryGroupCombo(QComboBox):
 		if not self.assignment_targets:
 			self._capture_assignment_targets()
 		super().mousePressEvent(event)
+
+	def showPopup(self) -> None:  # noqa: N802
+		popup_view = self.view()
+		content_width = popup_view.sizeHintForColumn(0)
+		scrollbar_width = popup_view.verticalScrollBar().sizeHint().width()
+		popup_view.setMinimumWidth(max(self.width(), content_width + scrollbar_width + 8))
+		super().showPopup()
 
 	def hidePopup(self) -> None:  # noqa: N802
 		super().hidePopup()

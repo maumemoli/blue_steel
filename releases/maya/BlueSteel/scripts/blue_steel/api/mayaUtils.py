@@ -388,6 +388,32 @@ def pause_shape_editor(func):
 
     return wrapper
 
+def calculate_mesh_bounding_box_offset(mesh_name: str,
+                                       offset: float = 1.1,
+                                       world: bool = True):
+    """
+    Calculate the bounding box of a mesh with an offset.
+    Parameters:
+        mesh_name (str): The name of the mesh.
+        offset (float): The offset to apply to the bounding box.
+        world (bool): If True, returns world-space bounding box. If False, returns object-space bounding box.
+    Returns:
+        tuple: A tuple containing two tuples:
+            - min_point (tuple): A (3,) tuple representing the minimum point (x, y, z).
+            - max_point (tuple): A (3,) tuple representing the maximum point (x, y, z).
+    Example:
+        >>> min_point, max_point = calculate_mesh_bounding_box_offset("pCube1", 0.1, world=True)
+        >>> print("Min Point:", min_point)
+        Min Point: (-0.1, -0.1, -0.1)
+        >>> print("Max Point:", max_point)
+        Max Point: (1.1, 1.1, 1.1)
+    """
+    min_point, max_point = get_mesh_bounding_box(mesh_name, world=world)
+    off_set_vector = []
+    for i in range(3):
+        off_set_vector.append((max_point[i] - min_point[i]) * offset)
+    return off_set_vector
+
 def get_mesh_bounding_box(mesh_name: str, world = True):
     """
     Get the bounding box of a mesh.
