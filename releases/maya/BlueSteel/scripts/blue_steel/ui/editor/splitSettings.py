@@ -244,7 +244,7 @@ class SplitPrimaryAssignmentsView(QTableView):
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
-		if event.button() == Qt.MiddleButton and getattr(delegate, "is_drag_active", lambda: False)() and delegate.external_drag_end(event.pos().x()):
+		if event.button() == Qt.LeftButton and getattr(delegate, "is_drag_active", lambda: False)() and delegate.external_drag_end(event.pos().x()):
 			event.accept()
 			return
 		super().mouseReleaseEvent(event)

@@ -61,6 +61,9 @@ from ..common.icons import (
 	CONNECTED_MESH_DISABLED_ICON,
 	COMPARE_MESH_ICON,
 	HUD_ICON,
+	NORMALIZE_ICON,
+	MASK_ICON,
+	EDIT_SPLIT_MAP_ICON,
 
 )
 from ...mmtools import ui
@@ -1524,7 +1527,6 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._drag_range_px = 1
 		self._drag_target_indexes: List[QPersistentModelIndex] = []
 		self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
-		self._pending_primary_drag = None
 
 	def _open_drag_undo_chunk(self) -> None:
 		if self._undo_chunk_open:
@@ -1564,7 +1566,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
 		left_margin = self.LEFT_MARGIN + self._tree_row_indent(index)
-		if isinstance(self.parent(), PrimaryTreeWidget) or bool(getattr(self.parent(), "_primary_slider_layout", False)):
+		if bool(getattr(self.parent(), "_primary_slider_layout", False)):
 			value_rect = rect.adjusted(left_margin, 0, -self.RIGHT_MARGIN, 0)
 			text_rect = value_rect.adjusted(self.VALUE_TEXT_PADDING, 0, -self.VALUE_TEXT_PADDING, 0)
 			return value_rect, text_rect
@@ -1785,7 +1787,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 		painter.setPen(name_text_color)
 		painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, name)
-		if not isinstance(parent_view, PrimaryTreeWidget) and not bool(getattr(parent_view, "_primary_slider_layout", False)):
+		if not bool(getattr(parent_view, "_primary_slider_layout", False)):
 			painter.setPen(value_text_color)
 			painter.drawText(value_rect.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, f"{value:.3f}")
 
@@ -1977,26 +1979,18 @@ class SliderItemDelegate(QStyledItemDelegate):
 		self._end_drag(self._drag_model, x_pos)
 		return True
 
-	def queue_primary_drag(self, model, index, event_pos, value_rect: QRect) -> None:
-		"""Remember a primary slider press until selection has been processed."""
-		self._pending_primary_drag = (model, QPersistentModelIndex(index), event_pos, QRect(value_rect))
+	def external_drag_start(self, model, index, event_pos, item_rect: QRect) -> bool:
+		"""Start a drag when a view intercepts a press in this delegate's slider area."""
+		class _OptionRect:
+			pass
 
-	def start_pending_primary_drag(self, x_pos: int) -> bool:
-		"""Start a queued primary slider drag after the standard drag threshold."""
-		if self._pending_primary_drag is None:
+		option = _OptionRect()
+		option.rect = item_rect
+		value_rect, _ = self._area_rects(option, index)
+		if not value_rect.contains(event_pos):
 			return False
-		model, index, start_pos, value_rect = self._pending_primary_drag
-		if abs(x_pos - start_pos.x()) < QGuiApplication.styleHints().startDragDistance():
-			return False
-		self._pending_primary_drag = None
-		if not index.isValid():
-			return False
-		self._start_drag(model, index, start_pos, value_rect)
-		self._set_drag_value_from_pos(model, x_pos)
+		self._start_drag(model, index, event_pos, value_rect)
 		return True
-
-	def cancel_pending_primary_drag(self) -> None:
-		self._pending_primary_drag = None
 
 	def editorEvent(self, event, model, option, index):  # noqa: N802
 		if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
@@ -2029,14 +2023,10 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return super().editorEvent(event, model, option, index)
 
 		value_rect, _ = self._area_rects(option, index)
-		is_primary_slider = isinstance(self.parent(), PrimaryTreeWidget)
 		drag_button = Qt.LeftButton
 
 		if event.type() == QEvent.MouseButtonPress:
 			if event.button() == drag_button and value_rect.contains(event.pos()):
-				if is_primary_slider:
-					self.queue_primary_drag(model, index, event.pos(), value_rect)
-					return super().editorEvent(event, model, option, index)
 				if not self._drag_active:
 					self._start_drag(model, index, event.pos(), value_rect)
 				else:
@@ -2063,6 +2053,37 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return True
 
 		return super().editorEvent(event, model, option, index)
+
+
+class SplitMapWeightsList(QListWidget):
+	"""Selectable edit-blendshape weight sliders."""
+
+	def mouseMoveEvent(self, event):  # noqa: N802
+		delegate = self.itemDelegate()
+		if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
+			if delegate.external_drag_move(event.pos().x()):
+				event.accept()
+				return
+		super().mouseMoveEvent(event)
+
+	def mouseReleaseEvent(self, event):  # noqa: N802
+		delegate = self.itemDelegate()
+		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
+			if delegate.external_drag_end(event.pos().x()):
+				event.accept()
+				return
+		super().mouseReleaseEvent(event)
+
+
+class SplitMapWeightSliderDelegate(SliderItemDelegate):
+	"""Slider delegate without shape mute/lock icon slots."""
+
+	def _shows_mute_icon(self, index) -> bool:
+		del index
+		return False
+
+	def _panel_reserved_icon_slots(self) -> int:
+		return 0
 
 
 class SliderListView(QListView):
@@ -2489,13 +2510,13 @@ class ShapeTreeWidget(QTreeWidget):
 
 
 class PrimaryTreeWidget(QTreeWidget):
-	"""Primary tree with left-button sliders and middle-button item drags."""
+	"""Primary tree with left-button slider and item drags in separate row areas."""
 
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
-		self._middle_drag_start_pos = None
+		self._left_item_drag_start_pos = None
 
 	def _selected_draggable_shape_names(self) -> List[str]:
 		shape_names: List[str] = []
@@ -2523,15 +2544,26 @@ class PrimaryTreeWidget(QTreeWidget):
 			drag.exec_(Qt.CopyAction)
 
 	def mousePressEvent(self, event):  # noqa: N802
-		if event.button() == Qt.MiddleButton:
+		if event.button() == Qt.LeftButton:
+			self._left_item_drag_start_pos = None
+			index = self.indexAt(event.pos())
+			delegate = self.itemDelegateForColumn(0)
+			if (
+				index.isValid()
+				and isinstance(delegate, SliderItemDelegate)
+				and bool(index.data(ShapeItemsModel.EditableRole))
+				and delegate.external_drag_start(self.model(), index, event.pos(), self.visualRect(index))
+			):
+				event.accept()
+				return
+			super().mousePressEvent(event)
 			item = self.itemAt(event.pos())
 			if (
 				item is not None
 				and item.isSelected()
 				and not bool(item.data(0, ShapeItemsModel.IsHeaderRole))
 			):
-				self._middle_drag_start_pos = event.pos()
-			event.accept()
+				self._left_item_drag_start_pos = event.pos()
 			return
 		super().mousePressEvent(event)
 
@@ -2541,31 +2573,23 @@ class PrimaryTreeWidget(QTreeWidget):
 			if delegate.external_drag_move(event.pos().x()):
 				event.accept()
 				return
-		if isinstance(delegate, SliderItemDelegate) and event.buttons() & Qt.LeftButton:
-			if delegate.start_pending_primary_drag(event.pos().x()):
-				event.accept()
-				return
-		if self._middle_drag_start_pos is not None and event.buttons() & Qt.MiddleButton:
-			delta = event.pos() - self._middle_drag_start_pos
+		if self._left_item_drag_start_pos is not None and event.buttons() & Qt.LeftButton:
+			delta = event.pos() - self._left_item_drag_start_pos
 			if delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
-				self._middle_drag_start_pos = None
+				self._left_item_drag_start_pos = None
 				self._start_primary_drag()
 				event.accept()
 				return
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
-		if event.button() == Qt.MiddleButton:
-			self._middle_drag_start_pos = None
-			event.accept()
-			return
+		if event.button() == Qt.LeftButton:
+			self._left_item_drag_start_pos = None
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
 				event.accept()
 				return
-		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton:
-			delegate.cancel_pending_primary_drag()
 		super().mouseReleaseEvent(event)
 
 
@@ -2627,6 +2651,7 @@ class MainWindow(QMainWindow):
 		self.scene_editor_tracker: Optional[BlueSteelEditorsTracker] = None
 		self.blendshape_tracker: Optional[BlendShapeNodeTracker] = None
 		self.work_blendshape_tracker: Optional[BlendShapeNodeTracker] = None
+		self.split_map_edit_blendshape_tracker: Optional[BlendShapeNodeTracker] = None
 		self.split_attr_grp_tracker: Optional[ControllerTracker] = None
 		self._split_attr_refresh_pending = False
 		self._split_attr_full_refresh_pending = False
@@ -2705,8 +2730,10 @@ class MainWindow(QMainWindow):
 		self.split_groups_list: Optional[QListWidget] = None
 		self.split_group_maps_list: Optional[QListWidget] = None
 		self.split_maps_list: Optional[QListWidget] = None
-		self.split_map_weights_list: Optional[QListWidget] = None
+		self.split_map_weights_list: Optional[SplitMapWeightsList] = None
 		self.split_map_weight_stats_label: Optional[QLabel] = None
+		self._split_map_weight_slider_delegate: Optional[SplitMapWeightSliderDelegate] = None
+		self._syncing_split_map_weight_values = False
 		self._split_groups_group_widget: Optional[QGroupBox] = None
 		self._split_groups_splitter: Optional[QSplitter] = None
 		self._split_group_controls_widget: Optional[QWidget] = None
@@ -2716,10 +2743,17 @@ class MainWindow(QMainWindow):
 		self._split_group_buttons_expanded_width = 0
 		self._split_maps_lists_splitter: Optional[QSplitter] = None
 		self._split_map_controls_widget: Optional[QWidget] = None
+		self._split_map_weights_column_widget: Optional[QWidget] = None
+		self._split_map_weights_splitter: Optional[QSplitter] = None
+		self._split_map_weight_controls_widget: Optional[QWidget] = None
 		self._split_map_buttons: List[QPushButton] = []
 		self._split_map_button_labels: Dict[QPushButton, str] = {}
 		self._split_map_buttons_compact_mode = False
 		self._split_map_buttons_expanded_width = 0
+		self._split_map_weight_buttons: List[QPushButton] = []
+		self._split_map_weight_button_labels: Dict[QPushButton, str] = {}
+		self._split_map_weight_buttons_compact_mode = False
+		self._split_map_weight_buttons_expanded_width = 0
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -2834,7 +2868,7 @@ class MainWindow(QMainWindow):
 		self._apply_primaries_branch_icons()
 		self.primaries_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.primaries_view.setDragEnabled(False)
-		self.primaries_view.setToolTip("Left-click to select or adjust sliders; middle-drag selected primaries to drag and drop them")
+		self.primaries_view.setToolTip("Drag the value area to adjust; click names to select; drag selected names to drag and drop them")
 		self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self._primaries_delegate = SliderItemDelegate(self.primaries_view)
 		self.primaries_view.setItemDelegateForColumn(0, self._primaries_delegate)
@@ -3198,12 +3232,29 @@ class MainWindow(QMainWindow):
 		self.split_map_remove_button = QPushButton("Remove Split Map")
 		self.split_map_remove_button.setIcon(DELETE_ICON)
 		self.split_map_check_normalization_button = QPushButton("Check Normalization")
-		self.split_map_check_normalization_button.setIcon(ANALYZE_ICON)
+		self.split_map_check_normalization_button.setIcon(NORMALIZE_ICON)
+		self.split_map_edit_button = QPushButton("Edit Split Map")
+		self.split_map_edit_button.setIcon(EDIT_SPLIT_MAP_ICON)
+		self.split_map_weight_add_button = QPushButton("Add Weight")
+		self.split_map_weight_add_button.setIcon(ADD_ICON)
+		self.split_map_weight_rename_button = QPushButton("Rename Weight")
+		self.split_map_weight_rename_button.setIcon(RENAME_ICON)
+		self.split_map_weight_remove_button = QPushButton("Remove Weight")
+		self.split_map_weight_remove_button.setIcon(DELETE_ICON)
+		self.split_map_paint_mask_button = QPushButton("Paint Weight Mask")
+		self.split_map_paint_mask_button.setIcon(MASK_ICON)
+		self.split_map_weight_normalize_button = QPushButton("Normalize Weights")
+		self.split_map_weight_normalize_button.setIcon(NORMALIZE_ICON)
+		self.split_map_weight_apply_button = QPushButton("Apply Edits")
+		self.split_map_weight_apply_button.setIcon(COMMIT_ICON)
+		self.split_map_weight_cancel_button = QPushButton("Cancel Edits")
+		self.split_map_weight_cancel_button.setIcon(DELETE_ICON)
 		self._split_map_buttons = [
 			self.split_map_add_button,
 			self.split_map_rename_button,
 			self.split_map_remove_button,
 			self.split_map_check_normalization_button,
+			self.split_map_edit_button,
 		]
 		self._split_map_button_labels = {
 			button: button.text() for button in self._split_map_buttons
@@ -3227,36 +3278,62 @@ class MainWindow(QMainWindow):
 		self.split_maps_list.setItemDelegate(SplitMapStatusDelegate(self.split_maps_list))
 		split_maps_lists_splitter.addWidget(self.split_maps_list)
 
+		split_map_weights_splitter = QSplitter(Qt.Horizontal)
+		split_map_weights_splitter.setChildrenCollapsible(False)
+		split_map_weight_controls_widget = QWidget()
+		self._allow_horizontal_collapse(split_map_weight_controls_widget)
+		split_map_weight_controls = QVBoxLayout(split_map_weight_controls_widget)
+		split_map_weight_controls.setContentsMargins(0, 0, 0, 0)
+		split_map_weight_controls.setSpacing(4)
+		self._split_map_weight_buttons = [
+			self.split_map_weight_add_button,
+			self.split_map_weight_rename_button,
+			self.split_map_weight_remove_button,
+			self.split_map_paint_mask_button,
+			self.split_map_weight_normalize_button,
+		]
+		self._split_map_weight_button_labels = {
+			button: button.text() for button in self._split_map_weight_buttons
+		}
+		for button in self._split_map_weight_buttons:
+			button.setToolTip(self._split_map_weight_button_labels[button])
+			button.setMinimumWidth(0)
+			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setIconSize(self._tools_panel_expanded_icon_size)
+			button.setFixedHeight(34)
+			split_map_weight_controls.addWidget(button)
+		split_map_weight_controls.addStretch(1)
+		split_map_weights_splitter.addWidget(split_map_weight_controls_widget)
+
 		split_map_weights_column_widget = QWidget()
 		self._allow_horizontal_collapse(split_map_weights_column_widget)
 		split_map_weights_column = QVBoxLayout()
 		split_map_weights_column_widget.setLayout(split_map_weights_column)
 		split_map_weights_column.setContentsMargins(0, 0, 0, 0)
-		self.split_map_weights_list = QListWidget()
+		self.split_map_weights_list = SplitMapWeightsList()
 		self._allow_horizontal_collapse(self.split_map_weights_list)
 		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_map_weights_list.setToolTip("Weights (suffixes) for selected split map")
+		self.split_map_weights_list.setToolTip("Select a split-map weight or drag its slider to set the edit blendshape value")
 		self.split_map_weights_list.setContextMenuPolicy(Qt.CustomContextMenu)
+		self._split_map_weight_slider_delegate = SplitMapWeightSliderDelegate(self.split_map_weights_list)
+		self.split_map_weights_list.setItemDelegate(self._split_map_weight_slider_delegate)
 		split_map_weights_column.addWidget(self.split_map_weights_list, 1)
-
-		split_map_weights_controls = QHBoxLayout()
-		self.split_map_weight_add_button = QPushButton("Add Weight")
-		self.split_map_weight_add_button.setIcon(ADD_ICON)
-		self.split_map_weight_rename_button = QPushButton("Rename Weight")
-		self.split_map_weight_rename_button.setIcon(RENAME_ICON)
-		self.split_map_weight_remove_button = QPushButton("Remove Weight")
-		self.split_map_weight_remove_button.setIcon(DELETE_ICON)
-		for button in (
-			self.split_map_weight_add_button,
-			self.split_map_weight_rename_button,
-			self.split_map_weight_remove_button,
-		):
-			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-		split_map_weights_controls.addWidget(self.split_map_weight_add_button)
-		split_map_weights_controls.addWidget(self.split_map_weight_rename_button)
-		split_map_weights_controls.addWidget(self.split_map_weight_remove_button)
-		split_map_weights_column.addLayout(split_map_weights_controls)
-		split_maps_lists_splitter.addWidget(split_map_weights_column_widget)
+		split_map_edit_actions = QHBoxLayout()
+		split_map_edit_actions.setContentsMargins(0, 4, 0, 0)
+		self.split_map_weight_apply_button.setToolTip("Apply split-map weight edits")
+		self.split_map_weight_cancel_button.setToolTip("Cancel split-map weight edits")
+		split_map_edit_actions.addWidget(self.split_map_weight_apply_button, 1)
+		split_map_edit_actions.addWidget(self.split_map_weight_cancel_button, 1)
+		split_map_weights_column.addLayout(split_map_edit_actions)
+		split_map_weights_splitter.addWidget(split_map_weights_column_widget)
+		split_map_weights_splitter.setStretchFactor(0, 0)
+		split_map_weights_splitter.setStretchFactor(1, 1)
+		split_maps_lists_splitter.addWidget(split_map_weights_splitter)
+		self._split_map_weights_column_widget = split_map_weights_splitter
+		self._split_map_weights_splitter = split_map_weights_splitter
+		self._split_map_weight_controls_widget = split_map_weight_controls_widget
+		self._split_map_weights_column_widget.setVisible(False)
 		split_maps_lists_splitter.setStretchFactor(0, 0)
 		split_maps_lists_splitter.setStretchFactor(1, 1)
 		split_maps_lists_splitter.setStretchFactor(2, 1)
@@ -3266,6 +3343,9 @@ class MainWindow(QMainWindow):
 		self._split_map_buttons_expanded_width = max(
 			button.sizeHint().width() for button in self._split_map_buttons
 		)
+		self._split_map_weight_buttons_expanded_width = max(
+			button.sizeHint().width() for button in self._split_map_weight_buttons
+		)
 		shared_controls_width = max(
 			self._split_group_buttons_expanded_width,
 			self._split_map_buttons_expanded_width,
@@ -3274,11 +3354,19 @@ class MainWindow(QMainWindow):
 		self._split_map_buttons_expanded_width = shared_controls_width
 		self._set_split_group_buttons_compact_mode(True)
 		self._set_split_map_buttons_compact_mode(True)
+		self._set_split_map_weight_buttons_compact_mode(True)
 		split_groups_splitter.setSizes([40, 1, 1])
 		split_maps_lists_splitter.setSizes([40, 1, 1])
+		split_map_weights_splitter.setSizes([40, 1])
 
+		split_map_labels_layout = QHBoxLayout()
 		self.split_map_weight_stats_label = QLabel("Press Check Normalization to check split maps.")
-		split_maps_layout.addWidget(self.split_map_weight_stats_label)
+		split_map_labels_layout.addWidget(self.split_map_weight_stats_label)
+		split_map_labels_layout.addStretch(1)
+		self.split_map_weights_label = QLabel("Editing Split Map: None")
+		self.split_map_weights_label.setVisible(False)
+		split_map_labels_layout.addWidget(self.split_map_weights_label)
+		split_maps_layout.addLayout(split_map_labels_layout)
 		right_layout.addWidget(split_maps_group, 1)
 
 		split_settings_splitter.addWidget(right_column)
@@ -3678,6 +3766,8 @@ class MainWindow(QMainWindow):
 			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
 		if self.split_map_weights_list is not None:
 			self.split_map_weights_list.customContextMenuRequested.connect(self._show_split_map_weights_context_menu)
+			self.split_map_weights_list.currentItemChanged.connect(self._on_split_map_weight_selection_changed)
+			self.split_map_weights_list.model().dataChanged.connect(self._on_split_map_weight_value_changed)
 		if hasattr(self, "split_group_add_button"):
 			self.split_group_add_button.clicked.connect(self._on_create_split_group_clicked)
 			self.split_group_remove_button.clicked.connect(self._on_remove_split_group_clicked)
@@ -3686,9 +3776,14 @@ class MainWindow(QMainWindow):
 			self.split_map_rename_button.clicked.connect(self._on_rename_split_map_clicked)
 			self.split_map_remove_button.clicked.connect(self._on_remove_split_map_clicked)
 			self.split_map_check_normalization_button.clicked.connect(lambda: self._check_split_maps_normalization(split_map_name=None))
+			self.split_map_edit_button.clicked.connect(self._on_edit_split_map_clicked)
 			self.split_map_weight_add_button.clicked.connect(self._on_add_split_map_weight_clicked)
 			self.split_map_weight_rename_button.clicked.connect(self._on_rename_split_map_weight_clicked)
 			self.split_map_weight_remove_button.clicked.connect(self._on_remove_split_map_weight_clicked)
+			self.split_map_paint_mask_button.clicked.connect(self._on_paint_split_map_weight_mask_clicked)
+			self.split_map_weight_normalize_button.clicked.connect(self._on_normalize_edit_split_map_weights_clicked)
+			self.split_map_weight_apply_button.clicked.connect(self._on_apply_edit_split_map_clicked)
+			self.split_map_weight_cancel_button.clicked.connect(self._on_cancel_edit_split_map_clicked)
 
 		self._apply_shapes_name_sort()
 		self._sort_primaries_tree()
@@ -3704,6 +3799,8 @@ class MainWindow(QMainWindow):
 			self._split_groups_splitter.splitterMoved.connect(self._on_split_groups_splitter_moved)
 		if self._split_maps_lists_splitter is not None:
 			self._split_maps_lists_splitter.splitterMoved.connect(self._on_split_maps_splitter_moved)
+		if self._split_map_weights_splitter is not None:
+			self._split_map_weights_splitter.splitterMoved.connect(self._on_split_map_weights_splitter_moved)
 		if self.main_tabs is not None:
 			self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
 
@@ -3821,13 +3918,70 @@ class MainWindow(QMainWindow):
 			)
 			button.updateGeometry()
 
+	def _on_split_map_weights_splitter_moved(self, _pos: int, index: int) -> None:
+		if self._split_map_weights_splitter is None or index != 1:
+			return
+		sizes = self._split_map_weights_splitter.sizes()
+		if len(sizes) < 2:
+			return
+		compact_width = 40
+		expanded_width = self._split_map_weight_buttons_expanded_width
+		compact = sizes[0] < (compact_width + expanded_width) // 2
+		self._set_split_map_weight_buttons_compact_mode(compact)
+		total_width = sum(sizes)
+		target_width = compact_width if compact else expanded_width
+		self._split_map_weights_splitter.setSizes([
+			target_width,
+			max(1, total_width - target_width),
+		])
+
+	def _set_split_map_weight_buttons_compact_mode(self, compact: bool) -> None:
+		if (
+			self._split_map_weights_splitter is None
+			or self._split_map_weight_controls_widget is None
+			or not self._split_map_weight_buttons
+		):
+			return
+		if compact == self._split_map_weight_buttons_compact_mode:
+			return
+		self._split_map_weight_buttons_compact_mode = compact
+		for button in self._split_map_weight_buttons:
+			button.setText(
+				"" if compact else self._split_map_weight_button_labels[button]
+			)
+			button.setStyleSheet(
+				"text-align: center; padding-left: 0px;"
+				if compact
+				else "text-align: left; padding-left: 5px;"
+			)
+			button.setIconSize(
+				self._tools_panel_compact_icon_size
+				if compact
+				else self._tools_panel_expanded_icon_size
+			)
+			button.updateGeometry()
+
 	def _on_third_column_splitter_moved(self, _pos: int, _index: int) -> None:
 		self._update_third_column_section_minimums()
 		self._update_delegate_name_columns()
 
 	def _on_main_tab_changed(self, index: int) -> None:
-		if self.main_tabs is not None and self.main_tabs.tabText(index) == "Split Settings":
+		if self.main_tabs is None:
+			return
+		tab_name = self.main_tabs.tabText(index)
+		self._sync_split_map_edit_mesh_visibility(tab_name == "Split Settings")
+		if tab_name == "Split Settings":
 			self._check_split_maps_normalization(split_map_name = None)
+
+	def _sync_split_map_edit_mesh_visibility(self, visible: bool) -> None:
+		if self.current_editor is None:
+			return
+		try:
+			if self.current_editor.get_current_edit_split_map() is None:
+				return
+			self.current_editor.switch_visibility_to_split_map_edit_mesh(visible)
+		except Exception as exc:
+			self._set_status(f"Error switching split-map edit mesh visibility: {exc}", error=True)
 
 	def _update_third_column_section_minimums(self) -> None:
 		if self._third_column_splitter is None or not self._third_column_sections:
@@ -3950,9 +4104,14 @@ class MainWindow(QMainWindow):
 			getattr(self, "split_map_rename_button", None),
 			getattr(self, "split_map_remove_button", None),
 			getattr(self, "split_map_check_normalization_button", None),
+			getattr(self, "split_map_edit_button", None),
 			getattr(self, "split_map_weight_add_button", None),
 			getattr(self, "split_map_weight_rename_button", None),
 			getattr(self, "split_map_weight_remove_button", None),
+			getattr(self, "split_map_paint_mask_button", None),
+			getattr(self, "split_map_weight_normalize_button", None),
+			getattr(self, "split_map_weight_apply_button", None),
+			getattr(self, "split_map_weight_cancel_button", None),
 		]:
 			if widget is not None:
 				widget.setEnabled(enabled)
@@ -4079,26 +4238,92 @@ class MainWindow(QMainWindow):
 		if self.split_map_weights_list is None:
 			return
 		self.split_map_weights_list.clear()
-		split_map_name = split_map_name or self._selected_split_map_name()
-		if self.current_editor is None or not split_map_name:
+		split_map_name = self._current_edit_split_map_name()
+		editing = bool(split_map_name)
+		if self._split_map_weights_column_widget is not None:
+			self._split_map_weights_column_widget.setVisible(editing)
+		if getattr(self, "split_map_weights_label", None) is not None:
+			self.split_map_weights_label.setVisible(editing)
+			self.split_map_weights_label.setText(
+				f"Editing Split Map: {split_map_name}" if editing else "Editing Split Map: None"
+			)
+		for button in (
+			getattr(self, "split_map_weight_add_button", None),
+			getattr(self, "split_map_weight_rename_button", None),
+			getattr(self, "split_map_weight_remove_button", None),
+			getattr(self, "split_map_paint_mask_button", None),
+			getattr(self, "split_map_weight_normalize_button", None),
+			getattr(self, "split_map_weight_apply_button", None),
+			getattr(self, "split_map_weight_cancel_button", None),
+		):
+			if button is not None:
+				button.setEnabled(editing)
+		if not editing:
 			if self.split_map_weight_stats_label is not None:
 				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 			return
 		try:
 			suffices = self.current_editor.get_split_map_suffices(split_map_name)
+			weight_values = self.current_editor.get_current_edit_split_map_weight_values()
 		except Exception as exc:
 			self._set_status(f"Error reading split map weights: {exc}", error=True)
 			return
 		for raw_suffix in suffices:
-			display_suffix = str(raw_suffix)
 			prefix = f"{split_map_name}_"
+			weight_name = str(raw_suffix)
+			if not weight_name.startswith(prefix):
+				weight_name = f"{prefix}{weight_name}"
+			display_suffix = weight_name
 			if display_suffix.startswith(prefix):
 				display_suffix = display_suffix[len(prefix):]
 			item = QListWidgetItem(display_suffix)
-			item.setData(Qt.UserRole, str(raw_suffix))
+			item.setData(Qt.UserRole, weight_name)
+			item.setData(ShapeItemsModel.NameRole, display_suffix)
+			item.setData(ShapeItemsModel.TypeRole, "SplitMapWeight")
+			item.setData(ShapeItemsModel.ValueRole, float(weight_values.get(weight_name, 0.0)))
+			item.setData(ShapeItemsModel.MutedRole, False)
+			item.setData(ShapeItemsModel.EditableRole, True)
+			item.setData(ShapeItemsModel.IsHeaderRole, False)
+			item.setData(ShapeItemsModel.LockIconVisibleRole, False)
+			item.setFlags(item.flags() | Qt.ItemIsEditable)
 			self.split_map_weights_list.addItem(item)
 		if self.split_map_weight_stats_label is not None:
 			self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
+
+	def _sync_split_map_weight_slider_values(self) -> None:
+		if self.current_editor is None or self.split_map_weights_list is None:
+			return
+		try:
+			weight_values = self.current_editor.get_current_edit_split_map_weight_values()
+		except Exception:
+			return
+		self._syncing_split_map_weight_values = True
+		try:
+			for row in range(self.split_map_weights_list.count()):
+				item = self.split_map_weights_list.item(row)
+				weight_name = str(item.data(Qt.UserRole) or "")
+				item.setData(ShapeItemsModel.ValueRole, float(weight_values.get(weight_name, 0.0)))
+		finally:
+			self._syncing_split_map_weight_values = False
+
+	def _on_split_map_weight_value_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+		if self._syncing_split_map_weight_values or self.current_editor is None or self.split_map_weights_list is None:
+			return
+		if roles and ShapeItemsModel.ValueRole not in roles:
+			return
+		for row in range(top_left.row(), bottom_right.row() + 1):
+			item = self.split_map_weights_list.item(row)
+			if item is None:
+				continue
+			weight_name = str(item.data(Qt.UserRole) or "")
+			value = float(item.data(ShapeItemsModel.ValueRole) or 0.0)
+			try:
+				self.current_editor.set_current_edit_split_map_weight_value(weight_name, value)
+			except Exception as exc:
+				self._set_status(f"Error setting edit weight '{weight_name}': {exc}", error=True)
+				self._sync_split_map_weight_slider_values()
+				return
+		self._set_status(f"Updated edit blendshape weight '{weight_name}' to {value:.3f}.")
 
 	def _selected_split_group_name(self) -> Optional[str]:
 		if self.split_groups_list is None or self.split_groups_list.currentItem() is None:
@@ -4110,6 +4335,15 @@ class MainWindow(QMainWindow):
 			return None
 		return self.split_maps_list.currentItem().text().strip()
 
+	def _current_edit_split_map_name(self) -> Optional[str]:
+		if self.current_editor is None:
+			return None
+		try:
+			return self.current_editor.get_current_edit_split_map()
+		except Exception as exc:
+			self._set_status(f"Error reading current split-map edit mode: {exc}", error=True)
+			return None
+
 	def _selected_split_map_weight_suffix(self) -> Optional[str]:
 		if self.split_map_weights_list is None or self.split_map_weights_list.currentItem() is None:
 			return None
@@ -4118,6 +4352,34 @@ class MainWindow(QMainWindow):
 		if raw_suffix:
 			return str(raw_suffix)
 		return item.text().strip()
+
+	def _on_split_map_weight_selection_changed(self, current_item, _previous_item) -> None:
+		if self.current_editor is None or current_item is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		if not split_map_name:
+			return
+		weight_suffix = str(current_item.data(Qt.UserRole) or current_item.text()).strip()
+		if not weight_suffix:
+			return
+		prefix = f"{split_map_name}_"
+		weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{prefix}{weight_suffix}"
+		try:
+			edit_mesh = self.current_editor.split_map_edit_mesh
+			edit_mesh_shape = cmds.listRelatives(edit_mesh, shapes=True, fullPath=True) or []
+			edit_mesh_shapes = set([edit_mesh] + edit_mesh_shape)
+			selected = cmds.ls(selection=True, long=True) or []
+			self.current_editor.activate_edit_split_weight(weight_name)
+			if any(obj in edit_mesh_shapes for obj in selected):
+				current_context = cmds.currentCtx()
+				if current_context == "sculptMeshCacheContext":
+					self.current_editor.set_current_edit_split_map_weight_paint_mask(weight_name)
+				elif current_context == "artAttrBlendShapeContext":
+					self.current_editor.set_current_edit_split_map_weight_paint_weight(weight_name)
+		except Exception as exc:
+			self._set_status(f"Error activating split-map weight: {exc}", error=True)
+			return
+		self._set_status(f"Selected split-map weight '{weight_name}'.")
 
 	def _on_split_primary_search_changed(self, text: str) -> None:
 		self._split_primaries_model.set_search_text(text)
@@ -4143,7 +4405,7 @@ class MainWindow(QMainWindow):
 		self._refresh_split_group_maps(group_name)
 
 	def _on_split_map_selection_changed(self, split_map_name: str) -> None:
-		self._refresh_split_map_weights(split_map_name)
+		self._refresh_split_map_weights()
 
 	def _check_split_maps_normalization(self, split_map_name = None) -> None:
 		print(f"Checking normalization for split map: {split_map_name}")
@@ -4210,12 +4472,12 @@ class MainWindow(QMainWindow):
 			action.setEnabled(can_paste)
 		selected_action = menu.exec(self.split_map_weights_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_map_weights_list.viewport().mapToGlobal(pos))
 		operations = {
-			convert_soft_selection_action: ("convert_soft_selection_to_split_weight_map", "Converted soft selection to"),
-			copy_action: ("copy_split_weight_map_values", "Copied"),
-			paste_action: ("paste_split_weight_map_values", "Pasted"),
-			paste_inverted_action: ("paste_inverted_split_weight_map_values", "Pasted inverted values to"),
-			add_action: ("add_split_weight_map_values", "Added copied values to"),
-			subtract_action: ("subtract_split_weight_map_values", "Subtracted copied values from"),
+			convert_soft_selection_action: ("convert_soft_selection_to_edit_split_weight_map", "Converted soft selection to"),
+			copy_action: ("copy_edit_split_weight_map_values", "Copied"),
+			paste_action: ("paste_edit_split_weight_map_values", "Pasted"),
+			paste_inverted_action: ("paste_inverted_edit_split_weight_map_values", "Pasted inverted values to"),
+			add_action: ("add_edit_split_weight_map_values", "Added copied values to"),
+			subtract_action: ("subtract_edit_split_weight_map_values", "Subtracted copied values from"),
 		}
 		operation = operations.get(selected_action)
 		if operation is not None:
@@ -4224,7 +4486,7 @@ class MainWindow(QMainWindow):
 	def _run_split_weight_map_operation(self, method_name: str, status_verb: str) -> None:
 		if self.current_editor is None:
 			return
-		split_map_name = self._selected_split_map_name()
+		split_map_name = self._current_edit_split_map_name()
 		weight_suffix = self._selected_split_map_weight_suffix()
 		if not split_map_name or not weight_suffix:
 			return
@@ -4411,13 +4673,82 @@ class MainWindow(QMainWindow):
 		self._reload_split_settings_from_editor()
 		self._set_status(f"Removed split map '{current_name}'.")
 
-
-	def _on_add_split_map_weight_clicked(self) -> None:
+	def _on_edit_split_map_clicked(self) -> None:
 		if self.current_editor is None:
 			return
 		split_map_name = self._selected_split_map_name()
 		if not split_map_name:
 			self._set_status("Select a split map first.", warning=True)
+			return
+		self._clear_split_map_edit_blendshape_tracker()
+		try:
+			self.current_editor.create_split_map_edit_blendshape(split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error entering split-map edit mode: {exc}", error=True)
+			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_map_weights()
+		self._set_status(f"Editing split map '{split_map_name}'.")
+
+	def _on_normalize_edit_split_map_weights_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		if not split_map_name:
+			self._set_status("Enter split-map edit mode first.", warning=True)
+			return
+		try:
+			self.current_editor.normalize_edit_split_map_weights(split_map_name)
+		except Exception as exc:
+			self._set_status(f"Error normalizing edited split map: {exc}", error=True)
+			return
+		self._set_status(f"Normalized edited split map '{split_map_name}'.")
+
+	def _on_apply_edit_split_map_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		if not split_map_name:
+			self._set_status("Enter split-map edit mode first.", warning=True)
+			return
+		self._clear_split_map_edit_blendshape_tracker()
+		try:
+			self.current_editor.apply_current_edit_split_map()
+		except Exception as exc:
+			self._set_status(f"Error applying split-map edits: {exc}", error=True)
+			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_map_weights()
+		self._check_split_maps_normalization(split_map_name)
+		self._set_status(f"Applied edits to split map '{split_map_name}'.")
+
+	def _on_cancel_edit_split_map_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		if not split_map_name:
+			self._set_status("Enter split-map edit mode first.", warning=True)
+			return
+		self._clear_split_map_edit_blendshape_tracker()
+		try:
+			self.current_editor.cancel_current_edit_split_map()
+		except Exception as exc:
+			self._set_status(f"Error cancelling split-map edits: {exc}", error=True)
+			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_map_weights()
+		self._set_status(f"Cancelled edits to split map '{split_map_name}'.")
+
+
+	def _on_add_split_map_weight_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		if not split_map_name:
+			self._set_status("Enter split-map edit mode first.", warning=True)
 			return
 		suffix_name, ok = QInputDialog.getText(self, "Add Split Map Weight", "Weight suffix name:")
 		if not ok:
@@ -4425,11 +4756,15 @@ class MainWindow(QMainWindow):
 		suffix_name = (suffix_name or "").strip()
 		if not suffix_name:
 			return
+		if self.split_map_edit_blendshape_tracker is not None:
+			self.split_map_edit_blendshape_tracker.stop()
 		try:
 			self.current_editor.add_weight_to_split_map(split_map_name, suffix_name)
 		except Exception as exc:
 			self._set_status(f"Error adding split-map weight: {exc}", error=True)
 			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
 		self._check_split_maps_normalization(split_map_name)
 		self._refresh_split_map_weights(split_map_name)
 		self._set_status(f"Added weight '{split_map_name}_{suffix_name}'.")
@@ -4437,7 +4772,7 @@ class MainWindow(QMainWindow):
 	def _on_rename_split_map_weight_clicked(self) -> None:
 		if self.current_editor is None:
 			return
-		split_map_name = self._selected_split_map_name()
+		split_map_name = self._current_edit_split_map_name()
 		old_suffix = self._selected_split_map_weight_suffix()
 		if not split_map_name or not old_suffix:
 			return
@@ -4449,30 +4784,60 @@ class MainWindow(QMainWindow):
 		new_suffix = (new_suffix or "").strip()
 		if not new_suffix or new_suffix == base_old_suffix:
 			return
+		if self.split_map_edit_blendshape_tracker is not None:
+			self.split_map_edit_blendshape_tracker.stop()
 		try:
 			self.current_editor.rename_split_map_weight(split_map_name, base_old_suffix, new_suffix)
 		except Exception as exc:
 			self._set_status(f"Error renaming split-map weight: {exc}", error=True)
 			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
 		self._reload_split_settings_from_editor()
 		self._set_status(f"Renamed weight '{split_map_name}_{base_old_suffix}' to '{split_map_name}_{new_suffix}'.")
+
+	def _on_paint_split_map_weight_mask_clicked(self) -> None:
+		if self.current_editor is None:
+			return
+		split_map_name = self._current_edit_split_map_name()
+		weight_suffix = self._selected_split_map_weight_suffix()
+		if not split_map_name or not weight_suffix:
+			return
+		prefix = f"{split_map_name}_"
+		weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{split_map_name}_{weight_suffix}"
+		paint_weight = bool(QGuiApplication.keyboardModifiers() & Qt.AltModifier)
+		paint_method = (
+			self.current_editor.set_current_edit_split_map_weight_paint_weight
+			if paint_weight
+			else self.current_editor.set_current_edit_split_map_weight_paint_mask
+		)
+		paint_mode = "target weight" if paint_weight else "target mask"
+		try:
+			paint_method(weight_name)
+		except Exception as exc:
+			self._set_status(f"Error entering {paint_mode} paint mode: {exc}", error=True)
+			return
+		self._set_status(f"Entered {paint_mode} paint mode for split-map weight '{weight_name}'.")
 
 	def _on_remove_split_map_weight_clicked(self) -> None:
 		if self.current_editor is None:
 			return
-		split_map_name = self._selected_split_map_name()
+		split_map_name = self._current_edit_split_map_name()
 		suffix_name = self._selected_split_map_weight_suffix()
 		if not split_map_name or not suffix_name:
 			return
-		weight_name = f"{split_map_name}_{suffix_name}"
+		if self.split_map_edit_blendshape_tracker is not None:
+			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.remove_weight_from_split_map(split_map_name, weight_name)
+			self.current_editor.remove_weight_from_split_map(split_map_name, suffix_name)
 		except Exception as exc:
 			self._set_status(f"Error removing split-map weight: {exc}", error=True)
 			return
+		finally:
+			self._setup_split_map_edit_blendshape_tracker()
 		self._check_split_maps_normalization(split_map_name)
 		self._refresh_split_map_weights(split_map_name)
-		self._set_status(f"Removed weight '{weight_name}'.")
+		self._set_status(f"Removed weight '{suffix_name}'.")
 
 	def _show_controller_layout_window(self) -> None:
 		if self._controller_layout_window is None:
@@ -5981,13 +6346,21 @@ class MainWindow(QMainWindow):
 		self.apply_work_shapes_button.setEnabled(has_editor and bool(self._work_shape_model.has_connected_driver_shapes()))
 
 	def _stop_active_blendshape_trackers(self) -> None:
-		for tracker in (self.blendshape_tracker, self.work_blendshape_tracker):
+		for tracker in (
+			self.blendshape_tracker,
+			self.work_blendshape_tracker,
+			self.split_map_edit_blendshape_tracker,
+		):
 			if tracker is not None:
 				print(f"Stopping active blendshape tracker {tracker.node_name}.")
 				tracker.stop()
 
 	def _start_active_blendshape_trackers(self) -> None:
-		for tracker in (self.blendshape_tracker, self.work_blendshape_tracker):
+		for tracker in (
+			self.blendshape_tracker,
+			self.work_blendshape_tracker,
+			self.split_map_edit_blendshape_tracker,
+		):
 			if tracker is not None:
 				print(f"Starting active blendshape tracker {tracker.node_name}.")
 				tracker.start()
@@ -6755,8 +7128,40 @@ class MainWindow(QMainWindow):
 			self.work_blendshape_tracker.start()
 		else:
 			print("No work blendshape found for current editor, skipping work tracker setup.")
+		self._setup_split_map_edit_blendshape_tracker()
+
+	def _setup_split_map_edit_blendshape_tracker(self) -> None:
+		node_name = None
+		if self.current_editor is not None:
+			node_name = self.current_editor.split_map_edit_blendshape
+		if not node_name or not cmds.objExists(node_name):
+			self._clear_split_map_edit_blendshape_tracker()
+			return
+		if (
+			self.split_map_edit_blendshape_tracker is not None
+			and self.split_map_edit_blendshape_tracker.node_name == node_name
+		):
+			self.split_map_edit_blendshape_tracker.start()
+			return
+
+		self._clear_split_map_edit_blendshape_tracker()
+		tracker = BlendShapeNodeTracker(node_name, parent=self)
+		tracker.shapeValueChanged.connect(self._on_split_map_edit_weight_value_changed, Qt.QueuedConnection)
+		tracker.shapeAdded.connect(self._on_split_map_edit_structure_changed)
+		tracker.shapeRemoved.connect(self._on_split_map_edit_structure_changed)
+		tracker.shapeRenamed.connect(self._on_split_map_edit_structure_changed)
+		tracker.nodeDeleted.connect(self._on_split_map_edit_blendshape_deleted)
+		tracker.start()
+		self.split_map_edit_blendshape_tracker = tracker
+
+	def _clear_split_map_edit_blendshape_tracker(self) -> None:
+		if isinstance(self.split_map_edit_blendshape_tracker, BlendShapeNodeTracker):
+			self.split_map_edit_blendshape_tracker.kill()
+			self.split_map_edit_blendshape_tracker.deleteLater()
+		self.split_map_edit_blendshape_tracker = None
 
 	def _clear_blendshape_tracker(self) -> None:
+		self._clear_split_map_edit_blendshape_tracker()
 		if isinstance(self.blendshape_tracker, BlendShapeNodeTracker):
 			self.blendshape_tracker.kill()
 			self.blendshape_tracker.deleteLater()
@@ -6879,6 +7284,12 @@ class MainWindow(QMainWindow):
 	def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
 		del shape_id
 		self._work_shape_model.set_value_local(shape_name, value)
+
+	def _on_split_map_edit_weight_value_changed(self, _shape_id: int, _shape_name: str, _value: float) -> None:
+		self._sync_split_map_weight_slider_values()
+
+	def _on_split_map_edit_structure_changed(self, *_args) -> None:
+		self._refresh_split_map_weights()
 
 	def _on_work_shape_structure_changed(self, *_args) -> None:
 		print("Work shape structure changed, reloading work shapes from editor...")
@@ -7061,6 +7472,11 @@ class MainWindow(QMainWindow):
 	def _on_work_blendshape_deleted(self, blendshape_name: str) -> None:
 		self.set_current_editor(None)
 		self._set_status(f"Work blendshape '{blendshape_name}' deleted.", warning=True)
+
+	def _on_split_map_edit_blendshape_deleted(self, blendshape_name: str) -> None:
+		self._clear_split_map_edit_blendshape_tracker()
+		self._refresh_split_map_weights()
+		self._set_status(f"Split-map edit blendshape '{blendshape_name}' deleted.", warning=True)
 
 	def _on_scene_reset(self) -> None:
 		def deferred():

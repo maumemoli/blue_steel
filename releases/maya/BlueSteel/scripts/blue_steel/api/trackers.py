@@ -563,6 +563,8 @@ class BlendShapeNodeTracker(QObject):
     # Public API
     # ------------------------------------------------------------------
     def start(self):
+        if self._attribute_callback_ids:
+            return
         self._refresh_snapshot()
         node_removed_callback_id = om2.MDGMessage.addNodeRemovedCallback(
             self._on_node_removed,

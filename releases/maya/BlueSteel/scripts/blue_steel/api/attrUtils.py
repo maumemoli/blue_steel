@@ -143,7 +143,7 @@ def get_message_attr(node: str, attr_name: str):
     full_attr_name = f"{node}.{attr_name}"
     if not cmds.attributeQuery(attr_name,node = node, exists=True):
         return None
-    connections = cmds.listConnections(full_attr_name, source=True, destination=False)
+    connections = cmds.listConnections(full_attr_name, source=True, destination=False, fullNodeName=True)
     if connections:
         return connections[0]
     return None

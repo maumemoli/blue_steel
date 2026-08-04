@@ -677,24 +677,14 @@ class BlueSteelEditor(object):
         w = self.blendshape.get_weight_by_name(shape)
         if w is None:
             raise ValueError(f"Shape '{shape}' not found in the blendshape.")
-        # we need to temporarily disconnect the driver if it's connected to the face ctrl
-        
-        driver = self.blendshape.get_weight_driver(w)
+        controller_attr = f"{self.face_ctrl}.{shape}"
         blend_attr = f"{self.blendshape.name}.{shape}"
-        if driver == self.face_ctrl:
-            driving_attribute = cmds.listConnections(blend_attr,
-                                                     source=True,
-                                                     destination=False,
-                                                     plugs=True) or []
-            if not driving_attribute:
-                raise ValueError(f"Failed to get driving attribute for shape '{shape}'.")
-            # cmds.disconnectAttr(driving_attribute[0], blend_attr)
-            cmds.setAttr(driving_attribute[0], value)
-            # reconnecting the driver
-            # cmds.connectAttr(driving_attribute[0],blend_attr, force=True)
-            shape_value = round(cmds.getAttr(blend_attr), 2) 
-            if shape_value != value:
-                raise ValueError(f"Failed to set shape '{shape}' to value {value}. Current value is {shape_value}.")
+        if not cmds.objExists(controller_attr):
+            raise ValueError(f"Controller attribute '{controller_attr}' does not exist.")
+        cmds.setAttr(controller_attr, value)
+        shape_value = round(cmds.getAttr(blend_attr), 2)
+        if shape_value != value:
+            raise ValueError(f"Failed to set shape '{shape}' to value {value}. Current value is {shape_value}.")
 
     @undoable
     def delete_work_shapes(self, work_shape_names: list):
@@ -3137,6 +3127,18 @@ class BlueSteelEditor(object):
         spit_map_weights = self.get_split_map_weights(split_map_name)
         self.normalize_shapes_weight_map_values(self.split_blendshape, spit_map_weights)
 
+    def normalize_edit_split_map_weights(self, split_map_name: str):
+        """ normalize the weights of a split map in the edit_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        """
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(self.split_map_edit_blendshape)
+
+        spit_map_weights = split_map_edit_blendshape.get_weights()
+        self.normalize_shapes_weight_map_values(split_map_edit_blendshape, spit_map_weights)
+
     def is_split_map_normalized(self, split_map_name: str, tolerance: float = 1e-5) -> bool:
         """Return whether the split-map weights sum to 1.0 at every vertex."""
         split_map_weights = self.get_split_map_weights(split_map_name)
@@ -3678,7 +3680,6 @@ class BlueSteelEditor(object):
             
             cmds.evaluationManager(mode="off")
             cmds.cycleCheck(e=False)
-            cmds.refresh(suspend=True)
             for shape in sorted_shapes:
                 if cmds.progressBar(gMainProgressBar, query=True, isCancelled=True):
                     split_cancelled = True
@@ -3945,6 +3946,25 @@ class BlueSteelEditor(object):
         with open(export_file, "w") as f:
             json.dump(split_settings, f, indent=4)
 
+    def switch_visibility_to_split_map_edit_mesh(self, state):
+        """
+        Switch the visibility of the split map edit mesh.
+        Parameters:
+            state (bool): The state to switch the visibility to. Default is True.
+        Returns:
+            None
+        """
+        if self.split_map_edit_mesh is None or not cmds.objExists(self.split_map_edit_mesh):
+            cmds.setAttr(f"{self.base_mesh}.visibility", True)
+            return
+        # we need to check if we are in a sculpt or weight painting mode and switch to object mode if we are
+        current_context = cmds.currentCtx()
+        if current_context in ["sculptMeshCacheContext", "artAttrBlendShapeContext"]:
+            cmds.setToolTo("selectSuperContext")
+        cmds.setAttr(f"{self.split_map_edit_mesh}.visibility", state)
+        cmds.setAttr(f"{self.base_mesh}.visibility", not state)
+
+
     def create_split_map_edit_mesh(self):
         """
         Create a duplicate of the mesh with a blendshape for each split map.
@@ -3955,11 +3975,10 @@ class BlueSteelEditor(object):
         attrUtils.add_message_attr(self.name, split_mesh_attr)
         split_map_edit_mesh_name = f"{self.base_mesh.split('|')[-1]}_{split_mesh_attr}"
         split_map_edit_mesh = self.duplicate_base_mesh_neutral_state(split_map_edit_mesh_name)
-        offset = mayaUtils.calculate_mesh_bounding_box_offset(self.base_mesh)
-        cmds.move(offset[0], 0, 0, split_map_edit_mesh, relative=True, worldSpace=True)
         # let's connect the split map edit mesh to the attribute
         cmds.connectAttr(f"{split_map_edit_mesh}.message",f"{self.name}.{split_mesh_attr}", force=True)
         # we need to add all the split maps
+        self.switch_visibility_to_split_map_edit_mesh(True)
 
     def get_current_edit_split_map(self):
         """
@@ -3973,11 +3992,22 @@ class BlueSteelEditor(object):
         weight = blend.get_weight_by_id(0)
         if weight is None:
             return None
-        split_name = weight.split("_")[0]
-        if split_name not in self.get_split_maps():
-            return None
-        return split_name
+        weight_name = str(weight)
+        split_maps = sorted(self.get_split_maps(), key=len, reverse=True)
+        return next(
+            (split_name for split_name in split_maps if weight_name.startswith(f"{split_name}_")),
+            None,
+        )
 
+    def cancel_current_edit_split_map(self):
+        """
+        Cancel the current split map edit mesh.
+        This will delete the split map edit mesh and switch the visibility back to the base mesh.
+        """
+        if self.split_map_edit_mesh is None or not cmds.objExists(self.split_map_edit_mesh):
+            raise ValueError("Split map edit mesh does not exist")
+        self.switch_visibility_to_split_map_edit_mesh(False)
+        cmds.delete(self.split_map_edit_mesh)
 
     def apply_current_edit_split_map(self):
         """
@@ -3997,7 +4027,21 @@ class BlueSteelEditor(object):
             edit_split_blend.transfer_weight_map(source_weight_id=edit_weight.id,
                                                  target_weight_id=weight.id,
                                                  target_blendshape=self.split_blendshape.name)
+        self.switch_visibility_to_split_map_edit_mesh(False)
         cmds.delete(self.split_map_edit_mesh)
+
+    def activate_edit_split_weight(self, weight_name: str):
+        current_edit_split_map = self.get_current_edit_split_map()
+        if current_edit_split_map is None:
+            raise ValueError("No current split map edit mesh found")
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        edit_split_blend = Blendshape(self.split_map_edit_blendshape)
+        weight = edit_split_blend.get_weight_by_name(weight_name)
+        if weight is None:
+            raise ValueError(f"Weight {weight_name} does not exist in split map edit blendshape")
+        for w in edit_split_blend.get_weights():
+            edit_split_blend.set_weight_value(w, 1.0 if w == weight else 0.0)
 
     def set_current_edit_split_map_weight_paint_mask(self, weight_name: str):
         current_edit_split_map = self.get_current_edit_split_map()
@@ -4009,7 +4053,55 @@ class BlueSteelEditor(object):
         weight = edit_split_blend.get_weight_by_name(weight_name)
         if weight is None:
             raise ValueError(f"Weight {weight_name} does not exist in split map edit blendshape")
-        edit_split_blend.set_target_mask_painting_mode(weight.id)
+        edit_split_blend.set_target_mask_paint_mode(weight.id)
+
+    def set_current_edit_split_map_weight_paint_weight(self, weight_name: str):
+        if self.get_current_edit_split_map() is None:
+            raise ValueError("No current split map edit mesh found")
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        edit_split_blend = Blendshape(self.split_map_edit_blendshape)
+        weight = edit_split_blend.get_weight_by_name(weight_name)
+        if weight is None:
+            raise ValueError(f"Weight {weight_name} does not exist in split map edit blendshape")
+        edit_split_blend.set_target_weight_paint_mode(weight)
+
+    def set_current_edit_split_map_weight_active(self, weight_name: str):
+        if self.get_current_edit_split_map() is None:
+            raise ValueError("No current split map edit mesh found")
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+
+        edit_split_blend = Blendshape(self.split_map_edit_blendshape)
+        selected_weight = edit_split_blend.get_weight_by_name(weight_name)
+        if selected_weight is None:
+            raise ValueError(f"Weight {weight_name} does not exist in split map edit blendshape")
+        for weight in edit_split_blend.get_weights():
+            edit_split_blend.set_weight_value(weight, 1.0 if weight == selected_weight else 0.0)
+
+    def get_current_edit_split_map_weight_values(self) -> dict:
+        if self.get_current_edit_split_map() is None:
+            return {}
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            return {}
+
+        edit_split_blend = Blendshape(self.split_map_edit_blendshape)
+        return {
+            str(weight): float(edit_split_blend.get_weight_value(weight))
+            for weight in edit_split_blend.get_weights()
+        }
+
+    def set_current_edit_split_map_weight_value(self, weight_name: str, value: float):
+        if self.get_current_edit_split_map() is None:
+            raise ValueError("No current split map edit mesh found")
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+
+        edit_split_blend = Blendshape(self.split_map_edit_blendshape)
+        weight = edit_split_blend.get_weight_by_name(weight_name)
+        if weight is None:
+            raise ValueError(f"Weight {weight_name} does not exist in split map edit blendshape")
+        edit_split_blend.set_weight_value(weight, max(0.0, min(1.0, float(value))))
 
     def create_split_map_edit_blendshape(self, split_map_name: str):
         """
@@ -4156,44 +4248,68 @@ class BlueSteelEditor(object):
                                                                 output_target_index=weight.id)
         
 
-    def copy_split_weight_map_values(self, shape_name: str):
+    def copy_edit_split_weight_map_values(self, shape_name: str):
         """
         Copy a weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to copy the weight map from."""
-        self.copy_blendshape_weight_map_values(self.split_blendshape,
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.copy_blendshape_weight_map_values(split_map_edit_blendshape,
                                                shape_name)
 
-    def paste_split_weight_map_values(self, shape_name: str):
+    def paste_edit_split_weight_map_values(self, shape_name: str):
         """
         Paste a weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to paste the weight map to."""
-        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name)
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.paste_blendshape_weight_map_values_to_shape(split_map_edit_blendshape, shape_name)
 
-    def paste_inverted_split_weight_map_values(self, shape_name: str):
+    def paste_inverted_edit_split_weight_map_values(self, shape_name: str):
         """
         Paste an inverted weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to paste the weight map to."""
-        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, invert=True)
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.paste_blendshape_weight_map_values_to_shape(split_map_edit_blendshape, shape_name, invert=True)
 
-    def add_split_weight_map_values(self, shape_name: str):
+    def add_edit_split_weight_map_values(self, shape_name: str):
         """
         Add a weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to add the weight map to."""
-        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, add=True)
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.paste_blendshape_weight_map_values_to_shape(split_map_edit_blendshape, shape_name, add=True)
 
-    def subtract_split_weight_map_values(self, shape_name: str):
+    def subtract_edit_split_weight_map_values(self, shape_name: str):
         """
         Subtract a weight from the split_blendshape to the split_maps_blendshape.
         Parameters:
             shape_name (str): The name of the shape to subtract the weight map from."""
-        self.paste_blendshape_weight_map_values_to_shape(self.split_blendshape, shape_name, subtract=True)
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.paste_blendshape_weight_map_values_to_shape(split_map_edit_blendshape, shape_name, subtract=True)
 
-    def convert_soft_selection_to_split_weight_map(self, shape_name: str):
-        self.convert_soft_selection_to_weight_map(self.split_blendshape, shape_name)
+    def convert_soft_selection_to_edit_split_weight_map(self, shape_name: str):
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        self.convert_soft_selection_to_weight_map(split_map_edit_blendshape, shape_name)
 
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):

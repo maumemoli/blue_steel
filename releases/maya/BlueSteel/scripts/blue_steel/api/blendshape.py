@@ -1670,7 +1670,7 @@ class Blendshape(object):
         self.set_weight_map_values(weight.id, weight_map_values)
 
 
-    def set_target_mask_painting_mode(self, target_id: int, target_value: int = 6000):
+    def set_target_mask_paint_mode(self, target_id: int, target_value: int = 6000):
         """
         Puts the specified target into mask painting mode for the given weight.
         Parameters:
@@ -1690,12 +1690,11 @@ class Blendshape(object):
             
         cmds.select(base, r=True)
         # we need to set the target in edit mode to be able to paint the mask
-
+        self.set_sculpt_target_index(target_id)
         # now we need to get in in sculpting mode
         # Create the context if it doesn't exist
         mel.eval('setMeshSculptTool("Mask")')
-        self.set_sculpt_target_index(target_id)
-        return
+        
         # This will update the map
         cmds.setToolTo("sculptMeshCacheContext")
 
