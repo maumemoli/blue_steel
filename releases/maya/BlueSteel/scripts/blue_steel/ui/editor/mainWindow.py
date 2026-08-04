@@ -2517,6 +2517,8 @@ class PrimaryTreeWidget(QTreeWidget):
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
 		self._left_item_drag_start_pos = None
+		self._left_item_drag_pressed_item = None
+		self._left_item_drag_shape_names: List[str] = []
 
 	def _selected_draggable_shape_names(self) -> List[str]:
 		shape_names: List[str] = []
@@ -2528,8 +2530,7 @@ class PrimaryTreeWidget(QTreeWidget):
 				shape_names.append(shape_name)
 		return shape_names
 
-	def _start_primary_drag(self) -> None:
-		shape_names = self._selected_draggable_shape_names()
+	def _start_primary_drag(self, shape_names: Sequence[str]) -> None:
 		if not shape_names:
 			return
 		mime_data = QMimeData()
@@ -2546,6 +2547,8 @@ class PrimaryTreeWidget(QTreeWidget):
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
 			self._left_item_drag_start_pos = None
+			self._left_item_drag_pressed_item = None
+			self._left_item_drag_shape_names = []
 			index = self.indexAt(event.pos())
 			delegate = self.itemDelegateForColumn(0)
 			if (
@@ -2556,14 +2559,27 @@ class PrimaryTreeWidget(QTreeWidget):
 			):
 				event.accept()
 				return
-			super().mousePressEvent(event)
 			item = self.itemAt(event.pos())
+			preserved_selection = []
+			if (
+				item is not None
+				and item.isSelected()
+				and event.modifiers() == Qt.NoModifier
+			):
+				preserved_selection = self.selectedItems()
+				self._left_item_drag_shape_names = self._selected_draggable_shape_names()
+			super().mousePressEvent(event)
+			for selected_item in preserved_selection:
+				selected_item.setSelected(True)
 			if (
 				item is not None
 				and item.isSelected()
 				and not bool(item.data(0, ShapeItemsModel.IsHeaderRole))
 			):
 				self._left_item_drag_start_pos = event.pos()
+				self._left_item_drag_pressed_item = item
+				if not self._left_item_drag_shape_names:
+					self._left_item_drag_shape_names = self._selected_draggable_shape_names()
 			return
 		super().mousePressEvent(event)
 
@@ -2576,21 +2592,35 @@ class PrimaryTreeWidget(QTreeWidget):
 		if self._left_item_drag_start_pos is not None and event.buttons() & Qt.LeftButton:
 			delta = event.pos() - self._left_item_drag_start_pos
 			if delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
+				shape_names = list(self._left_item_drag_shape_names)
 				self._left_item_drag_start_pos = None
-				self._start_primary_drag()
+				self._left_item_drag_pressed_item = None
+				self._left_item_drag_shape_names = []
+				self._start_primary_drag(shape_names)
 				event.accept()
 				return
+			event.accept()
+			return
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
+		pressed_item = None
 		if event.button() == Qt.LeftButton:
+			if self._left_item_drag_start_pos is not None:
+				pressed_item = self._left_item_drag_pressed_item
 			self._left_item_drag_start_pos = None
+			self._left_item_drag_pressed_item = None
+			self._left_item_drag_shape_names = []
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
 				event.accept()
 				return
 		super().mouseReleaseEvent(event)
+		if pressed_item is not None and event.modifiers() == Qt.NoModifier:
+			self.clearSelection()
+			pressed_item.setSelected(True)
+			self.setCurrentItem(pressed_item)
 
 
 class PrimaryTreeItem(QTreeWidgetItem):
