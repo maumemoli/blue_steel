@@ -4239,7 +4239,9 @@ class MainWindow(QMainWindow):
 			return
 		self.split_map_weights_list.clear()
 		split_map_name = self._current_edit_split_map_name()
+		print(f"Refreshing split map weights for: {split_map_name}")
 		editing = bool(split_map_name)
+
 		if self._split_map_weights_column_widget is not None:
 			self._split_map_weights_column_widget.setVisible(editing)
 		if getattr(self, "split_map_weights_label", None) is not None:
@@ -4263,7 +4265,7 @@ class MainWindow(QMainWindow):
 				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 			return
 		try:
-			suffices = self.current_editor.get_split_map_suffices(split_map_name)
+			suffices = self.current_editor.get_edit_split_map_suffices()
 			weight_values = self.current_editor.get_current_edit_split_map_weight_values()
 		except Exception as exc:
 			self._set_status(f"Error reading split map weights: {exc}", error=True)
@@ -4699,7 +4701,7 @@ class MainWindow(QMainWindow):
 			self._set_status("Enter split-map edit mode first.", warning=True)
 			return
 		try:
-			self.current_editor.normalize_edit_split_map_weights(split_map_name)
+			self.current_editor.normalize_edit_split_map_weights()
 		except Exception as exc:
 			self._set_status(f"Error normalizing edited split map: {exc}", error=True)
 			return
@@ -4759,7 +4761,7 @@ class MainWindow(QMainWindow):
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.add_weight_to_split_map(split_map_name, suffix_name)
+			self.current_editor.add_weight_to_split_map_edit_blendshape(split_map_name, suffix_name)
 		except Exception as exc:
 			self._set_status(f"Error adding split-map weight: {exc}", error=True)
 			return
@@ -4787,7 +4789,7 @@ class MainWindow(QMainWindow):
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.rename_split_map_weight(split_map_name, base_old_suffix, new_suffix)
+			self.current_editor.rename_edit_split_map_edit_blendshape_weight(split_map_name, base_old_suffix, new_suffix)
 		except Exception as exc:
 			self._set_status(f"Error renaming split-map weight: {exc}", error=True)
 			return
@@ -4829,13 +4831,12 @@ class MainWindow(QMainWindow):
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.remove_weight_from_split_map(split_map_name, suffix_name)
+			self.current_editor.remove_weight_from_split_map_edit_blendshape(split_map_name, suffix_name)
 		except Exception as exc:
 			self._set_status(f"Error removing split-map weight: {exc}", error=True)
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
-		self._check_split_maps_normalization(split_map_name)
 		self._refresh_split_map_weights(split_map_name)
 		self._set_status(f"Removed weight '{suffix_name}'.")
 

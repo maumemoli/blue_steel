@@ -59,6 +59,7 @@ class BlueSteelEditor(object):
     SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
     SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER = "splitMapEditMesh"
     SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER = "splitMapEditBlendshape"
+    SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER = "splitMapEditCurrent"
     FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
     NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
     BASE_MESH_STRING_IDENTIFIER = "baseMesh"
@@ -137,6 +138,8 @@ class BlueSteelEditor(object):
         self.sync_up_muted_shapes()
         self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
         self._sync_up_split_maps_attributes()
+        # make sure the split map edit mesh is hidden when the editor is initialized
+        self.switch_visibility_to_split_map_edit_mesh(False)
 
     #-----------------------------
     # HUD SETUP
@@ -3096,6 +3099,29 @@ class BlueSteelEditor(object):
             raise ValueError("Split groups order attribute does not exist")
         return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER) or []
 
+    def get_edit_split_map_weights(self) -> list:
+        """ get the weights of a split map in the edit_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        Returns:
+            list: A list of weights for the split map.
+        """
+        if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(self.split_map_edit_blendshape)
+        return split_map_edit_blendshape.get_weights()
+
+    def get_edit_split_map_suffices(self) -> list:
+        """ get the suffices of a split map in the edit_blendshape.
+        Parameters:
+            split_map_name (str): The name of the split map.
+        Returns:
+            list: A list of suffices for the split map.
+        """
+        edit_weights = self.get_edit_split_map_weights()
+        suffices = [w.split("_")[-1] for w in edit_weights]
+        return suffices
+
     def get_split_map_suffices(self, split_map_name: str) -> list:
         """ get the suffices of a split map in the split_blendshape.
         Parameters:
@@ -3127,7 +3153,7 @@ class BlueSteelEditor(object):
         spit_map_weights = self.get_split_map_weights(split_map_name)
         self.normalize_shapes_weight_map_values(self.split_blendshape, spit_map_weights)
 
-    def normalize_edit_split_map_weights(self, split_map_name: str):
+    def normalize_edit_split_map_weights(self):
         """ normalize the weights of a split map in the edit_blendshape.
         Parameters:
             split_map_name (str): The name of the split map.
@@ -3218,8 +3244,7 @@ class BlueSteelEditor(object):
             raise ValueError(f"Weight {old_weight_name} does not have a target directory")
         self.split_blendshape.rename_target_dir(split_map_dir, new_name)
         self.split_blendshape.rename_weight(old_weight_name, new_weight_name)
-        self.rename_edit_split_map_edit_blendshape_weight(split_map_name, old_name, new_name)
-
+  
     def rename_split_map(self, old_name: str, new_name: str):
         """ rename a split map in the split_blendshape and in the split groups attribute.
         Parameters:
@@ -3381,19 +3406,21 @@ class BlueSteelEditor(object):
         edit_split_blend = Blendshape(self.split_map_edit_blendshape)
         existing_weights = edit_split_blend.get_weights()
         if weight_name not in existing_weights:
-            edit_split_blend.add_target(weight_name=weight_name)
-        return weight_name
+            weight =edit_split_blend.add_target(weight_name=weight_name)
+            # we need to connect the target to the base mesh
+            edit_split_blend.connect_mesh_to_target(weight_id=weight.id, mesh=self.base_mesh)
+        return weight
 
 
     @undoable
-    def add_weight_to_split_map(self, split_map_name: str, suffix: str):
+    def add_weight_to_split_map(self, split_map_name: str, suffix: str)-> Weight:
         """
         Add a weight to a split map in the split_blendshape.
         Parameters:
             split_map_name (str): The name of the split map to add the weights to.
             suffix (str): The name of the weight to add to the split map.
         Returns:
-            None
+            Weight: The newly added weight.
         """
         if not re.match(r'^[a-zA-Z]+$', suffix):
             raise ValueError(f"Suffix {suffix} contains invalid characters. "
@@ -3412,11 +3439,8 @@ class BlueSteelEditor(object):
             raise Warning(f"Weight {weight_name} already exists in the split_blendshape")
         # we need to add the weight to the split map
         weight_name_dir = self.split_blendshape.add_target_dir(name=suffix, parent_index=parent_index)
-        self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
-        # let's see if split map we added the weights to is being currently edited
-        if self.get_current_edit_split_map() == split_map_name:
-            self.add_weight_to_split_map_edit_blendshape(split_map_name, suffix)
-
+        weight = self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
+        return weight
     @undoable
     def rename_split_group(self, old_name: str, new_name: str):
         """
@@ -3559,7 +3583,6 @@ class BlueSteelEditor(object):
         
         self.split_blendshape.remove_target(weight_to_remove)
         self.split_blendshape.remove_target_dir(parent_dir)
-        self.remove_weight_from_split_map_edit_blendshape(split_map_name, weight_name)
 
     @undoable
     def remove_split_group(self, split_group_name: str):
@@ -3628,6 +3651,8 @@ class BlueSteelEditor(object):
         Returns:
             str: The name of the new editor.
         """
+        if self.get_current_edit_split_map() is not None:
+            raise ValueError("Cannot split shapes while editing a split map. Please exit the edit mode first.")
         # let's time it
         start_time = time.time()
         mode = cmds.evaluationManager(query=True, mode=True)[0]
@@ -3977,7 +4002,7 @@ class BlueSteelEditor(object):
         split_map_edit_mesh = self.duplicate_base_mesh_neutral_state(split_map_edit_mesh_name)
         # let's connect the split map edit mesh to the attribute
         cmds.connectAttr(f"{split_map_edit_mesh}.message",f"{self.name}.{split_mesh_attr}", force=True)
-        # we need to add all the split maps
+         #we need to add all the split maps
         self.switch_visibility_to_split_map_edit_mesh(True)
 
     def get_current_edit_split_map(self):
@@ -3987,18 +4012,16 @@ class BlueSteelEditor(object):
             str: The name of the current split map edit mesh.
         """
         if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
+            print("Split map edit blendshape does not exist")
             return None
-        blend = Blendshape(self.split_map_edit_blendshape)
-        weight = blend.get_weight_by_id(0)
-        if weight is None:
+        string_attr = self.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
+        if not cmds.attributeQuery(string_attr, node=self.split_map_edit_blendshape, exists=True):
+            print("Split map edit current attribute does not exist")
             return None
-        weight_name = str(weight)
-        split_maps = sorted(self.get_split_maps(), key=len, reverse=True)
-        return next(
-            (split_name for split_name in split_maps if weight_name.startswith(f"{split_name}_")),
-            None,
-        )
-
+        attr_name = f"{self.split_map_edit_blendshape}.{string_attr}"
+        attr = cmds.getAttr(attr_name) or None
+        return attr
+    
     def cancel_current_edit_split_map(self):
         """
         Cancel the current split map edit mesh.
@@ -4009,10 +4032,10 @@ class BlueSteelEditor(object):
         self.switch_visibility_to_split_map_edit_mesh(False)
         cmds.delete(self.split_map_edit_mesh)
 
-    def apply_current_edit_split_map(self):
+    def sync_split_map_weights_to_split_map_edit_weights(self):
         """
-        Apply the current split map edit mesh to the split_blendshape.
-        This will transfer the weight maps from the split map edit mesh to the split_blendshape.
+        Sync the weights from the split_blendshape to the split_map_edit_blendshape.
+        This will transfer the weight maps from the split_blendshape to the split_map_edit_blendshape.
         """
         current_edit_split_map = self.get_current_edit_split_map()
         if current_edit_split_map is None:
@@ -4020,13 +4043,28 @@ class BlueSteelEditor(object):
         if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
             raise ValueError("Split map edit blendshape does not exist")
         edit_split_blend = Blendshape(self.split_map_edit_blendshape)
-        for weight in self.get_split_map_weights(current_edit_split_map):
-            edit_weight = edit_split_blend.get_weight_by_name(weight)
-            if edit_weight is None:
-                raise ValueError(f"Weight {weight} does not exist in split map edit blendshape")
+        # we need to clear up all the weights in the split_blendshape weight map.
+        weights_to_delete = self.get_split_map_weights(current_edit_split_map)
+        for weight in weights_to_delete:
+            self.remove_weight_from_split_map(current_edit_split_map, weight)
+        for edit_weight in edit_split_blend.get_weights():
+            print(f"Syncing weight {edit_weight} to split map {current_edit_split_map}")
+            suffix = edit_weight.split(f"{current_edit_split_map}_")[-1]
+            self.add_weight_to_split_map(current_edit_split_map, suffix)
+            split_weight = self.split_blendshape.get_weight_by_name(edit_weight)
+            if split_weight is None:
+                raise ValueError(f"Weight {suffix} does not exist in split map edit blendshape")
+            print(f"Transferring weight map from {edit_weight} to {split_weight}")
             edit_split_blend.transfer_weight_map(source_weight_id=edit_weight.id,
-                                                 target_weight_id=weight.id,
+                                                 target_weight_id=split_weight.id,
                                                  target_blendshape=self.split_blendshape.name)
+
+    def apply_current_edit_split_map(self):
+        """
+        Apply the current split map edit mesh to the split_blendshape.
+        This will transfer the weight maps from the split map edit mesh to the split_blendshape.
+        """
+        self.sync_split_map_weights_to_split_map_edit_weights()
         self.switch_visibility_to_split_map_edit_mesh(False)
         cmds.delete(self.split_map_edit_mesh)
 
@@ -4137,6 +4175,9 @@ class BlueSteelEditor(object):
         cmds.connectAttr(f"{split_map_edit_blendshape}.message",f"{self.name}.{split_map_edit_blend_attr}",
                          force=True)
         split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        # we need to add a string attribute where to store the current split map.
+        split_map_edit_current_attr = self.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
+        attrUtils.add_string_attr(split_map_edit_blendshape, split_map_edit_current_attr, split_map_name)
         for weight in self.get_split_map_weights(split_map_name):
             new_target_weight = split_map_edit_blendshape.add_target(weight)
             # we need to transfer the weight maps from the split weight to the newly created weight.
@@ -4144,6 +4185,7 @@ class BlueSteelEditor(object):
                                                       target_weight_id = new_target_weight.id,
                                                       target_blendshape = split_map_edit_blendshape.name,)
             split_map_edit_blendshape.connect_mesh_to_target(new_target_weight.id, self.base_mesh)
+            split_map_edit_blendshape.set_weight_value(new_target_weight, 1.0)
 
     def import_split_settings(self, import_path: str):
         """
