@@ -11,6 +11,16 @@ They are mostly used to convert Maya API arrays to numpy arrays and vice versa.
 This is using Maya API v1.0 because in this circumstance it is faster than v2.0.
 """
 
+def assign_default_material(meshes):
+    meshes = cmds.ls(meshes, dag=True, type="mesh", long=True)
+
+    if not meshes:
+        cmds.warning("No mesh shapes found.")
+        return
+
+    # Assign the default shading group
+    cmds.sets(meshes, edit=True, forceElement="initialShadingGroup")
+
 # Utility function to get mfnMesh from a mesh name
 def get_dag_path(node_name: str):
     """

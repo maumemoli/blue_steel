@@ -4000,10 +4000,12 @@ class BlueSteelEditor(object):
         attrUtils.add_message_attr(self.name, split_mesh_attr)
         split_map_edit_mesh_name = f"{self.base_mesh.split('|')[-1]}_{split_mesh_attr}"
         split_map_edit_mesh = self.duplicate_base_mesh_neutral_state(split_map_edit_mesh_name)
+        mayaUtils.assign_default_material(split_map_edit_mesh)
         # let's connect the split map edit mesh to the attribute
         cmds.connectAttr(f"{split_map_edit_mesh}.message",f"{self.name}.{split_mesh_attr}", force=True)
          #we need to add all the split maps
         self.switch_visibility_to_split_map_edit_mesh(True)
+        return split_map_edit_mesh
 
     def get_current_edit_split_map(self):
         """
