@@ -4152,12 +4152,14 @@ class BlueSteelEditor(object):
             # we need to create a prompt to ask the user if they want to switch to the new split map edit mesh
             result = cmds.confirmDialog(title='Switch Split Map Edit Mesh',
                                         message=f'You are currently editing the split map "{current_edit_split_map}".\nDo you want to apply the edits to the split map before switching to "{split_map_name}"?',
-                                        button=['Yes', 'No',],
+                                        button=['Yes', 'No', 'Cancel'],
                                         defaultButton='Yes',
-                                        cancelButton='No',
-                                        dismissString='No')
+                                        cancelButton='Cancel',
+                                        dismissString='Cancel')
             if result == 'Yes':
                 self.apply_current_edit_split_map()
+            elif result == 'Cancel':
+                return
         if current_edit_split_map == split_map_name:
             raise ValueError(f"Split map {split_map_name} is already being edited")
         if split_map_name not in self.get_split_maps():

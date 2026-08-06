@@ -3546,7 +3546,6 @@ class MainWindow(QMainWindow):
 			self.split_map_rename_button,
 			self.split_map_remove_button,
 			self.split_map_check_normalization_button,
-			self.split_map_edit_button,
 		]
 		self._split_map_button_labels = {
 			button: button.text() for button in self._split_map_buttons
@@ -3609,6 +3608,7 @@ class MainWindow(QMainWindow):
 		split_map_weight_controls.setContentsMargins(0, 0, 0, 0)
 		split_map_weight_controls.setSpacing(4)
 		self._split_map_weight_buttons = [
+			self.split_map_edit_button,
 			self.split_map_weight_add_button,
 			self.split_map_weight_rename_button,
 			self.split_map_weight_remove_button,
@@ -4539,7 +4539,8 @@ class MainWindow(QMainWindow):
 		editing = bool(split_map_name)
 
 		if self._split_map_editor_group_widget is not None:
-			self._split_map_editor_group_widget.setEnabled(editing)
+			self._split_map_editor_group_widget.setEnabled(self.current_editor is not None)
+		self.split_map_weights_list.setEnabled(editing)
 		if getattr(self, "split_map_weights_label", None) is not None:
 			self.split_map_weights_label.setText(
 				f"Editing Split Map: {split_map_name}" if editing else "Editing Split Map: None"
