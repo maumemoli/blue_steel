@@ -21,6 +21,7 @@ import traceback
 
 import maya.OpenMayaUI as omui
 from maya import cmds
+from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
 
 from ... import env
 from ...api.editor import BlueSteelEditor
@@ -76,8 +77,8 @@ from ...mmtools import ui
 WINDOW = None
 SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
-	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
+	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPoint, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
+	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
 		QMenu,
@@ -90,6 +91,7 @@ if env.MAYA_VERSION > 2024:
 		QLayout,
 		QLineEdit,
 		QListView,
+		QMenuBar,
 		QMainWindow,
 		QMessageBox,
 		QPushButton,
@@ -106,13 +108,14 @@ if env.MAYA_VERSION > 2024:
 		QComboBox,
 		QListWidget,
 		QListWidgetItem,
+		QTabBar,
 		QTabWidget,
 		QTableView,
 	)
 	from shiboken6 import wrapInstance
 else:
-	from PySide2.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QDrag, QGuiApplication, QPalette
+	from PySide2.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPoint, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
+	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
 	from PySide2.QtWidgets import (
 		QAction,
 		QAbstractItemView,
@@ -126,6 +129,7 @@ else:
 		QLayout,
 		QLineEdit,
 		QListView,
+		QMenuBar,
 		QMainWindow,
 		QMessageBox,
 		QPushButton,
@@ -142,6 +146,7 @@ else:
 		QComboBox,
 		QListWidget,
 		QListWidgetItem,
+		QTabBar,
 		QTabWidget,
 		QTableView,
 	)
@@ -169,6 +174,7 @@ class SplitMapsTree(QTreeWidget):
 	STATUS_COLOR_ROLE = Qt.UserRole + 2
 	NORMALIZED_COLOR = QColor("#4ba66d")
 	NOT_NORMALIZED_COLOR = QColor("#d9534f")
+	NOT_CHECKED_COLOR = QColor("#808080")
 	EDITING_COLOR = QColor("#f39c12")
 
 	currentMapChanged = Signal(str)
@@ -215,12 +221,18 @@ class SplitMapsTree(QTreeWidget):
 				map_item.setData(0, self.MAP_NAME_ROLE, map_name)
 				map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
 				self.addTopLevelItem(map_item)
-				status_color = self.EDITING_COLOR if is_editing else (
-					self.NORMALIZED_COLOR if normalized_maps.get(map_name, False) else self.NOT_NORMALIZED_COLOR
-				)
-				status_text = "Currently being edited" if is_editing else (
-					"Normalized" if normalized_maps.get(map_name, False) else "Not normalized"
-				)
+				if is_editing:
+					status_color = self.EDITING_COLOR
+					status_text = "Currently being edited"
+				elif map_name not in normalized_maps:
+					status_color = self.NOT_CHECKED_COLOR
+					status_text = "Normalization not checked"
+				elif normalized_maps[map_name]:
+					status_color = self.NORMALIZED_COLOR
+					status_text = "Normalized"
+				else:
+					status_color = self.NOT_NORMALIZED_COLOR
+					status_text = "Not normalized"
 				map_item.setData(0, self.STATUS_COLOR_ROLE, status_color)
 				map_item.setToolTip(0, status_text)
 				map_item.setToolTip(1, status_text)
@@ -2940,9 +2952,12 @@ class InlineWorkshapeRenameEditor(QLineEdit):
 		super().focusOutEvent(event)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	"""Main Blue Steel editor window."""
 
+	OBJECT_NAME = "BlueSteelEditor"
+	WORKSPACE_CONTROL_NAME = f"{OBJECT_NAME}WorkspaceControl"
+	DOCK_TARGET_CONTROLS = ("AttributeEditor", "ChannelBoxLayerEditor")
 	EMPTY_SYSTEM_LABEL = "<Select System>"
 	SPLIT_PANELS_MAX_WIDTH = 600
 	PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
@@ -2950,10 +2965,12 @@ class MainWindow(QMainWindow):
 
 	def __init__(self, parent: Optional[QWidget] = None, version: Optional[str] = None) -> None:
 		super().__init__(parent)
+		self.setObjectName(self.OBJECT_NAME)
 		self.version = version
-		icon_path = os.path.abspath(os.path.join(env.ICONS_PATH, "blue_steel_icon.svg"))
-		if os.path.exists(icon_path):
-			self.setWindowIcon(QIcon(icon_path))
+		icon_path = os.path.abspath(os.path.join(env.ICONS_PATH, "blue_steel_icon.png"))
+		self._window_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+		if not self._window_icon.isNull():
+			self.setWindowIcon(self._window_icon)
 
 		self.current_editor: Optional[BlueSteelEditor] = None
 		self.scene_editor_tracker: Optional[BlueSteelEditorsTracker] = None
@@ -2963,6 +2980,8 @@ class MainWindow(QMainWindow):
 		self.split_attr_grp_tracker: Optional[ControllerTracker] = None
 		self._split_attr_refresh_pending = False
 		self._split_attr_full_refresh_pending = False
+		self._split_settings_refresh_pending = False
+		self._split_map_normalization_cache: Dict[str, bool] = {}
 
 		self._shape_model = ShapeItemsModel(self)
 		self._work_shape_model = WorkShapeItemsModel(self)
@@ -3076,6 +3095,91 @@ class MainWindow(QMainWindow):
 	def _prepare_toolbar_button(self, button: QPushButton, *, height: int = 32) -> None:
 		button.setStyleSheet("padding: 0px;")
 		button.setFixedHeight(height)
+
+	def _set_dock_button_state(self, docked: bool) -> None:
+		pixmap = QPixmap(14, 14)
+		pixmap.fill(Qt.transparent)
+		points = (
+			[QPoint(3, 7), QPoint(11, 2), QPoint(11, 12)]
+			if docked
+			else [QPoint(11, 7), QPoint(3, 2), QPoint(3, 12)]
+		)
+		painter = QPainter(pixmap)
+		painter.setRenderHint(QPainter.Antialiasing, True)
+		painter.setPen(Qt.NoPen)
+		painter.setBrush(self.dock_toggle_button.palette().color(QPalette.ButtonText))
+		painter.drawPolygon(QPolygon(points))
+		painter.end()
+		self.dock_toggle_button.setIcon(QIcon(pixmap))
+		self.dock_toggle_button.setToolTip("Undock Blue Steel" if docked else "Dock Blue Steel")
+		self.dock_close_button.setVisible(docked)
+
+	def _apply_workspace_control_icon(self) -> None:
+		if self._window_icon.isNull():
+			return
+		control_ptr = omui.MQtUtil.findControl(self.WORKSPACE_CONTROL_NAME)
+		if control_ptr is None:
+			return
+		control_widget = wrapInstance(int(control_ptr), QWidget)
+		control_widget.setWindowIcon(self._window_icon)
+		control_widget.window().setWindowIcon(self._window_icon)
+
+		control_label = cmds.workspaceControl(
+			self.WORKSPACE_CONTROL_NAME,
+			query=True,
+			label=True,
+		)
+		ancestor = control_widget.parentWidget()
+		while ancestor is not None:
+			for tab_bar in ancestor.findChildren(QTabBar):
+				for index in range(tab_bar.count()):
+					if tab_bar.tabText(index) == control_label:
+						tab_bar.setTabIcon(index, self._window_icon)
+						return
+			ancestor = ancestor.parentWidget()
+
+	def _dock_to_maya_panel(self) -> bool:
+		for target_control in self.DOCK_TARGET_CONTROLS:
+			if cmds.workspaceControl(target_control, query=True, exists=True):
+				cmds.workspaceControl(
+					self.WORKSPACE_CONTROL_NAME,
+					edit=True,
+					floating=False,
+				)
+				cmds.workspaceControl(
+					self.WORKSPACE_CONTROL_NAME,
+					edit=True,
+					tabToControl=(target_control, -1),
+				)
+				cmds.workspaceControl(
+					self.WORKSPACE_CONTROL_NAME,
+					edit=True,
+					restore=True,
+					visible=True,
+				)
+				self.raise_()
+				self.activateWindow()
+				self._set_dock_button_state(docked=True)
+				QTimer.singleShot(0, self._apply_workspace_control_icon)
+				QTimer.singleShot(200, self._apply_workspace_control_icon)
+				return True
+		return False
+
+	def _toggle_docking(self) -> None:
+		if not cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, query=True, exists=True):
+			return
+		is_floating = cmds.workspaceControl(
+			self.WORKSPACE_CONTROL_NAME,
+			query=True,
+			floating=True,
+		)
+		if is_floating:
+			self._dock_to_maya_panel()
+			return
+		cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, edit=True, floating=True)
+		self._set_dock_button_state(docked=False)
+		QTimer.singleShot(0, self._apply_workspace_control_icon)
+		QTimer.singleShot(200, self._apply_workspace_control_icon)
 
 	def _build_ui(self) -> None:
 		self._create_menu_bar()
@@ -3389,6 +3493,7 @@ class MainWindow(QMainWindow):
 
 	def showEvent(self, event):  # noqa: N802
 		super().showEvent(event)
+		QTimer.singleShot(0, self._apply_workspace_control_icon)
 		self._schedule_initial_splitter_layout()
 
 	def _schedule_initial_splitter_layout(self) -> None:
@@ -3441,7 +3546,7 @@ class MainWindow(QMainWindow):
 		self.split_primaries_tree.setAlternatingRowColors(True)
 		self.split_primaries_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.split_primaries_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
-		self.split_primaries_tree.setIndentation(14)
+		self.split_primaries_tree.setIndentation(0)
 		self.split_primaries_tree.setStyleSheet("QTreeView::item { padding-top: 2px; padding-bottom: 2px; }")
 		self._split_primary_slider_delegate = SliderItemDelegate(self.split_primaries_tree)
 		self.split_primaries_tree.setItemDelegateForColumn(0, self._split_primary_slider_delegate)
@@ -3480,8 +3585,8 @@ class MainWindow(QMainWindow):
 		self.split_group_rename_button.setIcon(RENAME_ICON)
 		self._split_group_buttons = [
 			self.split_group_add_button,
-			self.split_group_remove_button,
 			self.split_group_rename_button,
+			self.split_group_remove_button,
 		]
 		self._split_group_button_labels = {
 			button: button.text() for button in self._split_group_buttons
@@ -3992,6 +4097,11 @@ class MainWindow(QMainWindow):
 		main_tools_layout.addWidget(preview_shapes_frame_layout, 0)
 		main_tools_layout.addWidget(debug_shapes_frame_layout, 0)
 		main_tools_layout.addStretch(1)
+		self._set_tools_panel_compact_mode(True, force=True)
+		tools_group.setMinimumWidth(0)
+		main_tools_layout.activate()
+		self._tools_panel_compact_width = tools_group.minimumSizeHint().width()
+		tools_group.setMinimumWidth(self._tools_panel_compact_width)
 
 	def _create_tool_button(self, label: str, icon: Optional[QIcon] = None, *, track_enabled: bool = True) -> QPushButton:
 		button = QPushButton(label)
@@ -4010,6 +4120,8 @@ class MainWindow(QMainWindow):
 	def _connect_ui_signals(self) -> None:
 		self.refresh_button.clicked.connect(self.refresh_ui)
 		self.create_system_button.clicked.connect(self._create_new_editor)
+		self.dock_toggle_button.clicked.connect(self._toggle_docking)
+		self.dock_close_button.clicked.connect(self.close)
 		self.editor_combo.currentTextChanged.connect(self._on_editor_selected)
 		if self.heat_map_switch is not None:
 			self.heat_map_switch.toggled.connect(self._on_display_heat_map_toggled)
@@ -4309,9 +4421,13 @@ class MainWindow(QMainWindow):
 		if self.main_tabs is None:
 			return
 		tab_name = self.main_tabs.tabText(index)
-		self._sync_split_map_edit_mesh_visibility(tab_name == "Split Settings")
-		if tab_name == "Split Settings":
-			self._check_split_maps_normalization(split_map_name = None)
+		is_split_tab = tab_name == "Split Settings"
+		self._sync_split_map_edit_mesh_visibility(is_split_tab)
+		if is_split_tab and self._split_settings_refresh_pending:
+			self._reload_split_settings_from_editor()
+
+	def _is_split_tab_active(self) -> bool:
+		return bool(self.main_tabs is not None and self.main_tabs.currentIndex() == 1)
 
 	def _sync_split_map_edit_mesh_visibility(self, visible: bool) -> None:
 		if self.current_editor is None:
@@ -4456,6 +4572,10 @@ class MainWindow(QMainWindow):
 				widget.setEnabled(enabled)
 
 	def _reload_split_settings_from_editor(self) -> None:
+		if not self._is_split_tab_active():
+			self._split_settings_refresh_pending = True
+			return
+		self._split_settings_refresh_pending = False
 		if self.current_editor is None:
 			self._refresh_split_primary_assignments()
 			self._refresh_split_groups()
@@ -4518,16 +4638,16 @@ class MainWindow(QMainWindow):
 		selected_map = self._selected_split_map_name() or ""
 		editing_map = self._current_edit_split_map_name() or ""
 		map_weights = {}
-		normalized_maps = {}
 		for split_map_name in sorted(self.current_editor.get_split_maps()):
 			try:
 				map_weights[split_map_name] = self.current_editor.get_split_map_suffices(split_map_name)
 			except Exception:
 				map_weights[split_map_name] = []
-			try:
-				normalized_maps[split_map_name] = self.current_editor.is_split_map_normalized(split_map_name)
-			except Exception:
-				normalized_maps[split_map_name] = False
+		normalized_maps = {
+			map_name: self._split_map_normalization_cache[map_name]
+			for map_name in map_weights
+			if map_name in self._split_map_normalization_cache
+		}
 		self.split_maps_list.set_maps(map_weights, normalized_maps, selected_map, editing_map)
 
 	def _refresh_split_map_weights(self, split_map_name: Optional[str] = None) -> None:
@@ -4738,7 +4858,8 @@ class MainWindow(QMainWindow):
 		self._refresh_split_map_weights()
 
 	def _check_split_maps_normalization(self, split_map_name = None) -> None:
-		print(f"Checking normalization for split map: {split_map_name}")
+		if not self._is_split_tab_active():
+			return
 		if self.split_map_weight_stats_label is None:
 			return
 		if self.current_editor is None:
@@ -4748,7 +4869,6 @@ class MainWindow(QMainWindow):
 			self.split_map_weight_stats_label.setText("No split maps to check.")
 			return
 
-		normalized_count = 0
 		editing_map = self._current_edit_split_map_name() or ""
 		for item in self.split_maps_list.map_items():
 			map_name = self.split_maps_list.map_name(item)
@@ -4758,6 +4878,7 @@ class MainWindow(QMainWindow):
 				is_normalized = self.current_editor.is_split_map_normalized(map_name)
 			except Exception:
 				is_normalized = False
+			self._split_map_normalization_cache[map_name] = is_normalized
 			if map_name == editing_map:
 				item.setData(0, SplitMapsTree.STATUS_COLOR_ROLE, SplitMapsTree.EDITING_COLOR)
 				item.setToolTip(0, "Currently being edited")
@@ -4765,11 +4886,19 @@ class MainWindow(QMainWindow):
 				status_color = SplitMapsTree.NORMALIZED_COLOR if is_normalized else SplitMapsTree.NOT_NORMALIZED_COLOR
 				item.setData(0, SplitMapsTree.STATUS_COLOR_ROLE, status_color)
 				item.setToolTip(0, "Normalized" if is_normalized else "Not normalized")
-			normalized_count += int(is_normalized)
 
 		total_count = self.split_maps_list.topLevelItemCount()
+		map_names = [self.split_maps_list.map_name(item) for item in self.split_maps_list.map_items()]
+		checked_count = sum(map_name in self._split_map_normalization_cache for map_name in map_names)
+		normalized_count = sum(
+			self._split_map_normalization_cache.get(map_name, False)
+			for map_name in map_names
+		)
+		not_normalized_count = checked_count - normalized_count
+		not_checked_count = total_count - checked_count
 		self.split_map_weight_stats_label.setText(
-			f"Normalized: {normalized_count}/{total_count}; not normalized: {total_count - normalized_count}."
+			f"Normalized: {normalized_count}/{total_count}; not normalized: {not_normalized_count}; "
+			f"not checked: {not_checked_count}."
 		)
 
 	def _show_split_maps_context_menu(self, pos) -> None:
@@ -4853,6 +4982,12 @@ class MainWindow(QMainWindow):
 		except Exception as exc:
 			self._set_status(f"Error normalizing split map: {exc}", error=True)
 			return
+		if self.split_maps_list is not None:
+			item = self.split_maps_list.find_map(split_map_name)
+			if item is not None:
+				item.setData(0, SplitMapsTree.STATUS_COLOR_ROLE, SplitMapsTree.NORMALIZED_COLOR)
+				item.setToolTip(0, "Normalized")
+		self._split_map_normalization_cache[split_map_name] = True
 		self._set_status(f"Normalized split map '{split_map_name}'.")
 
 	def _on_create_split_group_clicked(self) -> None:
@@ -5020,7 +5155,6 @@ class MainWindow(QMainWindow):
 			self._setup_split_map_edit_blendshape_tracker()
 		self._refresh_split_maps()
 		self._refresh_split_map_weights()
-		self._check_split_maps_normalization()
 		self._set_status(f"Editing split map '{split_map_name}'.")
 
 	def _on_normalize_edit_split_map_weights_clicked(self) -> None:
@@ -5052,9 +5186,9 @@ class MainWindow(QMainWindow):
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
+		self._split_map_normalization_cache.pop(split_map_name, None)
 		self._refresh_split_maps()
 		self._refresh_split_map_weights()
-		self._check_split_maps_normalization()
 		self._set_status(f"Applied edits to split map '{split_map_name}'.")
 
 	def _on_cancel_edit_split_map_clicked(self) -> None:
@@ -5074,7 +5208,6 @@ class MainWindow(QMainWindow):
 			self._setup_split_map_edit_blendshape_tracker()
 		self._refresh_split_maps()
 		self._refresh_split_map_weights()
-		self._check_split_maps_normalization()
 		self._set_status(f"Cancelled edits to split map '{split_map_name}'.")
 
 
@@ -5100,7 +5233,6 @@ class MainWindow(QMainWindow):
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
-		self._check_split_maps_normalization(split_map_name)
 		self._refresh_split_map_weights(split_map_name)
 		self._set_status(f"Added weight '{split_map_name}_{suffix_name}'.")
 
@@ -5482,6 +5614,15 @@ class MainWindow(QMainWindow):
 		self._set_status(f"Duplicated current pose to '{extracted}'.")
 
 	def launch_mmtools(self) -> None:
+		workspace_control = "MMToolsWorkspaceControl"
+		if (
+			cmds.workspaceControl(workspace_control, query=True, exists=True)
+			and cmds.workspaceControl(workspace_control, query=True, visible=True)
+		):
+			cmds.workspaceControl(workspace_control, edit=True, close=True)
+			cmds.deleteUI(workspace_control, control=True)
+			ui.WINDOW = None
+			return
 		ui.show()
 
 	def _on_toggle_hud_clicked(self) -> None:
@@ -5523,7 +5664,31 @@ class MainWindow(QMainWindow):
 
 	def _create_menu_bar(self) -> None:
 		"""Create the top menu bar migrated from the legacy editor window."""
-		menu_bar = self.menuBar()
+		menu_widget = QWidget(self)
+		menu_widget.setFixedHeight(30)
+		menu_layout = QHBoxLayout(menu_widget)
+		menu_layout.setContentsMargins(0, 0, 2, 0)
+		menu_layout.setSpacing(2)
+		menu_bar = QMenuBar(menu_widget)
+		menu_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		menu_layout.addWidget(menu_bar, 1)
+		button_size = 26
+		self.dock_toggle_button = QPushButton(menu_widget)
+		self.dock_toggle_button.setFixedSize(button_size, button_size)
+		self.dock_toggle_button.setIconSize(QSize(14, 14))
+		self.dock_toggle_button.setStyleSheet(
+			"QPushButton { border: 1px solid palette(mid); border-radius: 5px; padding: 0px; }"
+		)
+		menu_layout.addWidget(self.dock_toggle_button, 0, Qt.AlignVCenter)
+		self.dock_close_button = QPushButton("X", menu_widget)
+		self.dock_close_button.setFixedSize(button_size, button_size)
+		self.dock_close_button.setToolTip("Close Blue Steel")
+		self.dock_close_button.setStyleSheet(
+			"QPushButton { border: 1px solid palette(mid); border-radius: 5px; padding: 0px; font-weight: bold; }"
+		)
+		menu_layout.addWidget(self.dock_close_button, 0, Qt.AlignVCenter)
+		self._set_dock_button_state(docked=True)
+		self.setMenuWidget(menu_widget)
 
 		file_menu = menu_bar.addMenu("File")
 		new_action = QAction("New", self)
@@ -5682,8 +5847,7 @@ class MainWindow(QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
-		self._reload_split_settings_from_editor()
-		self._check_split_maps_normalization()
+		self._split_map_normalization_cache.clear()
 		self._set_status(f"Imported split data from '{directory}'.")
 
 			
@@ -6033,7 +6197,7 @@ class MainWindow(QMainWindow):
 
 	def _on_shape_model_data_changed(self, _top_left, _bottom_right, roles) -> None:
 		"""Run expensive UI refreshes only when non-value data changed."""
-		if self.split_primaries_tree is not None:
+		if self._is_split_tab_active() and self.split_primaries_tree is not None:
 			self.split_primaries_tree.sync_source_data(_top_left, _bottom_right, roles)
 		if self._syncing_shapes_tree:
 			return
@@ -7425,7 +7589,7 @@ class MainWindow(QMainWindow):
 
 	def _setup_scene_editor_tracker(self) -> None:
 		self._clear_scene_editor_tracker()
-		self.scene_editor_tracker = BlueSteelEditorsTracker(parent=self)
+		self.scene_editor_tracker = BlueSteelEditorsTracker()
 		self.scene_editor_tracker.sceneReset.connect(self._on_scene_reset)
 		self.scene_editor_tracker.sceneOpened.connect(self._on_scene_opened)
 		self.scene_editor_tracker.editorAdded.connect(self._on_editor_added)
@@ -7433,17 +7597,29 @@ class MainWindow(QMainWindow):
 		self.scene_editor_tracker.editorRenamed.connect(self._on_editor_renamed)
 		self.scene_editor_tracker.frameChanged.connect(self._on_scene_frame_changed, Qt.QueuedConnection)
 
+	@staticmethod
+	def _dispose_tracker(tracker) -> None:
+		if tracker is None:
+			return
+		try:
+			tracker.kill()
+		except RuntimeError:
+			return
+		try:
+			tracker.deleteLater()
+		except RuntimeError:
+			pass
+
 	def _clear_scene_editor_tracker(self) -> None:
-		if isinstance(self.scene_editor_tracker, BlueSteelEditorsTracker):
-			self.scene_editor_tracker.kill()
-			self.scene_editor_tracker.deleteLater()
+		tracker = self.scene_editor_tracker
 		self.scene_editor_tracker = None
+		self._dispose_tracker(tracker)
 
 	def _setup_blendshape_tracker(self) -> None:
 		self._clear_blendshape_tracker()
 		if self.current_editor is None:
 			return
-		self.blendshape_tracker = BlendShapeNodeTracker(self.current_editor.blendshape.name, parent=self)
+		self.blendshape_tracker = BlendShapeNodeTracker(self.current_editor.blendshape.name)
 		self.blendshape_tracker.shapeValueChanged.connect(self._on_shape_value_changed, Qt.QueuedConnection)
 		self.blendshape_tracker.shapeAdded.connect(self._on_shape_structure_changed)
 		self.blendshape_tracker.shapeRemoved.connect(self._on_shape_structure_changed)
@@ -7452,7 +7628,7 @@ class MainWindow(QMainWindow):
 		self.blendshape_tracker.start()
 
 		if self.current_editor.work_blendshape is not None:
-			self.work_blendshape_tracker = BlendShapeNodeTracker(self.current_editor.work_blendshape.name, parent=self)
+			self.work_blendshape_tracker = BlendShapeNodeTracker(self.current_editor.work_blendshape.name)
 			self.work_blendshape_tracker.shapeValueChanged.connect(self._on_work_shape_value_changed, Qt.QueuedConnection)
 			self.work_blendshape_tracker.shapeAdded.connect(self._on_work_shape_structure_changed)
 			self.work_blendshape_tracker.shapeRemoved.connect(self._on_work_shape_structure_changed)
@@ -7481,7 +7657,7 @@ class MainWindow(QMainWindow):
 			return
 
 		self._clear_split_map_edit_blendshape_tracker()
-		tracker = BlendShapeNodeTracker(node_name, parent=self)
+		tracker = BlendShapeNodeTracker(node_name)
 		tracker.shapeValueChanged.connect(self._on_split_map_edit_weight_value_changed, Qt.QueuedConnection)
 		tracker.shapeAdded.connect(self._on_split_map_edit_structure_changed)
 		tracker.shapeRemoved.connect(self._on_split_map_edit_structure_changed)
@@ -7491,27 +7667,24 @@ class MainWindow(QMainWindow):
 		self.split_map_edit_blendshape_tracker = tracker
 
 	def _clear_split_map_edit_blendshape_tracker(self) -> None:
-		if isinstance(self.split_map_edit_blendshape_tracker, BlendShapeNodeTracker):
-			self.split_map_edit_blendshape_tracker.kill()
-			self.split_map_edit_blendshape_tracker.deleteLater()
+		tracker = self.split_map_edit_blendshape_tracker
 		self.split_map_edit_blendshape_tracker = None
+		self._dispose_tracker(tracker)
 
 	def _clear_blendshape_tracker(self) -> None:
 		self._clear_split_map_edit_blendshape_tracker()
-		if isinstance(self.blendshape_tracker, BlendShapeNodeTracker):
-			self.blendshape_tracker.kill()
-			self.blendshape_tracker.deleteLater()
+		blendshape_tracker = self.blendshape_tracker
 		self.blendshape_tracker = None
-		if isinstance(self.work_blendshape_tracker, BlendShapeNodeTracker):
-			self.work_blendshape_tracker.kill()
-			self.work_blendshape_tracker.deleteLater()
+		self._dispose_tracker(blendshape_tracker)
+		work_blendshape_tracker = self.work_blendshape_tracker
 		self.work_blendshape_tracker = None
+		self._dispose_tracker(work_blendshape_tracker)
 
 	def _setup_split_attr_grp_tracker(self) -> None:
 		self._clear_split_attr_grp_tracker()
 		if self.current_editor is None or not cmds.objExists(self.current_editor.split_attr_grp):
 			return
-		self.split_attr_grp_tracker = ControllerTracker(self.current_editor.split_attr_grp, parent=self)
+		self.split_attr_grp_tracker = ControllerTracker(self.current_editor.split_attr_grp)
 		self.split_attr_grp_tracker.attributeChanged.connect(self._schedule_split_attr_grp_value_refresh)
 		self.split_attr_grp_tracker.attributeAdded.connect(self._schedule_split_attr_grp_full_refresh)
 		self.split_attr_grp_tracker.attributeRemoved.connect(self._schedule_split_attr_grp_full_refresh)
@@ -7521,10 +7694,9 @@ class MainWindow(QMainWindow):
 	def _clear_split_attr_grp_tracker(self) -> None:
 		self._split_attr_refresh_pending = False
 		self._split_attr_full_refresh_pending = False
-		if isinstance(self.split_attr_grp_tracker, ControllerTracker):
-			self.split_attr_grp_tracker.kill()
-			self.split_attr_grp_tracker.deleteLater()
-			self.split_attr_grp_tracker = None
+		tracker = self.split_attr_grp_tracker
+		self.split_attr_grp_tracker = None
+		self._dispose_tracker(tracker)
 
 	def _schedule_split_attr_grp_value_refresh(self, attribute_name: str, _value) -> None:
 		"""Refresh only assignment values when a primary enum value changes."""
@@ -7540,6 +7712,9 @@ class MainWindow(QMainWindow):
 		self._schedule_split_attr_grp_refresh(full=True)
 
 	def _schedule_split_attr_grp_refresh(self, *, full: bool) -> None:
+		if not self._is_split_tab_active():
+			self._split_settings_refresh_pending = True
+			return
 		self._split_attr_full_refresh_pending |= full
 		if self._split_attr_refresh_pending:
 			return
@@ -7622,10 +7797,14 @@ class MainWindow(QMainWindow):
 		self._work_shape_model.set_value_local(shape_name, value)
 
 	def _on_split_map_edit_weight_value_changed(self, _shape_id: int, _shape_name: str, _value: float) -> None:
-		self._sync_split_map_weight_slider_values()
+		if self._is_split_tab_active():
+			self._sync_split_map_weight_slider_values()
 
 	def _on_split_map_edit_structure_changed(self, *_args) -> None:
-		self._refresh_split_map_weights()
+		if self._is_split_tab_active():
+			self._refresh_split_map_weights()
+		else:
+			self._split_settings_refresh_pending = True
 
 	def _on_work_shape_structure_changed(self, *_args) -> None:
 		print("Work shape structure changed, reloading work shapes from editor...")
@@ -7846,7 +8025,7 @@ class MainWindow(QMainWindow):
 
 	def _on_scene_frame_changed(self, _frame: float) -> None:
 		"""Keep slider UIs in sync while keyed values change over time."""
-		if self.current_editor is None:
+		if self.current_editor is None or not self.isVisible():
 			return
 		if self._primaries_drag_active or self._linked_drag_active:
 			return
@@ -7917,6 +8096,7 @@ class MainWindow(QMainWindow):
 		"""
 		self._clear_blendshape_tracker()
 		self._clear_split_attr_grp_tracker()
+		self._split_map_normalization_cache.clear()
 
 		if not name or not cmds.objExists(name):
 			if self.heat_map_switch is not None:
@@ -7984,9 +8164,6 @@ class MainWindow(QMainWindow):
 		else:
 			self.set_current_editor(None)
 		self._set_status("Refreshed UI.")
-		# we need to check if we are in the split tab
-		if self.split_groups_tree is not None:
-			self._reload_split_settings_from_editor()
 
 	def show_about(self) -> None:
 		QMessageBox.about(
@@ -8027,6 +8204,8 @@ def show() -> MainWindow:
 			WINDOW = None
 	except Exception:
 		WINDOW = None
+	if cmds.workspaceControl(MainWindow.WORKSPACE_CONTROL_NAME, query=True, exists=True):
+		cmds.deleteUI(MainWindow.WORKSPACE_CONTROL_NAME, control=True)
 
 	maya_main_window = get_maya_main_window()
 	import blue_steel
@@ -8041,7 +8220,8 @@ def show() -> MainWindow:
 		status_label.setOpenExternalLinks(True)
 	WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
 	WINDOW.resize(1200, max(720, WINDOW.sizeHint().height()))
-	WINDOW.show()
+	WINDOW.show(dockable=True, area="right", floating=False)
+	WINDOW._dock_to_maya_panel()
 	if status_label is not None:
 		WINDOW.status_bar.addPermanentWidget(status_label)
 

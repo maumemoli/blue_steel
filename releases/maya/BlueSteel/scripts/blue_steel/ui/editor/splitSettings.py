@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Sequence
 
 from ... import env
 
 if env.MAYA_VERSION > 2024:
-	from PySide6.QtCore import QMimeData, Qt, Signal
-	from PySide6.QtGui import QDrag
+	from PySide6.QtCore import QMimeData, QSize, Qt, Signal
+	from PySide6.QtGui import QDrag, QIcon
 	from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 else:
-	from PySide2.QtCore import QMimeData, Qt, Signal
-	from PySide2.QtGui import QDrag
+	from PySide2.QtCore import QMimeData, QSize, Qt, Signal
+	from PySide2.QtGui import QDrag, QIcon
 	from PySide2.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
 
@@ -56,7 +57,7 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 	assignmentChanged = Signal(str, object)
 	_primary_tree_layout = True
 	_primary_slider_layout = False
-	_uses_native_branch_indicator = True
+	_uses_native_branch_indicator = False
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
@@ -73,6 +74,22 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 		self.setDragDropMode(QAbstractItemView.DragDrop)
 		self.setDefaultDropAction(Qt.MoveAction)
 		self.setDropIndicatorShown(True)
+		self.setIndentation(0)
+		self.setRootIsDecorated(False)
+		self.setIconSize(QSize(14, 14))
+		self.setStyleSheet(
+			"QTreeView::branch { image: none; border-image: none; width: 0px; height: 0px; }"
+			"QTreeView::item { padding-top: 2px; padding-bottom: 2px; }"
+		)
+		closed_icon = os.path.join(env.ICONS_PATH, "tree_chevron_right.svg")
+		open_icon = os.path.join(env.ICONS_PATH, "tree_chevron_down.svg")
+		self._closed_group_icon = QIcon(closed_icon) if os.path.exists(closed_icon) else QIcon()
+		self._open_group_icon = QIcon(open_icon) if os.path.exists(open_icon) else QIcon()
+		self.itemExpanded.connect(self._update_group_icon)
+		self.itemCollapsed.connect(self._update_group_icon)
+
+	def _update_group_icon(self, item: QTreeWidgetItem) -> None:
+		item.setIcon(0, self._open_group_icon if item.isExpanded() else self._closed_group_icon)
 
 	def set_source_model(self, source_model) -> None:
 		self._source_model = source_model
@@ -138,6 +155,7 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 			for group_name, group_item in groups.items():
 				group_item.sortChildren(0, Qt.AscendingOrder)
 				group_item.setExpanded(not expanded_groups or group_name in expanded_groups)
+				self._update_group_icon(group_item)
 		finally:
 			self.blockSignals(False)
 		self.set_search_text(self._search_text)
@@ -230,6 +248,10 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 		if event.button() == Qt.LeftButton:
 			index = self.indexAt(event.pos())
 			item = self.itemAt(event.pos())
+			if item is not None and item.parent() is None:
+				item.setExpanded(not item.isExpanded())
+				event.accept()
+				return
 			if item is not None and item.parent() is not None and item.isSelected():
 				self._pressed_primary_names = [
 					str(selected.data(0, PRIMARY_NAME_ROLE) or "")

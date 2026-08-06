@@ -1109,8 +1109,7 @@ class BlueSteelEditor(object):
 
     def normalize_shapes_weight_map_values(self, blendshape: Blendshape, shape_names: list):
         """
-        Normalize the weight values of the given shapes so that the maximum value of the sum of all
-        weight value for each vertex is always 1.0.
+        Normalize the given shapes so each nonzero per-vertex weight sum is 1.0.
         Parameters:
             blendshape (Blendshape): The blendshape to normalize the weight values for
             shape_names (list): A list of shape names to normalize the weight values for
@@ -1143,8 +1142,12 @@ class BlueSteelEditor(object):
 
         stacked_maps = np.vstack(maps)
         per_vertex_sum = stacked_maps.sum(axis=0)
-        # Vertices with totals <= 1.0 remain unchanged.
-        scale = np.where(per_vertex_sum > 1.0, 1.0 / per_vertex_sum, 1.0)
+        scale = np.divide(
+            1.0,
+            per_vertex_sum,
+            out=np.ones_like(per_vertex_sum),
+            where=per_vertex_sum != 0.0,
+        )
         normalized_maps = stacked_maps * scale
 
         for weight, normalized_values in zip(weights, normalized_maps):
@@ -3150,8 +3153,9 @@ class BlueSteelEditor(object):
             raise ValueError(f"Split map {split_map_name} does not have a target directory")
         if len(split_map_dir) > 1:
             raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
-        spit_map_weights = self.get_split_map_weights(split_map_name)
-        self.normalize_shapes_weight_map_values(self.split_blendshape, spit_map_weights)
+        split_map_weights = self.get_split_map_weights(split_map_name)
+        print(f"Normalizing weights for split map {split_map_name} with weights: {split_map_weights}")
+        self.normalize_shapes_weight_map_values(self.split_blendshape, split_map_weights)
 
     def normalize_edit_split_map_weights(self):
         """ normalize the weights of a split map in the edit_blendshape.
