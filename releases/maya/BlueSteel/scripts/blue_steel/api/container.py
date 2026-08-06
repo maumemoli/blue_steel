@@ -55,7 +55,7 @@ class Container(object):
         Unpublish and unbind a list of node attributes to the container
         :param bindings: the binding to unpublish, e.g. [["pSphere1.translateX", "translateX"]...]
         """
-        print(f"Unbinding attribute {attribute} from container {self.name}")
+        # print(f"Unbinding attribute {attribute} from container {self.name}")
         cmds.container(self.name, edit=True, unbindAndUnpublish=attribute)
         # refreshing the channel box to reflect the changes
         cmds.channelBox('mainChannelBox', edit=True, update=True)

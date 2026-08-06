@@ -51,3 +51,4 @@ releases/maya/unittest
 scripts/blue_steel_start_maya_2022.py
 *.afdesign
 *.afdesign~lock~
+releases/maya/BlueSteel/icons/editWeights.af

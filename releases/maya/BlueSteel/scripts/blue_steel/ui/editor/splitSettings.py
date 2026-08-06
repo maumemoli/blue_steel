@@ -1,9 +1,4 @@
-"""Models and widgets used by the Blue Steel Split Settings tab.
-
-The assignment model layers split-group state over the primary-only proxy from
-the shared shape model. The assignment state is intentionally kept separate
-from shape rows because it is persisted on the editor's split attribute group.
-"""
+"""Grouped primary-assignment tree used by the Split Settings tab."""
 
 from __future__ import annotations
 
@@ -12,228 +7,248 @@ from typing import Dict, List, Sequence
 from ... import env
 
 if env.MAYA_VERSION > 2024:
-	from PySide6.QtCore import QAbstractProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, Qt, QTimer, Signal
-	from PySide6.QtWidgets import QAbstractItemView, QComboBox, QStyledItemDelegate, QTableView
+	from PySide6.QtCore import QMimeData, Qt, Signal
+	from PySide6.QtGui import QDrag
+	from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 else:
-	from PySide2.QtCore import QAbstractProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, Qt, QTimer, Signal
-	from PySide2.QtWidgets import QAbstractItemView, QComboBox, QStyledItemDelegate, QTableView
+	from PySide2.QtCore import QMimeData, Qt, Signal
+	from PySide2.QtGui import QDrag
+	from PySide2.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
 
-# This matches ShapeItemsModel.NameRole without importing mainWindow.py.
 PRIMARY_NAME_ROLE = Qt.UserRole + 1
 PRIMARY_TYPE_ROLE = Qt.UserRole + 2
+PRIMARY_VALUE_ROLE = Qt.UserRole + 3
+PRIMARY_MUTED_ROLE = Qt.UserRole + 4
+PRIMARY_LEVEL_ROLE = Qt.UserRole + 5
+PRIMARY_PRIMARIES_ROLE = Qt.UserRole + 6
+PRIMARY_EDITABLE_ROLE = Qt.UserRole + 7
+PRIMARY_IS_HEADER_ROLE = Qt.UserRole + 8
+PRIMARY_HEADER_LEVEL_ROLE = Qt.UserRole + 9
+PRIMARY_HEADER_COLLAPSED_ROLE = Qt.UserRole + 10
+PRIMARY_UPSTREAM_RELATED_ROLE = Qt.UserRole + 11
+PRIMARY_DOWNSTREAM_RELATED_ROLE = Qt.UserRole + 12
+PRIMARY_LOCKED_ROLE = Qt.UserRole + 13
+PRIMARY_LOCK_ICON_VISIBLE_ROLE = Qt.UserRole + 14
+
+PRIMARY_DATA_ROLES = (
+	PRIMARY_NAME_ROLE,
+	PRIMARY_TYPE_ROLE,
+	PRIMARY_VALUE_ROLE,
+	PRIMARY_MUTED_ROLE,
+	PRIMARY_LEVEL_ROLE,
+	PRIMARY_PRIMARIES_ROLE,
+	PRIMARY_EDITABLE_ROLE,
+	PRIMARY_IS_HEADER_ROLE,
+	PRIMARY_HEADER_LEVEL_ROLE,
+	PRIMARY_HEADER_COLLAPSED_ROLE,
+	PRIMARY_UPSTREAM_RELATED_ROLE,
+	PRIMARY_DOWNSTREAM_RELATED_ROLE,
+	PRIMARY_LOCKED_ROLE,
+	PRIMARY_LOCK_ICON_VISIBLE_ROLE,
+	Qt.ToolTipRole,
+)
 
 
-class SplitPrimaryAssignmentsModel(QAbstractProxyModel):
-	"""Expose primary rows with a second column for split-group assignment."""
+class SplitPrimaryAssignmentsView(QTreeWidget):
+	"""Group primaries by split assignment and reassign them with drag and drop."""
 
-	GroupRole = Qt.UserRole + 906
-	assignmentCommitted = Signal(str, object)
+	assignmentChanged = Signal(str, object)
+	_primary_tree_layout = True
+	_primary_slider_layout = False
+	_uses_native_branch_indicator = True
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
-		self._group_names: List[str] = ["NoSplit"]
+		self._source_model = None
 		self._assignments: Dict[str, str] = {}
+		self._search_text = ""
+		self._drag_primary_names: List[str] = []
+		self._pressed_primary_names: List[str] = []
+		self.setColumnCount(1)
+		self.setHeaderHidden(True)
+		self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+		self.setDragEnabled(True)
+		self.setAcceptDrops(True)
+		self.setDragDropMode(QAbstractItemView.DragDrop)
+		self.setDefaultDropAction(Qt.MoveAction)
+		self.setDropIndicatorShown(True)
 
-	def setSourceModel(self, source_model) -> None:  # noqa: N802
-		old_model = self.sourceModel()
-		if old_model is not None:
-			try:
-				old_model.modelAboutToBeReset.disconnect(self.beginResetModel)
-				old_model.modelReset.disconnect(self.endResetModel)
-				old_model.dataChanged.disconnect(self._on_source_data_changed)
-			except Exception:
-				pass
-		self.beginResetModel()
-		super().setSourceModel(source_model)
-		self.endResetModel()
-		if source_model is not None:
-			source_model.modelAboutToBeReset.connect(self.beginResetModel)
-			source_model.modelReset.connect(self.endResetModel)
-			source_model.dataChanged.connect(self._on_source_data_changed)
-
-	def _on_source_data_changed(self, top_left, bottom_right, roles) -> None:
-		if self.rowCount() <= 0:
-			return
-		first_row = max(0, top_left.row())
-		last_row = min(self.rowCount() - 1, bottom_right.row())
-		self.dataChanged.emit(self.index(first_row, 0), self.index(last_row, 0), roles)
-
-	def set_assignments(self, group_names: Sequence[str], assignments: Dict[str, str]) -> None:
-		self.beginResetModel()
-		self._group_names = ["NoSplit"] + [str(name) for name in group_names]
-		self._assignments = {
-			str(name): str(group) if str(group) in self._group_names else "NoSplit"
-			for name, group in assignments.items()
-		}
-		self.endResetModel()
-
-	def set_search_text(self, text: str) -> None:
-		if self.sourceModel() is None:
-			return
-		self.beginResetModel()
-		self.sourceModel().set_search_text(text)
-		self.endResetModel()
+	def set_source_model(self, source_model) -> None:
+		self._source_model = source_model
 
 	def primary_names(self) -> List[str]:
-		"""Return all primary names, independent of the split-settings filter."""
-		primary_proxy = self.sourceModel()
-		shape_model = primary_proxy.sourceModel() if primary_proxy is not None else None
-		if shape_model is None:
+		if self._source_model is None:
 			return []
-
 		return [
-			str(shape_model.data(shape_model.index(row, 0), PRIMARY_NAME_ROLE) or "")
-			for row in range(shape_model.rowCount())
-			if shape_model.data(shape_model.index(row, 0), PRIMARY_TYPE_ROLE) == "PrimaryShape"
+			str(self._source_model.index(row, 0).data(PRIMARY_NAME_ROLE) or "")
+			for row in range(self._source_model.rowCount())
+			if self._source_model.index(row, 0).data(PRIMARY_TYPE_ROLE) == "PrimaryShape"
 		]
 
-	def group_names(self) -> List[str]:
-		return list(self._group_names)
+	def set_assignments(self, group_names: Sequence[str], assignments: Dict[str, str]) -> None:
+		expanded_groups = {
+			str(self.topLevelItem(row).data(0, Qt.UserRole) or "")
+			for row in range(self.topLevelItemCount())
+			if self.topLevelItem(row).isExpanded()
+		}
+		selected_names = {
+			str(item.data(0, PRIMARY_NAME_ROLE) or "")
+			for item in self.selectedItems()
+			if item.parent() is not None
+		}
+		valid_groups = ["NoSplit"] + [str(name) for name in group_names]
+		self._assignments = {
+			str(name): str(group) if str(group) in valid_groups else "NoSplit"
+			for name, group in assignments.items()
+		}
 
-	def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-		if parent.isValid() or self.sourceModel() is None:
-			return 0
-		return self.sourceModel().rowCount()
-
-	def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-		return 0 if parent.isValid() else 2
-
-	def index(self, row: int, column: int, parent: QModelIndex = QModelIndex()) -> QModelIndex:
-		if parent.isValid() or not (0 <= row < self.rowCount()) or not (0 <= column < 2):
-			return QModelIndex()
-		return self.createIndex(row, column)
-
-	def parent(self, _index: QModelIndex = QModelIndex()) -> QModelIndex:
-		return QModelIndex()
-
-	def mapToSource(self, proxy_index: QModelIndex) -> QModelIndex:  # noqa: N802
-		if not proxy_index.isValid() or self.sourceModel() is None:
-			return QModelIndex()
-		return self.sourceModel().index(proxy_index.row(), 0)
-
-	def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:  # noqa: N802
-		if not source_index.isValid() or source_index.model() is not self.sourceModel():
-			return QModelIndex()
-		return self.index(source_index.row(), 0)
-
-	def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
-		if not index.isValid():
-			return None
-		source_index = self.mapToSource(index)
-		if index.column() == 0:
-			return self.sourceModel().data(source_index, role)
-		if role == PRIMARY_NAME_ROLE:
-			return self.sourceModel().data(source_index, PRIMARY_NAME_ROLE)
-		if role in (Qt.DisplayRole, Qt.EditRole, self.GroupRole):
-			primary_name = str(self.sourceModel().data(source_index, PRIMARY_NAME_ROLE) or "")
-			return self._assignments.get(primary_name, "NoSplit")
-		return None
-
-	def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
-		if not index.isValid():
-			return False
-		if index.column() == 0:
-			return self.sourceModel().setData(self.mapToSource(index), value, role)
-		if role != Qt.EditRole:
-			return False
-		group_name = str(value)
-		if group_name not in self._group_names:
-			return False
-		primary_name = str(self.data(index, PRIMARY_NAME_ROLE) or "")
-		return self.set_assignment_targets(group_name, [primary_name])
-
-	def set_assignment_targets(self, group_name: str, primary_names: Sequence[str]) -> bool:
-		if group_name not in self._group_names:
-			return False
-		target_names = list(dict.fromkeys(str(name) for name in primary_names if name))
-		changed_names = [
-			name for name in target_names
-			if self._assignments.get(name, "NoSplit") != group_name
-		]
-		if not changed_names:
-			return False
-
-		changed_name_set = set(changed_names)
-		for name in changed_names:
-			self._assignments[name] = group_name
-		for row in range(self.rowCount()):
-			index = self.index(row, 1)
-			if str(self.data(index, PRIMARY_NAME_ROLE) or "") in changed_name_set:
-				self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole, self.GroupRole])
-		self.assignmentCommitted.emit(group_name, changed_names)
-		return True
-
-	def flags(self, index: QModelIndex):
-		if not index.isValid():
-			return Qt.NoItemFlags
-		if index.column() == 0:
-			return self.sourceModel().flags(self.mapToSource(index))
-		return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
-
-	def headerData(self, section: int, orientation, role: int = Qt.DisplayRole):  # noqa: N802
-		if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-			return "Primary" if section == 0 else "Split Group"
-		return None
-
-
-class SplitPrimaryAssignmentsView(QTableView):
-	"""Primary slider table with one persistent split-group chooser per row."""
-
-	_primary_slider_layout = True
-
-	def __init__(self, parent=None) -> None:
-		super().__init__(parent)
-		self._syncing_column_widths = False
-		self.horizontalHeader().sectionResized.connect(self._on_section_resized)
-
-	def _resize_section(self, section: int, width: int) -> None:
-		header = self.horizontalHeader()
-		self._syncing_column_widths = True
+		self.blockSignals(True)
 		try:
-			header.resizeSection(section, max(header.minimumSectionSize(), width))
+			self.clear()
+			groups = {}
+			for group_name in valid_groups:
+				group_item = QTreeWidgetItem([group_name])
+				group_item.setData(0, Qt.UserRole, group_name)
+				group_item.setData(0, PRIMARY_NAME_ROLE, group_name)
+				group_item.setData(0, PRIMARY_TYPE_ROLE, "PrimaryFolder")
+				group_item.setData(0, PRIMARY_VALUE_ROLE, 0.0)
+				group_item.setData(0, PRIMARY_EDITABLE_ROLE, False)
+				group_item.setData(0, PRIMARY_IS_HEADER_ROLE, True)
+				group_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)
+				self.addTopLevelItem(group_item)
+				groups[group_name] = group_item
+
+			if self._source_model is not None:
+				for row in range(self._source_model.rowCount()):
+					source_index = self._source_model.index(row, 0)
+					if source_index.data(PRIMARY_TYPE_ROLE) != "PrimaryShape":
+						continue
+					primary_name = str(source_index.data(PRIMARY_NAME_ROLE) or "")
+					if not primary_name:
+						continue
+					group_name = self._assignments.get(primary_name, "NoSplit")
+					item = QTreeWidgetItem([primary_name])
+					for role in PRIMARY_DATA_ROLES:
+						item.setData(0, role, source_index.data(role))
+					item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsEditable)
+					groups[group_name].addChild(item)
+					item.setSelected(primary_name in selected_names)
+
+			for group_name, group_item in groups.items():
+				group_item.sortChildren(0, Qt.AscendingOrder)
+				group_item.setExpanded(not expanded_groups or group_name in expanded_groups)
 		finally:
-			self._syncing_column_widths = False
+			self.blockSignals(False)
+		self.set_search_text(self._search_text)
 
-	def _on_section_resized(self, section: int, _old_width: int, new_width: int) -> None:
-		if self._syncing_column_widths or self.model() is None or self.model().columnCount() < 2:
+	def sync_source_data(self, top_left, bottom_right, roles) -> None:
+		if self._source_model is None:
 			return
-		other_section = 1 if section == 0 else 0
-		other_width = self.viewport().width() - new_width
-		self._resize_section(other_section, other_width)
+		roles_to_copy = list(roles or PRIMARY_DATA_ROLES)
+		for source_row in range(top_left.row(), bottom_right.row() + 1):
+			source_index = self._source_model.index(source_row, 0)
+			primary_name = str(source_index.data(PRIMARY_NAME_ROLE) or "")
+			if not primary_name:
+				continue
+			for group_row in range(self.topLevelItemCount()):
+				group_item = self.topLevelItem(group_row)
+				for child_row in range(group_item.childCount()):
+					item = group_item.child(child_row)
+					if str(item.data(0, PRIMARY_NAME_ROLE) or "") != primary_name:
+						continue
+					self.blockSignals(True)
+					try:
+						for role in roles_to_copy:
+							item.setData(0, role, source_index.data(role))
+					finally:
+						self.blockSignals(False)
+					break
 
-	def resizeEvent(self, event) -> None:  # noqa: N802
-		group_width = self.columnWidth(1) if self.model() is not None else 0
-		super().resizeEvent(event)
-		if self.model() is None or self.model().columnCount() < 2:
+	def set_search_text(self, text: str) -> None:
+		self._search_text = (text or "").strip().lower()
+		for row in range(self.topLevelItemCount()):
+			group_item = self.topLevelItem(row)
+			visible_children = 0
+			for child_row in range(group_item.childCount()):
+				child = group_item.child(child_row)
+				visible = not self._search_text or self._search_text in str(child.data(0, PRIMARY_NAME_ROLE) or "").lower()
+				child.setHidden(not visible)
+				visible_children += int(visible)
+			group_item.setHidden(bool(self._search_text) and visible_children == 0)
+
+	def startDrag(self, supported_actions) -> None:  # noqa: N802
+		selected_names = list(dict.fromkeys(
+			str(item.data(0, PRIMARY_NAME_ROLE) or "")
+			for item in self.selectedItems()
+			if item.parent() is not None and item.data(0, PRIMARY_NAME_ROLE)
+		))
+		self._drag_primary_names = list(self._pressed_primary_names or selected_names)
+		self._pressed_primary_names = []
+		if not self._drag_primary_names:
 			return
-		self._resize_section(1, group_width)
-		self._resize_section(0, self.viewport().width() - group_width)
+		mime_data = QMimeData()
+		mime_data.setText("\n".join(self._drag_primary_names))
+		drag = QDrag(self)
+		drag.setMimeData(mime_data)
+		if hasattr(drag, "exec"):
+			drag.exec(Qt.MoveAction)
+		else:
+			drag.exec_(Qt.MoveAction)
 
-	def assignment_targets(self, clicked_index: QModelIndex) -> List[str]:
-		clicked_name = str(clicked_index.data(PRIMARY_NAME_ROLE) or "")
-		selection_model = self.selectionModel()
-		if selection_model is None:
-			return [clicked_name] if clicked_name else []
-		selected_names = [
-			str(index.data(PRIMARY_NAME_ROLE) or "")
-			for index in selection_model.selectedRows(0)
-		]
-		selected_names = [name for name in selected_names if name]
-		if clicked_name in selected_names:
-			return selected_names
-		return [clicked_name] if clicked_name else []
+	def _drop_group_name(self, pos) -> str:
+		item = self.itemAt(pos)
+		if item is None:
+			return ""
+		group_item = item if item.parent() is None else item.parent()
+		return str(group_item.data(0, Qt.UserRole) or "")
 
-	def restore_assignment_selection(self, primary_names: Sequence[str]) -> None:
-		selection_model = self.selectionModel()
-		if selection_model is None:
+	def dragEnterEvent(self, event):  # noqa: N802
+		if self._drag_primary_names:
+			event.acceptProposedAction()
 			return
-		target_names = {str(name) for name in primary_names}
-		selection_model.clearSelection()
-		for row in range(self.model().rowCount()):
-			index = self.model().index(row, 0)
-			if str(index.data(PRIMARY_NAME_ROLE) or "") in target_names:
-				selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+		event.ignore()
+
+	def dragMoveEvent(self, event):  # noqa: N802
+		if self._drag_primary_names and self._drop_group_name(event.pos()):
+			event.acceptProposedAction()
+			return
+		event.ignore()
+
+	def dropEvent(self, event):  # noqa: N802
+		group_name = self._drop_group_name(event.pos())
+		primary_names = list(self._drag_primary_names)
+		self._drag_primary_names = []
+		if not group_name or not primary_names:
+			event.ignore()
+			return
+		self.assignmentChanged.emit(group_name, primary_names)
+		event.acceptProposedAction()
+
+	def mousePressEvent(self, event):  # noqa: N802
+		self._pressed_primary_names = []
+		if event.button() == Qt.LeftButton:
+			index = self.indexAt(event.pos())
+			item = self.itemAt(event.pos())
+			if item is not None and item.parent() is not None and item.isSelected():
+				self._pressed_primary_names = [
+					str(selected.data(0, PRIMARY_NAME_ROLE) or "")
+					for selected in self.selectedItems()
+					if selected.parent() is not None and selected.data(0, PRIMARY_NAME_ROLE)
+				]
+			delegate = self.itemDelegateForColumn(0)
+			if (
+				index.isValid()
+				and item is not None
+				and item.parent() is not None
+				and bool(index.data(PRIMARY_EDITABLE_ROLE))
+				and getattr(delegate, "external_drag_start", lambda *_args: False)(
+					self.model(), index, event.pos(), self.visualRect(index)
+				)
+			):
+				event.accept()
+				return
+		super().mousePressEvent(event)
 
 	def mouseMoveEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
@@ -248,65 +263,3 @@ class SplitPrimaryAssignmentsView(QTableView):
 			event.accept()
 			return
 		super().mouseReleaseEvent(event)
-
-
-class SplitPrimaryGroupCombo(QComboBox):
-	"""Compact persistent combo that keeps the table's batch selection intact."""
-
-	def __init__(self, view: SplitPrimaryAssignmentsView, model_index: QModelIndex, parent=None) -> None:
-		super().__init__(parent)
-		self._view = view
-		self._model_index = QPersistentModelIndex(model_index)
-		self.assignment_targets: List[str] = []
-		self.setFocusPolicy(Qt.NoFocus)
-		self.setFixedHeight(18)
-		self.setContentsMargins(0, 0, 0, 0)
-		self.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-		self.setStyleSheet("QComboBox { margin: 0px; padding: 0px 4px; }")
-
-	def _capture_assignment_targets(self) -> None:
-		if self._model_index.isValid():
-			self.assignment_targets = self._view.assignment_targets(self._model_index)
-
-	def _restore_assignment_targets(self) -> None:
-		if self.assignment_targets:
-			self._view.restore_assignment_selection(self.assignment_targets)
-
-	def enterEvent(self, event) -> None:  # noqa: N802
-		self._capture_assignment_targets()
-		super().enterEvent(event)
-
-	def mousePressEvent(self, event) -> None:  # noqa: N802
-		if not self.assignment_targets:
-			self._capture_assignment_targets()
-		super().mousePressEvent(event)
-
-	def showPopup(self) -> None:  # noqa: N802
-		popup_view = self.view()
-		content_width = popup_view.sizeHintForColumn(0)
-		scrollbar_width = popup_view.verticalScrollBar().sizeHint().width()
-		popup_view.setMinimumWidth(max(self.width(), content_width + scrollbar_width + 8))
-		super().showPopup()
-
-	def hidePopup(self) -> None:  # noqa: N802
-		super().hidePopup()
-		QTimer.singleShot(0, self._restore_assignment_targets)
-
-
-class SplitPrimaryGroupDelegate(QStyledItemDelegate):
-	"""Persistent split-group combo editor for assignment rows."""
-
-	def createEditor(self, parent, option, index):  # noqa: N802
-		if index.column() != 1:
-			return None
-		editor = SplitPrimaryGroupCombo(self.parent(), index, parent)
-		editor.addItems(index.model().group_names())
-		editor.activated.connect(lambda _index, combo=editor: self.commitData.emit(combo))
-		return editor
-
-	def setEditorData(self, editor, index) -> None:  # noqa: N802
-		editor.setCurrentText(str(index.data(Qt.EditRole) or "NoSplit"))
-
-	def setModelData(self, editor, model, index) -> None:  # noqa: N802
-		targets = editor.assignment_targets or [str(index.data(PRIMARY_NAME_ROLE) or "")]
-		model.set_assignment_targets(editor.currentText(), targets)

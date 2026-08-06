@@ -28,11 +28,7 @@ from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker, Cont
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from .controllerLayoutWindow import ControllerLayoutWindow
-from .splitSettings import (
-	SplitPrimaryAssignmentsModel,
-	SplitPrimaryAssignmentsView,
-	SplitPrimaryGroupDelegate,
-)
+from .splitSettings import SplitPrimaryAssignmentsView
 from ..common import frameLayout
 from ...api.mayaUtils import undoable
 from ..common.icons import (
@@ -64,6 +60,15 @@ from ..common.icons import (
 	NORMALIZE_ICON,
 	MASK_ICON,
 	EDIT_SPLIT_MAP_ICON,
+	COPY_WEIGHTS_ICON,
+	PASTE_WEIGHTS_ICON,
+	PASTE_INVERTED_WEIGHTS_ICON,
+	PASTE_ADD_WEIGHTS_ICON,
+	PASTE_ADD_WEIGHTS_ICON,
+	PASTE_MINUS_WEIGHTS_ICON,
+	PASTE_MULTIPLY_WEIGHTS_ICON,
+	SOFT_MOD_ICON,
+
 
 )
 from ...mmtools import ui
@@ -156,22 +161,105 @@ def get_maya_main_window() -> Optional[QWidget]:
 	return wrapInstance(int(main_window_ptr), QWidget)
 
 
-class SplitMapsDragList(QListWidget):
-	"""List of split maps that can be dragged into a split group."""
+class SplitMapsTree(QTreeWidget):
+	"""Draggable split maps shown with normalization state and suffices."""
 
 	MIME_TYPE = "application/x-blue-steel-split-map"
+	MAP_NAME_ROLE = Qt.UserRole + 1
+	STATUS_COLOR_ROLE = Qt.UserRole + 2
+	NORMALIZED_COLOR = QColor("#4ba66d")
+	NOT_NORMALIZED_COLOR = QColor("#d9534f")
+	EDITING_COLOR = QColor("#f39c12")
+
+	currentMapChanged = Signal(str)
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
+		self.setColumnCount(3)
+		self.setHeaderLabels(["", "Split Map", "Suffices"])
+		self.setRootIsDecorated(False)
+		self.setIndentation(0)
+		self.setUniformRowHeights(True)
+		self.header().setSectionResizeMode(0, QHeaderView.Fixed)
+		self.header().setSectionResizeMode(1, QHeaderView.Stretch)
+		self.header().setSectionResizeMode(2, QHeaderView.Stretch)
+		self.setColumnWidth(0, 28)
+		self.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.setDragEnabled(True)
 		self.setDragDropMode(QAbstractItemView.DragOnly)
+		self.currentItemChanged.connect(self._on_current_item_changed)
+
+	def set_maps(
+		self,
+		map_weights: Dict[str, Sequence[str]],
+		normalized_maps: Optional[Dict[str, bool]] = None,
+		selected_map: str = "",
+		editing_map: str = "",
+	) -> None:
+		normalized_maps = normalized_maps or {}
+		self.blockSignals(True)
+		try:
+			self.clear()
+			selected_item = None
+			for map_name in sorted(map_weights):
+				suffices = []
+				for raw_weight_name in map_weights[map_name]:
+					suffix = str(raw_weight_name)
+					prefix = f"{map_name}_"
+					if suffix.startswith(prefix):
+						suffix = suffix[len(prefix):]
+					suffices.append(suffix)
+				is_editing = map_name == editing_map
+				suffix_text = "[--EDIT MODE--]" if is_editing else f"[{', '.join(suffices)}]"
+				map_item = QTreeWidgetItem(["", map_name, suffix_text])
+				map_item.setData(0, self.MAP_NAME_ROLE, map_name)
+				map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+				self.addTopLevelItem(map_item)
+				status_color = self.EDITING_COLOR if is_editing else (
+					self.NORMALIZED_COLOR if normalized_maps.get(map_name, False) else self.NOT_NORMALIZED_COLOR
+				)
+				status_text = "Currently being edited" if is_editing else (
+					"Normalized" if normalized_maps.get(map_name, False) else "Not normalized"
+				)
+				map_item.setData(0, self.STATUS_COLOR_ROLE, status_color)
+				map_item.setToolTip(0, status_text)
+				map_item.setToolTip(1, status_text)
+				map_item.setToolTip(2, suffix_text)
+				if map_name == selected_map:
+					selected_item = map_item
+			if selected_item is None and self.topLevelItemCount():
+				selected_item = self.topLevelItem(0)
+			if selected_item is not None:
+				self.setCurrentItem(selected_item)
+		finally:
+			self.blockSignals(False)
+		if self.currentItem() is not None:
+			self._on_current_item_changed(self.currentItem(), None)
+
+	def map_name(self, item: Optional[QTreeWidgetItem] = None) -> str:
+		item = item or self.currentItem()
+		if item is None:
+			return ""
+		return str(item.data(0, self.MAP_NAME_ROLE) or "")
+
+	def map_items(self) -> List[QTreeWidgetItem]:
+		return [self.topLevelItem(row) for row in range(self.topLevelItemCount())]
+
+	def find_map(self, map_name: str) -> Optional[QTreeWidgetItem]:
+		for item in self.map_items():
+			if self.map_name(item) == map_name:
+				return item
+		return None
+
+	def _on_current_item_changed(self, current, _previous) -> None:
+		self.currentMapChanged.emit(self.map_name(current))
 
 	def startDrag(self, supported_actions) -> None:  # noqa: N802
 		item = self.currentItem()
-		if item is None:
+		if item is None or item.parent() is not None:
 			return
 		mime_data = QMimeData()
-		mime_data.setData(self.MIME_TYPE, item.text().encode("utf-8"))
+		mime_data.setData(self.MIME_TYPE, self.map_name(item).encode("utf-8"))
 		drag = QDrag(self)
 		drag.setMimeData(mime_data)
 		if hasattr(drag, "exec"):
@@ -181,39 +269,119 @@ class SplitMapsDragList(QListWidget):
 
 
 class SplitMapStatusDelegate(QStyledItemDelegate):
-	"""Keep the map's status color visible while the row is selected."""
+	"""Draw the split map normalization state as a colored square."""
 
 	def paint(self, painter, option, index) -> None:  # noqa: N802
-		if option.state & QStyle.State_Selected:
-			foreground = index.data(Qt.ForegroundRole)
-			if hasattr(foreground, "color"):
-				foreground = foreground.color()
-			if isinstance(foreground, QColor):
-				selected_foreground = foreground.darker(180)
-				option.palette.setColor(QPalette.Active, QPalette.HighlightedText, selected_foreground)
-				option.palette.setColor(QPalette.Inactive, QPalette.HighlightedText, selected_foreground)
-				font = option.font
-				font.setBold(True)
-				option.font = font
 		super().paint(painter, option, index)
+		if index.column() != 0:
+			return
+		status_color = index.data(SplitMapsTree.STATUS_COLOR_ROLE)
+		if not isinstance(status_color, QColor):
+			return
+		square_size = min(12, option.rect.height() - 6)
+		square_rect = QRect(
+			option.rect.center().x() - square_size // 2,
+			option.rect.center().y() - square_size // 2,
+			square_size,
+			square_size,
+		)
+		painter.save()
+		painter.setPen(status_color.darker(150))
+		painter.setBrush(status_color)
+		painter.drawRect(square_rect)
+		painter.restore()
 
 
-class SplitGroupMapsList(QListWidget):
-	"""Ordered split-group maps with external add and drag-out removal."""
+class SplitGroupsTree(QTreeWidget):
+	"""Split groups with ordered split maps as draggable child items."""
 
-	mapsChanged = Signal(list)
-	mapDraggedOut = Signal(str)
+	GROUP_NAME_ROLE = Qt.UserRole + 1
+	MAP_NAME_ROLE = Qt.UserRole + 2
+
+	mapSelected = Signal(str)
+	mapsChanged = Signal(dict)
+	mapDraggedOut = Signal(str, str)
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
+		self.setColumnCount(1)
+		self.setHeaderHidden(True)
+		self.setIndentation(14)
+		self.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.setDragEnabled(True)
 		self.setAcceptDrops(True)
 		self.setDragDropMode(QAbstractItemView.DragDrop)
 		self.setDefaultDropAction(Qt.MoveAction)
 		self.setDropIndicatorShown(True)
+		self.currentItemChanged.connect(self._on_current_item_changed)
 
-	def _map_names(self) -> List[str]:
-		return [self.item(row).text() for row in range(self.count())]
+	def set_groups(self, split_groups: Dict[str, Sequence[str]], selected_group: str = "") -> None:
+		normalized_groups = {
+			str(group_name): [str(split_map_name) for split_map_name in map_names]
+			for group_name, map_names in split_groups.items()
+		}
+		expanded_groups = {
+			self._group_name(self.topLevelItem(row))
+			for row in range(self.topLevelItemCount())
+			if self.topLevelItem(row).isExpanded()
+		}
+		self.blockSignals(True)
+		try:
+			self.clear()
+			selected_item = None
+			for group_name in sorted(normalized_groups):
+				group_item = QTreeWidgetItem([group_name])
+				group_item.setData(0, self.GROUP_NAME_ROLE, group_name)
+				group_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDropEnabled)
+				self.addTopLevelItem(group_item)
+				for split_map_name in normalized_groups[group_name]:
+					map_item = QTreeWidgetItem([str(split_map_name)])
+					map_item.setData(0, self.GROUP_NAME_ROLE, group_name)
+					map_item.setData(0, self.MAP_NAME_ROLE, str(split_map_name))
+					map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+					group_item.addChild(map_item)
+				group_item.setExpanded(not expanded_groups or group_name in expanded_groups)
+				if group_name == selected_group:
+					selected_item = group_item
+			if selected_item is None and self.topLevelItemCount():
+				selected_item = self.topLevelItem(0)
+			if selected_item is not None:
+				self.setCurrentItem(selected_item)
+		finally:
+			self.blockSignals(False)
+		if self.currentItem() is not None:
+			self._on_current_item_changed(self.currentItem(), None)
+
+	def selected_group_name(self) -> str:
+		return self._group_name(self.currentItem())
+
+	def select_group(self, group_name: str) -> None:
+		for row in range(self.topLevelItemCount()):
+			item = self.topLevelItem(row)
+			if self._group_name(item) == group_name:
+				self.setCurrentItem(item)
+				return
+
+	def _group_name(self, item: Optional[QTreeWidgetItem]) -> str:
+		if item is None:
+			return ""
+		return str(item.data(0, self.GROUP_NAME_ROLE) or "")
+
+	def _map_names(self, group_item: QTreeWidgetItem) -> List[str]:
+		return [
+			str(group_item.child(row).data(0, self.MAP_NAME_ROLE) or "")
+			for row in range(group_item.childCount())
+		]
+
+	def groups(self) -> Dict[str, List[str]]:
+		return {
+			self._group_name(self.topLevelItem(row)): self._map_names(self.topLevelItem(row))
+			for row in range(self.topLevelItemCount())
+		}
+
+	def _on_current_item_changed(self, current, _previous) -> None:
+		if current is not None and current.parent() is not None:
+			self.mapSelected.emit(str(current.data(0, self.MAP_NAME_ROLE) or ""))
 
 	@staticmethod
 	def _event_position(event):
@@ -222,57 +390,70 @@ class SplitGroupMapsList(QListWidget):
 		return event.pos()
 
 	def dragEnterEvent(self, event) -> None:  # noqa: N802
-		if event.source() is self or event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
+		if event.source() is self or event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
 			event.acceptProposedAction()
 			return
 		event.ignore()
 
 	def dragMoveEvent(self, event) -> None:  # noqa: N802
-		if event.source() is self or event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
+		if event.source() is self or event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
 			event.acceptProposedAction()
 			return
 		event.ignore()
 
 	def dropEvent(self, event) -> None:  # noqa: N802
-		if event.source() is self:
-			item = self.currentItem()
-			if item is None:
-				event.ignore()
-				return
-			old_row = self.row(item)
-			target_item = self.itemAt(self._event_position(event))
-			new_row = self.row(target_item) if target_item is not None else self.count()
-			item = self.takeItem(old_row)
-			if old_row < new_row:
-				new_row -= 1
-			self.insertItem(max(0, new_row), item)
-			self.setCurrentItem(item)
-			event.setDropAction(Qt.MoveAction)
-			event.accept()
-			self.mapsChanged.emit(self._map_names())
+		if not event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
+			event.ignore()
+			return
+		map_name = bytes(event.mimeData().data(SplitMapsTree.MIME_TYPE)).decode("utf-8")
+		event_position = self._event_position(event)
+		target_item = self.itemAt(event_position)
+		target_group = target_item.parent() if target_item is not None and target_item.parent() is not None else target_item
+		if not map_name or target_group is None:
+			event.ignore()
 			return
 
-		if event.mimeData().hasFormat(SplitMapsDragList.MIME_TYPE):
-			map_name = bytes(event.mimeData().data(SplitMapsDragList.MIME_TYPE)).decode("utf-8")
-			if map_name and not self.findItems(map_name, Qt.MatchExactly):
-				target_item = self.itemAt(self._event_position(event))
-				new_row = self.row(target_item) if target_item is not None else self.count()
-				self.insertItem(new_row, map_name)
-				self.setCurrentRow(new_row)
-				self.mapsChanged.emit(self._map_names())
-			event.setDropAction(Qt.CopyAction)
-			event.accept()
+		source_item = self.currentItem() if event.source() is self else None
+		source_group = source_item.parent() if source_item is not None else None
+		if source_item is target_item:
+			event.ignore()
+			return
+		if map_name in self._map_names(target_group) and source_group is not target_group:
+			event.ignore()
 			return
 
-		event.ignore()
+		new_row = target_group.childCount()
+		if target_item is not None and target_item.parent() is target_group:
+			new_row = target_group.indexOfChild(target_item)
+			if event_position.y() >= self.visualItemRect(target_item).center().y():
+				new_row += 1
+		source_row = source_group.indexOfChild(source_item) if source_group is not None else -1
+		if source_group is not None:
+			source_group.takeChild(source_row)
+
+		if source_group is target_group and source_row < new_row:
+			new_row -= 1
+		new_row = min(new_row, target_group.childCount())
+		map_item = source_item or QTreeWidgetItem([map_name])
+		map_item.setData(0, self.GROUP_NAME_ROLE, self._group_name(target_group))
+		map_item.setData(0, self.MAP_NAME_ROLE, map_name)
+		map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+		target_group.insertChild(new_row, map_item)
+		target_group.setExpanded(True)
+		self.setCurrentItem(map_item)
+		self.mapsChanged.emit(self.groups())
+		event.setDropAction(Qt.MoveAction if source_group is not None else Qt.CopyAction)
+		event.accept()
+		return
 
 	def startDrag(self, supported_actions) -> None:  # noqa: N802
 		item = self.currentItem()
-		if item is None:
+		if item is None or item.parent() is None:
 			return
-		map_name = item.text()
+		map_name = str(item.data(0, self.MAP_NAME_ROLE) or "")
+		group_name = self._group_name(item)
 		mime_data = QMimeData()
-		mime_data.setData(SplitMapsDragList.MIME_TYPE, map_name.encode("utf-8"))
+		mime_data.setData(SplitMapsTree.MIME_TYPE, map_name.encode("utf-8"))
 		drag = QDrag(self)
 		drag.setMimeData(mime_data)
 		if hasattr(drag, "exec"):
@@ -282,7 +463,7 @@ class SplitGroupMapsList(QListWidget):
 		if result == Qt.IgnoreAction and not self.viewport().rect().contains(
 			self.viewport().mapFromGlobal(QCursor.pos())
 		):
-			self.mapDraggedOut.emit(map_name)
+			self.mapDraggedOut.emit(group_name, map_name)
 
 
 PRIMARY_TREE_SORT_VALUE_ROLE = Qt.UserRole + 905
@@ -1507,10 +1688,14 @@ class SliderItemDelegate(QStyledItemDelegate):
 	ICON_GAP = 3
 	MIN_TEXT_WIDTH = 20
 
+	def _is_primary_tree_view(self) -> bool:
+		parent_view = self.parent()
+		return isinstance(parent_view, PrimaryTreeWidget) or bool(getattr(parent_view, "_primary_tree_layout", False))
+
 	def sizeHint(self, option, index):  # noqa: N802
 		if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
 			return QSize(option.rect.width(), 28)
-		if isinstance(self.parent(), PrimaryTreeWidget) or bool(getattr(self.parent(), "_primary_slider_layout", False)):
+		if self._is_primary_tree_view() or bool(getattr(self.parent(), "_primary_slider_layout", False)):
 			return QSize(option.rect.width(), 20)
 		return QSize(option.rect.width(), 24)
 
@@ -1589,7 +1774,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 	def _tree_row_indent(self, index) -> int:
 		parent_view = self.parent()
-		if not isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget)):
+		if not isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget)) and not self._is_primary_tree_view():
 			return 0
 		depth = 0
 		parent_index = index.parent()
@@ -1612,11 +1797,11 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 	def _shows_mute_icon(self, index) -> bool:
 		parent_view = self.parent()
-		return not isinstance(parent_view, (PrimaryTreeWidget, PrimaryDropListView))
+		return not self._is_primary_tree_view() and not isinstance(parent_view, PrimaryDropListView)
 
 	def _panel_reserved_icon_slots(self) -> int:
 		parent_view = self.parent()
-		if isinstance(parent_view, PrimaryTreeWidget):
+		if self._is_primary_tree_view():
 			return 0
 		if isinstance(parent_view, PrimaryDropListView):
 			return 1
@@ -1689,7 +1874,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 			name = model.data(index, ShapeItemsModel.NameRole) or ""
 			rect = option.rect
 			parent_view = self.parent()
-			is_group_tree = isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget))
+			is_group_tree = isinstance(parent_view, (PrimaryTreeWidget, ShapeTreeWidget)) or self._is_primary_tree_view()
 			painter.save()
 			header_bg = option.palette.alternateBase().color()
 			header_bg.setAlpha(190)
@@ -1701,7 +1886,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 			painter.setFont(font)
 			painter.setPen(option.palette.text().color())
 			text_rect = rect.adjusted(6, 0, -6, 0)
-			if is_group_tree:
+			if is_group_tree and not bool(getattr(parent_view, "_uses_native_branch_indicator", False)):
 				indent = self._tree_row_indent(index)
 				icon_size = 14
 				icon_rect = QRect(rect.left() + indent + 2, rect.top() + (rect.height() - icon_size) // 2, icon_size, icon_size)
@@ -1814,7 +1999,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 	def createEditor(self, parent, option, index):  # noqa: N802
 		if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
 			return None
-		if isinstance(self.parent(), PrimaryTreeWidget) or bool(getattr(self.parent(), "_primary_slider_layout", False)):
+		if self._is_primary_tree_view() or bool(getattr(self.parent(), "_primary_slider_layout", False)):
 			return None
 		if not bool(index.model().data(index, ShapeItemsModel.EditableRole)):
 			return None
@@ -2076,7 +2261,99 @@ class SplitMapWeightsList(QListWidget):
 
 
 class SplitMapWeightSliderDelegate(SliderItemDelegate):
-	"""Slider delegate without shape mute/lock icon slots."""
+	"""Maya-style split-weight slider with a separate numeric field."""
+
+	MIN_NAME_WIDTH = 24
+	MAX_NAME_WIDTH = 120
+	MIN_SLIDER_WIDTH = 48
+	VALUE_FIELD_WIDTH = 48
+	VALUE_FIELD_GAP = 5
+
+	def sizeHint(self, option, index):  # noqa: N802
+		return QSize(1, 40)
+
+	def _row_rects(self, option, index):
+		rect = option.rect
+		left = rect.left() + self.LEFT_MARGIN
+		content_right = rect.right() - self.RIGHT_MARGIN
+		available_width = max(1, content_right - left)
+		font_metrics = getattr(option, "fontMetrics", None)
+		name = str(index.data(ShapeItemsModel.NameRole) or "")
+		name_hint = font_metrics.horizontalAdvance(name) + 4 if font_metrics is not None else self.MIN_NAME_WIDTH
+		maximum_name_width = max(
+			self.MIN_NAME_WIDTH,
+			available_width - self.MIN_SLIDER_WIDTH - self.VALUE_FIELD_WIDTH - self.VALUE_FIELD_GAP - 4,
+		)
+		name_width = min(self.MAX_NAME_WIDTH, maximum_name_width, max(self.MIN_NAME_WIDTH, name_hint))
+		text_rect = QRect(left, rect.top(), name_width, rect.height())
+		slider_left = text_rect.right() + 4
+		value_field_right = content_right
+		value_field_width = min(self.VALUE_FIELD_WIDTH, max(1, value_field_right - slider_left - self.VALUE_FIELD_GAP))
+		value_field_left = value_field_right - value_field_width + 1
+		value_field_rect = QRect(
+			value_field_left,
+			rect.top() + (rect.height() - 18) // 2,
+			value_field_width,
+			18,
+		)
+		slider_width = max(1, value_field_left - self.VALUE_FIELD_GAP - slider_left)
+		slider_rect = QRect(slider_left, rect.top(), slider_width, rect.height())
+		return slider_rect, value_field_rect, text_rect
+
+	def _area_rects(self, option, index):
+		slider_rect, _value_field_rect, text_rect = self._row_rects(option, index)
+		return slider_rect, text_rect
+
+	def paint(self, painter: QPainter, option, index) -> None:
+		value = max(0.0, min(1.0, float(index.data(ShapeItemsModel.ValueRole) or 0.0)))
+		name = str(index.data(ShapeItemsModel.NameRole) or "")
+		slider_rect, value_field_rect, text_rect = self._row_rects(option, index)
+
+		painter.save()
+		painter.fillRect(option.rect, option.palette.base().color())
+		if option.state & QStyle.State_Selected:
+			selection_color = option.palette.highlight().color()
+			selection_color.setAlpha(55)
+			painter.fillRect(option.rect, selection_color)
+
+		painter.setPen(option.palette.text().color())
+		display_name = option.fontMetrics.elidedText(name, Qt.ElideRight, text_rect.width())
+		painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, display_name)
+
+		track_left = min(slider_rect.left() + 6, slider_rect.right())
+		track_right = max(track_left, slider_rect.right() - 6)
+		track_y = slider_rect.center().y()
+		cursor_x = track_left + int(value * max(1, track_right - track_left))
+		track_rect = QRect(track_left, track_y - 2, max(1, track_right - track_left + 1), 5)
+		painter.fillRect(track_rect, QColor(82, 82, 82))
+		progress_rect = QRect(track_left, track_y - 2, max(1, cursor_x - track_left + 1), 5)
+		painter.fillRect(progress_rect, option.palette.highlight().color())
+		cursor_rect = QRect(cursor_x - 6, track_y - 6, 12, 12)
+		painter.setPen(QColor(35, 35, 35))
+		painter.setBrush(option.palette.highlight().color())
+		painter.drawEllipse(cursor_rect)
+
+		painter.setPen(option.palette.mid().color())
+		painter.setBrush(option.palette.base().color())
+		painter.drawRect(value_field_rect.adjusted(0, 0, -1, -1))
+		painter.setPen(option.palette.text().color())
+		painter.drawText(value_field_rect.adjusted(3, 0, -3, 0), Qt.AlignVCenter | Qt.AlignRight, f"{value:.3f}")
+
+		painter.restore()
+
+	def editorEvent(self, event, model, option, index):  # noqa: N802
+		if event.type() == QEvent.MouseButtonDblClick:
+			_slider_rect, value_field_rect, _text_rect = self._row_rects(option, index)
+			if value_field_rect.contains(event.pos()):
+				parent = self.parent()
+				if isinstance(parent, QAbstractItemView):
+					parent.edit(index)
+			return True
+		return super().editorEvent(event, model, option, index)
+
+	def updateEditorGeometry(self, editor, option, index):  # noqa: N802
+		_slider_rect, value_field_rect, _text_rect = self._row_rects(option, index)
+		editor.setGeometry(value_field_rect.adjusted(1, 1, -1, -1))
 
 	def _shows_mute_icon(self, index) -> bool:
 		del index
@@ -2667,6 +2944,7 @@ class MainWindow(QMainWindow):
 	"""Main Blue Steel editor window."""
 
 	EMPTY_SYSTEM_LABEL = "<Select System>"
+	SPLIT_PANELS_MAX_WIDTH = 600
 	PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
 	PRIMARY_TREE_FOLDER_ROLE = Qt.UserRole + 201
 
@@ -2693,8 +2971,6 @@ class MainWindow(QMainWindow):
 		self._primary_subset_proxy = PrimarySubsetProxyModel(self)
 		self._active_shapes_proxy = ShapesFilterProxyModel(self)
 		self._primaries_proxy.setSourceModel(self._shape_model)
-		self._split_primaries_model = SplitPrimaryAssignmentsModel(self)
-		self._split_primaries_model.setSourceModel(self._primaries_proxy)
 		self._shapes_proxy.setSourceModel(self._shape_model)
 		self._primary_subset_proxy.setSourceModel(self._shape_model)
 		self._active_shapes_proxy.setSourceModel(self._shape_model)
@@ -2756,10 +3032,8 @@ class MainWindow(QMainWindow):
 		self.split_primary_search: Optional[QLineEdit] = None
 		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsView] = None
 		self._split_primary_slider_delegate: Optional[SliderItemDelegate] = None
-		self._split_primary_delegate: Optional[SplitPrimaryGroupDelegate] = None
-		self.split_groups_list: Optional[QListWidget] = None
-		self.split_group_maps_list: Optional[QListWidget] = None
-		self.split_maps_list: Optional[QListWidget] = None
+		self.split_groups_tree: Optional[SplitGroupsTree] = None
+		self.split_maps_list: Optional[SplitMapsTree] = None
 		self.split_map_weights_list: Optional[SplitMapWeightsList] = None
 		self.split_map_weight_stats_label: Optional[QLabel] = None
 		self._split_map_weight_slider_delegate: Optional[SplitMapWeightSliderDelegate] = None
@@ -2774,6 +3048,7 @@ class MainWindow(QMainWindow):
 		self._split_maps_lists_splitter: Optional[QSplitter] = None
 		self._split_map_controls_widget: Optional[QWidget] = None
 		self._split_map_weights_column_widget: Optional[QWidget] = None
+		self._split_map_editor_group_widget: Optional[QGroupBox] = None
 		self._split_map_weights_splitter: Optional[QSplitter] = None
 		self._split_map_weight_controls_widget: Optional[QWidget] = None
 		self._split_map_buttons: List[QPushButton] = []
@@ -2784,6 +3059,8 @@ class MainWindow(QMainWindow):
 		self._split_map_weight_button_labels: Dict[QPushButton, str] = {}
 		self._split_map_weight_buttons_compact_mode = False
 		self._split_map_weight_buttons_expanded_width = 0
+		self._split_map_weight_operation_buttons: List[QPushButton] = []
+		self._split_map_weight_paste_operation_buttons: List[QPushButton] = []
 
 		self._build_ui()
 		self._connect_ui_signals()
@@ -3160,38 +3437,35 @@ class MainWindow(QMainWindow):
 		primaries_layout.addWidget(self.split_primary_search)
 		self.split_primaries_tree = SplitPrimaryAssignmentsView()
 		self._allow_horizontal_collapse(self.split_primaries_tree)
-		self.split_primaries_tree.setModel(self._split_primaries_model)
+		self.split_primaries_tree.set_source_model(self._shape_model)
 		self.split_primaries_tree.setAlternatingRowColors(True)
 		self.split_primaries_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-		self.split_primaries_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
 		self.split_primaries_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
-		self.split_primaries_tree.verticalHeader().setVisible(False)
-		self.split_primaries_tree.verticalHeader().setMinimumSectionSize(20)
-		self.split_primaries_tree.verticalHeader().setDefaultSectionSize(20)
-		split_primaries_header = self.split_primaries_tree.horizontalHeader()
-		split_primaries_header.setStretchLastSection(False)
-		split_primaries_header.setSectionResizeMode(0, QHeaderView.Interactive)
-		split_primaries_header.setSectionResizeMode(1, QHeaderView.Interactive)
-		self.split_primaries_tree.setStyleSheet("QTableView::item { padding: 0px; }")
+		self.split_primaries_tree.setIndentation(14)
+		self.split_primaries_tree.setStyleSheet("QTreeView::item { padding-top: 2px; padding-bottom: 2px; }")
 		self._split_primary_slider_delegate = SliderItemDelegate(self.split_primaries_tree)
-		self._split_primary_delegate = SplitPrimaryGroupDelegate(self.split_primaries_tree)
 		self.split_primaries_tree.setItemDelegateForColumn(0, self._split_primary_slider_delegate)
-		self.split_primaries_tree.setItemDelegateForColumn(1, self._split_primary_delegate)
 		primaries_layout.addWidget(self.split_primaries_tree, 1)
 		split_settings_splitter.addWidget(primaries_group)
 
 		right_column = QWidget(parent_widget)
 		self._allow_horizontal_collapse(right_column)
+		right_column.setMaximumWidth(self.SPLIT_PANELS_MAX_WIDTH)
 		right_layout = QVBoxLayout(right_column)
 		right_layout.setContentsMargins(0, 0, 0, 0)
 		right_layout.setSpacing(8)
 
-		split_groups_group = QGroupBox("Split Group Panel")
+		split_groups_maps_splitter = QSplitter(Qt.Horizontal)
+		split_groups_maps_splitter.setChildrenCollapsible(False)
+		right_layout.addWidget(split_groups_maps_splitter, 1)
+
+		split_groups_group = QGroupBox("Split Groups")
 		self._allow_horizontal_collapse(split_groups_group)
 		split_groups_layout = QHBoxLayout(split_groups_group)
 		split_groups_splitter = QSplitter(Qt.Horizontal)
 		split_groups_splitter.setChildrenCollapsible(False)
 		split_groups_layout.addWidget(split_groups_splitter, 1)
+		split_groups_maps_splitter.addWidget(split_groups_group)
 
 		split_group_controls_widget = QWidget()
 		self._allow_horizontal_collapse(split_group_controls_widget)
@@ -3223,32 +3497,20 @@ class MainWindow(QMainWindow):
 		split_group_controls.addStretch(1)
 		split_groups_splitter.addWidget(split_group_controls_widget)
 
-		self.split_groups_list = QListWidget()
-		self._allow_horizontal_collapse(self.split_groups_list)
-		self.split_groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_groups_list.setToolTip("Select a split group")
-		split_groups_splitter.addWidget(self.split_groups_list)
-		self.split_group_maps_list = SplitGroupMapsList()
-		self._allow_horizontal_collapse(self.split_group_maps_list)
-		self.split_group_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_group_maps_list.setToolTip("Drop split maps here, drag to reorder, or drag out to remove")
-		split_groups_splitter.addWidget(self.split_group_maps_list)
-		split_groups_splitter.setStretchFactor(0, 0)
-		split_groups_splitter.setStretchFactor(1, 1)
-		split_groups_splitter.setStretchFactor(2, 1)
-		self._split_groups_group_widget = split_groups_group
-		self._split_groups_splitter = split_groups_splitter
-		self._split_group_controls_widget = split_group_controls_widget
-		self._split_group_buttons_expanded_width = max(
-			button.sizeHint().width() for button in self._split_group_buttons
+		self.split_groups_tree = SplitGroupsTree()
+		self._allow_horizontal_collapse(self.split_groups_tree)
+		self.split_groups_tree.setToolTip(
+			"Select a group or map; drop maps onto groups, drag to reorder, or drag out to remove"
 		)
-		right_layout.addWidget(split_groups_group, 1)
+		split_groups_splitter.addWidget(self.split_groups_tree)
 
-		split_maps_group = QGroupBox("Split Maps")
-		self._allow_horizontal_collapse(split_maps_group)
-		split_maps_layout = QVBoxLayout(split_maps_group)
+		split_maps_browser_group = QGroupBox("Split Maps")
+		self._allow_horizontal_collapse(split_maps_browser_group)
+		split_maps_group_layout = QHBoxLayout(split_maps_browser_group)
 		split_maps_lists_splitter = QSplitter(Qt.Horizontal)
 		split_maps_lists_splitter.setChildrenCollapsible(False)
+		split_maps_group_layout.addWidget(split_maps_lists_splitter, 1)
+		split_groups_maps_splitter.addWidget(split_maps_browser_group)
 
 		split_map_controls_widget = QWidget()
 		self._allow_horizontal_collapse(split_map_controls_widget)
@@ -3300,13 +3562,44 @@ class MainWindow(QMainWindow):
 		split_map_controls.addStretch(1)
 		split_maps_lists_splitter.addWidget(split_map_controls_widget)
 
-		self.split_maps_list = SplitMapsDragList()
+		split_maps_browser_widget = QWidget()
+		self._allow_horizontal_collapse(split_maps_browser_widget)
+		split_maps_browser_layout = QVBoxLayout(split_maps_browser_widget)
+		split_maps_browser_layout.setContentsMargins(0, 0, 0, 0)
+		self.split_maps_list = SplitMapsTree()
 		self._allow_horizontal_collapse(self.split_maps_list)
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.split_maps_list.setToolTip("All split maps; drag a map into the selected split group")
+		self.split_maps_list.setToolTip("All split maps; drag a map onto a group in the tree")
 		self.split_maps_list.setContextMenuPolicy(Qt.CustomContextMenu)
 		self.split_maps_list.setItemDelegate(SplitMapStatusDelegate(self.split_maps_list))
-		split_maps_lists_splitter.addWidget(self.split_maps_list)
+		split_maps_browser_layout.addWidget(self.split_maps_list, 1)
+		self.split_map_weight_stats_label = QLabel("Press Check Normalization to check split maps.")
+		split_maps_browser_layout.addWidget(self.split_map_weight_stats_label)
+		split_maps_lists_splitter.addWidget(split_maps_browser_widget)
+		split_maps_lists_splitter.setStretchFactor(0, 0)
+		split_maps_lists_splitter.setStretchFactor(1, 1)
+
+		split_groups_splitter.setStretchFactor(0, 0)
+		split_groups_splitter.setStretchFactor(1, 1)
+		split_groups_maps_splitter.setStretchFactor(0, 1)
+		split_groups_maps_splitter.setStretchFactor(1, 1)
+		self._split_groups_group_widget = split_groups_group
+		self._split_groups_splitter = split_groups_splitter
+		self._split_group_controls_widget = split_group_controls_widget
+		self._split_maps_lists_splitter = split_maps_lists_splitter
+		self._split_map_controls_widget = split_map_controls_widget
+		self._split_group_buttons_expanded_width = max(
+			button.sizeHint().width() for button in self._split_group_buttons
+		)
+		self._split_map_buttons_expanded_width = max(
+			button.sizeHint().width() for button in self._split_map_buttons
+		)
+
+		split_maps_group = QGroupBox("Split Map Editor")
+		self._allow_horizontal_collapse(split_maps_group)
+		self._split_map_editor_group_widget = split_maps_group
+		split_maps_group.setEnabled(False)
+		split_maps_layout = QVBoxLayout(split_maps_group)
 
 		split_map_weights_splitter = QSplitter(Qt.Horizontal)
 		split_map_weights_splitter.setChildrenCollapsible(False)
@@ -3343,11 +3636,39 @@ class MainWindow(QMainWindow):
 		split_map_weights_column.setContentsMargins(0, 0, 0, 0)
 		self.split_map_weights_list = SplitMapWeightsList()
 		self._allow_horizontal_collapse(self.split_map_weights_list)
+		self.split_map_weights_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 		self.split_map_weights_list.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.split_map_weights_list.setToolTip("Select a split-map weight or drag its slider to set the edit blendshape value")
 		self.split_map_weights_list.setContextMenuPolicy(Qt.CustomContextMenu)
 		self._split_map_weight_slider_delegate = SplitMapWeightSliderDelegate(self.split_map_weights_list)
 		self.split_map_weights_list.setItemDelegate(self._split_map_weight_slider_delegate)
+		split_map_weight_operations = QHBoxLayout()
+		split_map_weight_operations.setContentsMargins(0, 0, 0, 4)
+		split_map_weight_operations.setSpacing(3)
+		operation_specs = [
+			(SOFT_MOD_ICON, "Convert Soft Selection to Split Weight Map", "convert_soft_selection_to_edit_split_weight_map", "Converted soft selection to", False),
+			(COPY_WEIGHTS_ICON, "Copy Weight Map", "copy_edit_split_weight_map_values", "Copied", False),
+			(PASTE_WEIGHTS_ICON, "Paste Weight Map", "paste_edit_split_weight_map_values", "Pasted", True),
+			(PASTE_INVERTED_WEIGHTS_ICON, "Paste Inverted", "paste_inverted_edit_split_weight_map_values", "Pasted inverted values to", True),
+			(PASTE_ADD_WEIGHTS_ICON, "Add Copied Weights", "add_edit_split_weight_map_values", "Added copied values to", True),
+			(PASTE_MINUS_WEIGHTS_ICON, "Subtract Copied Weights", "subtract_edit_split_weight_map_values", "Subtracted copied values from", True),
+		]
+		for icon, tooltip, method_name, status_verb, requires_copy in operation_specs:
+			button = QPushButton()
+			button.setIcon(icon)
+			button.setIconSize(self._tools_panel_compact_icon_size)
+			button.setFixedSize(34, 34)
+			button.setToolTip(tooltip)
+			button.clicked.connect(
+				lambda _checked=False, method_name=method_name, status_verb=status_verb:
+				self._run_split_weight_map_operation(method_name, status_verb)
+			)
+			self._split_map_weight_operation_buttons.append(button)
+			if requires_copy:
+				self._split_map_weight_paste_operation_buttons.append(button)
+			split_map_weight_operations.addWidget(button)
+		split_map_weight_operations.addStretch(1)
+		split_map_weights_column.addLayout(split_map_weight_operations)
 		split_map_weights_column.addWidget(self.split_map_weights_list, 1)
 		split_map_edit_actions = QHBoxLayout()
 		split_map_edit_actions.setContentsMargins(0, 4, 0, 0)
@@ -3359,20 +3680,10 @@ class MainWindow(QMainWindow):
 		split_map_weights_splitter.addWidget(split_map_weights_column_widget)
 		split_map_weights_splitter.setStretchFactor(0, 0)
 		split_map_weights_splitter.setStretchFactor(1, 1)
-		split_maps_lists_splitter.addWidget(split_map_weights_splitter)
+		split_maps_layout.addWidget(split_map_weights_splitter, 1)
 		self._split_map_weights_column_widget = split_map_weights_splitter
 		self._split_map_weights_splitter = split_map_weights_splitter
 		self._split_map_weight_controls_widget = split_map_weight_controls_widget
-		self._split_map_weights_column_widget.setVisible(False)
-		split_maps_lists_splitter.setStretchFactor(0, 0)
-		split_maps_lists_splitter.setStretchFactor(1, 1)
-		split_maps_lists_splitter.setStretchFactor(2, 1)
-		split_maps_layout.addWidget(split_maps_lists_splitter, 1)
-		self._split_maps_lists_splitter = split_maps_lists_splitter
-		self._split_map_controls_widget = split_map_controls_widget
-		self._split_map_buttons_expanded_width = max(
-			button.sizeHint().width() for button in self._split_map_buttons
-		)
 		self._split_map_weight_buttons_expanded_width = max(
 			button.sizeHint().width() for button in self._split_map_weight_buttons
 		)
@@ -3385,24 +3696,21 @@ class MainWindow(QMainWindow):
 		self._set_split_group_buttons_compact_mode(True)
 		self._set_split_map_buttons_compact_mode(True)
 		self._set_split_map_weight_buttons_compact_mode(True)
-		split_groups_splitter.setSizes([40, 1, 1])
-		split_maps_lists_splitter.setSizes([40, 1, 1])
-		split_map_weights_splitter.setSizes([40, 1])
+		split_groups_maps_splitter.setSizes([500, 500])
+		split_groups_splitter.setSizes([40, 500])
+		split_maps_lists_splitter.setSizes([40, 500])
+		split_map_weights_splitter.setSizes([40, 500])
 
 		split_map_labels_layout = QHBoxLayout()
-		self.split_map_weight_stats_label = QLabel("Press Check Normalization to check split maps.")
-		split_map_labels_layout.addWidget(self.split_map_weight_stats_label)
-		split_map_labels_layout.addStretch(1)
 		self.split_map_weights_label = QLabel("Editing Split Map: None")
-		self.split_map_weights_label.setVisible(False)
 		split_map_labels_layout.addWidget(self.split_map_weights_label)
 		split_maps_layout.addLayout(split_map_labels_layout)
 		right_layout.addWidget(split_maps_group, 1)
 
 		split_settings_splitter.addWidget(right_column)
-		split_settings_splitter.setStretchFactor(0, 2)
-		split_settings_splitter.setStretchFactor(1, 3)
-		split_settings_splitter.setSizes([2, 3])
+		split_settings_splitter.setStretchFactor(0, 1)
+		split_settings_splitter.setStretchFactor(1, 1)
+		split_settings_splitter.setSizes([500, 500])
 
 	def _apply_primaries_branch_icons(self) -> None:
 		"""Use fixed-size item icons for folders; hide branch glyphs tied to indentation."""
@@ -3785,14 +4093,15 @@ class MainWindow(QMainWindow):
 		self.primaries_view.customContextMenuRequested.connect(self._show_primaries_context_menu)
 		if self.split_primary_search is not None:
 			self.split_primary_search.textChanged.connect(self._on_split_primary_search_changed)
-		self._split_primaries_model.assignmentCommitted.connect(self._on_primary_split_group_changed)
-		if self.split_groups_list is not None:
-			self.split_groups_list.currentTextChanged.connect(self._on_split_group_selection_changed)
-		if self.split_group_maps_list is not None:
-			self.split_group_maps_list.mapsChanged.connect(self._on_split_group_maps_changed)
-			self.split_group_maps_list.mapDraggedOut.connect(self._on_split_group_map_dragged_out)
+		if self.split_primaries_tree is not None:
+			self.split_primaries_tree.assignmentChanged.connect(self._on_primary_split_group_changed)
+			self.split_primaries_tree.model().dataChanged.connect(self._on_split_primaries_tree_data_changed)
+		if self.split_groups_tree is not None:
+			self.split_groups_tree.mapSelected.connect(self._on_split_group_map_selected)
+			self.split_groups_tree.mapsChanged.connect(self._on_split_group_maps_changed)
+			self.split_groups_tree.mapDraggedOut.connect(self._on_split_group_map_dragged_out)
 		if self.split_maps_list is not None:
-			self.split_maps_list.currentTextChanged.connect(self._on_split_map_selection_changed)
+			self.split_maps_list.currentMapChanged.connect(self._on_split_map_selection_changed)
 			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
 		if self.split_map_weights_list is not None:
 			self.split_map_weights_list.customContextMenuRequested.connect(self._show_split_map_weights_context_menu)
@@ -3861,14 +4170,15 @@ class MainWindow(QMainWindow):
 
 	def _set_splitter_first_pane_size(self, splitter: QSplitter, target_width: int) -> None:
 		sizes = splitter.sizes()
-		if len(sizes) < 3:
+		if len(sizes) < 2:
 			return
 		current_width = sizes[0]
 		target_width = max(1, min(target_width, current_width + sizes[1] - 1))
 		first_list_width = sizes[1] - (target_width - current_width)
+		new_sizes = [target_width, first_list_width] + sizes[2:]
 		was_blocked = splitter.blockSignals(True)
 		try:
-			splitter.setSizes([target_width, first_list_width, sizes[2]])
+			splitter.setSizes(new_sizes)
 		finally:
 			splitter.blockSignals(was_blocked)
 
@@ -4123,8 +4433,7 @@ class MainWindow(QMainWindow):
 		for widget in [
 			self.split_primary_search,
 			self.split_primaries_tree,
-			self.split_groups_list,
-			self.split_group_maps_list,
+			self.split_groups_tree,
 			self.split_maps_list,
 			self.split_map_weights_list,
 			getattr(self, "split_group_add_button", None),
@@ -4150,7 +4459,6 @@ class MainWindow(QMainWindow):
 		if self.current_editor is None:
 			self._refresh_split_primary_assignments()
 			self._refresh_split_groups()
-			self._refresh_split_group_maps()
 			self._refresh_split_maps()
 			self._refresh_split_map_weights()
 			if self.split_map_weight_stats_label is not None:
@@ -4161,14 +4469,14 @@ class MainWindow(QMainWindow):
 		self._set_split_settings_enabled(True)
 		self._refresh_split_primary_assignments()
 		self._refresh_split_groups()
-		self._refresh_split_group_maps()
 		self._refresh_split_maps()
 		self._refresh_split_map_weights()
 
 	def _refresh_split_primary_assignments(self) -> None:
+		if self.split_primaries_tree is None:
+			return
 		if self.current_editor is None:
-			self._split_primaries_model.set_assignments([], {})
-			self._update_split_primary_group_column_width()
+			self.split_primaries_tree.set_assignments([], {})
 			return
 
 		try:
@@ -4178,104 +4486,61 @@ class MainWindow(QMainWindow):
 
 		group_names = sorted(str(name) for name in split_groups.keys())
 		assignments = {}
-		for primary in self._split_primaries_model.primary_names():
+		for primary in self.split_primaries_tree.primary_names():
 			try:
 				assignments[primary] = self.current_editor.get_primary_split_group(primary)
 			except Exception:
 				assignments[primary] = "NoSplit"
-		self._split_primaries_model.set_assignments(group_names, assignments)
-		self._update_split_primary_group_column_width()
-		if self.split_primaries_tree is not None:
-			for row in range(self._split_primaries_model.rowCount()):
-				self.split_primaries_tree.openPersistentEditor(self._split_primaries_model.index(row, 1))
-			self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
-
-	def _update_split_primary_group_column_width(self) -> None:
-		if self.split_primaries_tree is None:
-			return
-		options = ["Split Group"] + self._split_primaries_model.group_names()
-		font_metrics = self.split_primaries_tree.fontMetrics()
-		text_width = max(font_metrics.horizontalAdvance(option) for option in options)
-		style = self.split_primaries_tree.style()
-		arrow_width = style.pixelMetric(QStyle.PM_ScrollBarExtent)
-		frame_width = style.pixelMetric(QStyle.PM_ComboBoxFrameWidth) * 2
-		self.split_primaries_tree.horizontalHeader().resizeSection(
-			1,
-			text_width + arrow_width + frame_width + 16,
-		)
+		self.split_primaries_tree.set_assignments(group_names, assignments)
+		self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
 
 	def _refresh_split_groups(self) -> None:
-		if self.split_groups_list is None:
+		if self.split_groups_tree is None:
 			return
 		if self.current_editor is None:
-			self.split_groups_list.clear()
+			self.split_groups_tree.set_groups({})
 			return
-
-		try:
-			group_names = sorted(str(name) for name in self.current_editor.read_split_groups_attributes().keys())
-		except Exception:
-			group_names = []
 
 		selected_group = self._selected_split_group_name() or ""
-		self.split_groups_list.blockSignals(True)
-		self.split_groups_list.clear()
-		for group_name in group_names:
-			self.split_groups_list.addItem(group_name)
-		self.split_groups_list.blockSignals(False)
-		if selected_group and selected_group in group_names:
-			matching = self.split_groups_list.findItems(selected_group, Qt.MatchExactly)
-			if matching:
-				self.split_groups_list.setCurrentItem(matching[0])
-		elif self.split_groups_list.count() > 0:
-			self.split_groups_list.setCurrentRow(0)
-
-	def _refresh_split_group_maps(self, group_name: Optional[str] = None) -> None:
-		if self.split_group_maps_list is None:
-			return
-		self.split_group_maps_list.clear()
-		group_name = group_name or self._selected_split_group_name()
-		if self.current_editor is None or not group_name:
-			return
 		try:
 			split_groups = self.current_editor.read_split_groups_attributes()
 		except Exception:
 			split_groups = {}
-		for split_map_name in split_groups.get(group_name, []):
-			self.split_group_maps_list.addItem(str(split_map_name))
+		self.split_groups_tree.set_groups(split_groups, selected_group)
 
 	def _refresh_split_maps(self) -> None:
 		if self.split_maps_list is None:
 			return
 		if self.current_editor is None:
-			self.split_maps_list.clear()
+			self.split_maps_list.set_maps({})
 			return
 
 		selected_map = self._selected_split_map_name() or ""
-		all_split_maps = sorted(self.current_editor.get_split_maps())
-		self.split_maps_list.blockSignals(True)
-		self.split_maps_list.clear()
-		for split_map_name in all_split_maps:
-			self.split_maps_list.addItem(split_map_name)
-		self.split_maps_list.blockSignals(False)
-		if selected_map and selected_map in all_split_maps:
-			matching = self.split_maps_list.findItems(selected_map, Qt.MatchExactly)
-			if matching:
-				self.split_maps_list.setCurrentItem(matching[0])
-		elif self.split_maps_list.count() > 0:
-			self.split_maps_list.setCurrentRow(0)
+		editing_map = self._current_edit_split_map_name() or ""
+		map_weights = {}
+		normalized_maps = {}
+		for split_map_name in sorted(self.current_editor.get_split_maps()):
+			try:
+				map_weights[split_map_name] = self.current_editor.get_split_map_suffices(split_map_name)
+			except Exception:
+				map_weights[split_map_name] = []
+			try:
+				normalized_maps[split_map_name] = self.current_editor.is_split_map_normalized(split_map_name)
+			except Exception:
+				normalized_maps[split_map_name] = False
+		self.split_maps_list.set_maps(map_weights, normalized_maps, selected_map, editing_map)
 
 	def _refresh_split_map_weights(self, split_map_name: Optional[str] = None) -> None:
 		if self.split_map_weights_list is None:
 			return
 		self.split_map_weights_list.clear()
 		split_map_name = self._current_edit_split_map_name()
-		print(f"Refreshing split map weights for: {split_map_name}")
+		# print(f"Refreshing split map weights for: {split_map_name}")
 		editing = bool(split_map_name)
 
-		if self._split_map_weights_column_widget is not None:
-			self._split_map_weights_column_widget.setVisible(editing)
+		if self._split_map_editor_group_widget is not None:
+			self._split_map_editor_group_widget.setEnabled(editing)
 		if getattr(self, "split_map_weights_label", None) is not None:
-			self.split_map_weights_label.setVisible(editing)
 			self.split_map_weights_label.setText(
 				f"Editing Split Map: {split_map_name}" if editing else "Editing Split Map: None"
 			)
@@ -4291,6 +4556,7 @@ class MainWindow(QMainWindow):
 			if button is not None:
 				button.setEnabled(editing)
 		if not editing:
+			self._update_split_map_weight_operation_buttons()
 			if self.split_map_weight_stats_label is not None:
 				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 			return
@@ -4319,6 +4585,9 @@ class MainWindow(QMainWindow):
 			item.setData(ShapeItemsModel.LockIconVisibleRole, False)
 			item.setFlags(item.flags() | Qt.ItemIsEditable)
 			self.split_map_weights_list.addItem(item)
+		if self.split_map_weights_list.count():
+			self.split_map_weights_list.setCurrentRow(0)
+		self._update_split_map_weight_operation_buttons()
 		if self.split_map_weight_stats_label is not None:
 			self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 
@@ -4358,14 +4627,14 @@ class MainWindow(QMainWindow):
 		self._set_status(f"Updated edit blendshape weight '{weight_name}' to {value:.3f}.")
 
 	def _selected_split_group_name(self) -> Optional[str]:
-		if self.split_groups_list is None or self.split_groups_list.currentItem() is None:
+		if self.split_groups_tree is None:
 			return None
-		return self.split_groups_list.currentItem().text().strip()
+		return self.split_groups_tree.selected_group_name() or None
 
 	def _selected_split_map_name(self) -> Optional[str]:
-		if self.split_maps_list is None or self.split_maps_list.currentItem() is None:
+		if self.split_maps_list is None:
 			return None
-		return self.split_maps_list.currentItem().text().strip()
+		return self.split_maps_list.map_name() or None
 
 	def _current_edit_split_map_name(self) -> Optional[str]:
 		if self.current_editor is None:
@@ -4386,6 +4655,7 @@ class MainWindow(QMainWindow):
 		return item.text().strip()
 
 	def _on_split_map_weight_selection_changed(self, current_item, _previous_item) -> None:
+		self._update_split_map_weight_operation_buttons()
 		if self.current_editor is None or current_item is None:
 			return
 		split_map_name = self._current_edit_split_map_name()
@@ -4413,11 +4683,34 @@ class MainWindow(QMainWindow):
 			return
 		self._set_status(f"Selected split-map weight '{weight_name}'.")
 
+	def _update_split_map_weight_operation_buttons(self) -> None:
+		editing = self.current_editor is not None and bool(self._current_edit_split_map_name())
+		has_weight = self.split_map_weights_list is not None and self.split_map_weights_list.currentItem() is not None
+		can_paste = editing and getattr(self.current_editor, "copied_weight_map_values", None) is not None
+		for button in self._split_map_weight_operation_buttons:
+			button.setEnabled(editing and has_weight)
+		for button in self._split_map_weight_paste_operation_buttons:
+			button.setEnabled(editing and has_weight and can_paste)
+
 	def _on_split_primary_search_changed(self, text: str) -> None:
-		self._split_primaries_model.set_search_text(text)
 		if self.split_primaries_tree is not None:
-			for row in range(self._split_primaries_model.rowCount()):
-				self.split_primaries_tree.openPersistentEditor(self._split_primaries_model.index(row, 1))
+			self.split_primaries_tree.set_search_text(text)
+
+	def _on_split_primaries_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+		if self.current_editor is None or self.split_primaries_tree is None:
+			return
+		if roles and ShapeItemsModel.ValueRole not in roles:
+			return
+		for row in range(top_left.row(), bottom_right.row() + 1):
+			index = top_left.sibling(row, 0)
+			if not index.isValid() or bool(index.data(ShapeItemsModel.IsHeaderRole)):
+				continue
+			shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+			if not shape_name:
+				continue
+			value = max(0.0, min(1.0, float(index.data(ShapeItemsModel.ValueRole) or 0.0)))
+			self._on_primary_tree_slider_changed(shape_name, value)
+			self._sync_primary_tree_slider(shape_name, value)
 	
 	def _on_primary_split_group_changed(self, group_name: str, primary_names) -> None:
 		if self.current_editor is None:
@@ -4430,11 +4723,15 @@ class MainWindow(QMainWindow):
 			self._reload_split_settings_from_editor()
 			return
 		if self.split_primaries_tree is not None:
-			self.split_primaries_tree.viewport().update()
+			self._refresh_split_primary_assignments()
 		self._set_status(f"Assigned {len(target_names)} primary shape(s) to split group '{group_name}'.")
 
-	def _on_split_group_selection_changed(self, group_name: str) -> None:
-		self._refresh_split_group_maps(group_name)
+	def _on_split_group_map_selected(self, split_map_name: str) -> None:
+		if self.split_maps_list is None or not split_map_name:
+			return
+		matching = self.split_maps_list.find_map(split_map_name)
+		if matching is not None:
+			self.split_maps_list.setCurrentItem(matching)
 
 	def _on_split_map_selection_changed(self, split_map_name: str) -> None:
 		self._refresh_split_map_weights()
@@ -4446,24 +4743,30 @@ class MainWindow(QMainWindow):
 		if self.current_editor is None:
 			self.split_map_weight_stats_label.setText("No active system.")
 			return
-		if self.split_maps_list is None or self.split_maps_list.count() == 0:
+		if self.split_maps_list is None or self.split_maps_list.topLevelItemCount() == 0:
 			self.split_map_weight_stats_label.setText("No split maps to check.")
 			return
 
 		normalized_count = 0
-		for row in range(self.split_maps_list.count()):
-			item = self.split_maps_list.item(row)
-			if split_map_name is not None and item.text() != split_map_name:
+		editing_map = self._current_edit_split_map_name() or ""
+		for item in self.split_maps_list.map_items():
+			map_name = self.split_maps_list.map_name(item)
+			if split_map_name is not None and map_name != split_map_name:
 				continue
 			try:
-				is_normalized = self.current_editor.is_split_map_normalized(item.text())
+				is_normalized = self.current_editor.is_split_map_normalized(map_name)
 			except Exception:
 				is_normalized = False
-			item.setForeground(QColor("#4ba66d" if is_normalized else "#d9534f"))
-			item.setToolTip("Normalized" if is_normalized else "Not normalized")
+			if map_name == editing_map:
+				item.setData(0, SplitMapsTree.STATUS_COLOR_ROLE, SplitMapsTree.EDITING_COLOR)
+				item.setToolTip(0, "Currently being edited")
+			else:
+				status_color = SplitMapsTree.NORMALIZED_COLOR if is_normalized else SplitMapsTree.NOT_NORMALIZED_COLOR
+				item.setData(0, SplitMapsTree.STATUS_COLOR_ROLE, status_color)
+				item.setToolTip(0, "Normalized" if is_normalized else "Not normalized")
 			normalized_count += int(is_normalized)
 
-		total_count = self.split_maps_list.count()
+		total_count = self.split_maps_list.topLevelItemCount()
 		self.split_map_weight_stats_label.setText(
 			f"Normalized: {normalized_count}/{total_count}; not normalized: {total_count - normalized_count}."
 		)
@@ -4474,6 +4777,8 @@ class MainWindow(QMainWindow):
 		item = self.split_maps_list.itemAt(pos)
 		if item is None:
 			return
+		if item.parent() is not None:
+			item = item.parent()
 		self.split_maps_list.setCurrentItem(item)
 		menu = QMenu(self.split_maps_list)
 		remove_action = menu.addAction("Remove")
@@ -4515,20 +4820,25 @@ class MainWindow(QMainWindow):
 		if operation is not None:
 			self._run_split_weight_map_operation(*operation)
 
-	def _run_split_weight_map_operation(self, method_name: str, status_verb: str) -> None:
+	def _run_split_weight_map_operation(self, method_name: str, status_verb: str, weight_name: str = "") -> None:
 		if self.current_editor is None:
 			return
 		split_map_name = self._current_edit_split_map_name()
-		weight_suffix = self._selected_split_map_weight_suffix()
-		if not split_map_name or not weight_suffix:
+		if not split_map_name:
 			return
-		prefix = f"{split_map_name}_"
-		weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{split_map_name}_{weight_suffix}"
+		if not weight_name:
+			weight_suffix = self._selected_split_map_weight_suffix()
+			if not weight_suffix:
+				return
+			prefix = f"{split_map_name}_"
+			weight_name = weight_suffix if weight_suffix.startswith(prefix) else f"{split_map_name}_{weight_suffix}"
 		try:
 			getattr(self.current_editor, method_name)(weight_name)
 		except Exception as exc:
 			self._set_status(f"Error updating split-map weight: {exc}", error=True)
 			return
+		self._sync_split_map_weight_slider_values()
+		self._update_split_map_weight_operation_buttons()
 		self._set_status(f"{status_verb} weight map '{weight_name}'.")
 
 	def _on_normalize_split_map_weights_requested(self) -> None:
@@ -4560,7 +4870,6 @@ class MainWindow(QMainWindow):
 			return
 		self._refresh_split_primary_assignments()
 		self._refresh_split_groups()
-		self._refresh_split_group_maps()
 		self._set_status(f"Created split group '{group_name}'.")
 
 	def _on_remove_split_group_clicked(self) -> None:
@@ -4576,7 +4885,6 @@ class MainWindow(QMainWindow):
 			return
 		self._refresh_split_primary_assignments()
 		self._refresh_split_groups()
-		self._refresh_split_group_maps()
 		self._set_status(f"Removed split group '{group_name}'.")
 
 	def _on_rename_split_group_clicked(self) -> None:
@@ -4603,47 +4911,36 @@ class MainWindow(QMainWindow):
 			return
 		self._refresh_split_primary_assignments()
 		self._refresh_split_groups()
-		self._refresh_split_group_maps()
-		matching = self.split_groups_list.findItems(new_name, Qt.MatchExactly)
-		if matching:
-			self.split_groups_list.setCurrentItem(matching[0])
+		if self.split_groups_tree is not None:
+			self.split_groups_tree.select_group(new_name)
 		self._set_status(f"Renamed split group '{group_name}' to '{new_name}'.")
 
-	def _on_split_group_maps_changed(self, map_names: List[str]) -> None:
-		if self.current_editor is None or self.split_group_maps_list is None:
-			return
-		group_name = self._selected_split_group_name()
-		if not group_name:
-			self._on_split_group_selection_changed("")
+	def _on_split_group_maps_changed(self, split_groups: Dict[str, List[str]]) -> None:
+		if self.current_editor is None or self.split_groups_tree is None:
 			return
 		try:
-			split_groups = self.current_editor.read_split_groups_attributes()
-			if group_name not in split_groups:
-				return
-			split_groups[group_name] = list(map_names)
 			self.current_editor.write_split_groups_attributes(split_groups)
 			self.current_editor.update_split_map_attributes_from_groups()
 		except Exception as exc:
 			self._set_status(f"Error updating split group maps: {exc}", error=True)
-			self._on_split_group_selection_changed(group_name)
+			self._refresh_split_groups()
 			return
-		self._set_status(f"Updated maps in split group '{group_name}'.")
+		self._set_status("Updated split group maps.")
 
-	def _on_split_group_map_dragged_out(self, map_name: str) -> None:
-		if self.current_editor is None or self.split_group_maps_list is None:
+	def _on_split_group_map_dragged_out(self, group_name: str, map_name: str) -> None:
+		if self.current_editor is None or self.split_groups_tree is None:
 			return
-		group_name = self._selected_split_group_name()
 		if not group_name:
 			return
-		matching = self.split_group_maps_list.findItems(map_name, Qt.MatchExactly)
-		if not matching:
+		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+		except Exception:
 			return
-		row = self.split_group_maps_list.row(matching[0])
-		self.split_group_maps_list.takeItem(row)
-		self._on_split_group_maps_changed([
-			self.split_group_maps_list.item(index).text()
-			for index in range(self.split_group_maps_list.count())
-		])
+		split_groups[group_name] = [
+			str(name) for name in split_groups.get(group_name, []) if str(name) != map_name
+		]
+		self._on_split_group_maps_changed(split_groups)
+		self._refresh_split_groups()
 
 	def _on_add_split_map_clicked(self) -> None:
 		if self.current_editor is None:
@@ -4720,7 +5017,9 @@ class MainWindow(QMainWindow):
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_maps()
 		self._refresh_split_map_weights()
+		self._check_split_maps_normalization()
 		self._set_status(f"Editing split map '{split_map_name}'.")
 
 	def _on_normalize_edit_split_map_weights_clicked(self) -> None:
@@ -4752,8 +5051,9 @@ class MainWindow(QMainWindow):
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_maps()
 		self._refresh_split_map_weights()
-		self._check_split_maps_normalization(split_map_name)
+		self._check_split_maps_normalization()
 		self._set_status(f"Applied edits to split map '{split_map_name}'.")
 
 	def _on_cancel_edit_split_map_clicked(self) -> None:
@@ -4771,7 +5071,9 @@ class MainWindow(QMainWindow):
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
+		self._refresh_split_maps()
 		self._refresh_split_map_weights()
+		self._check_split_maps_normalization()
 		self._set_status(f"Cancelled edits to split map '{split_map_name}'.")
 
 
@@ -5730,6 +6032,8 @@ class MainWindow(QMainWindow):
 
 	def _on_shape_model_data_changed(self, _top_left, _bottom_right, roles) -> None:
 		"""Run expensive UI refreshes only when non-value data changed."""
+		if self.split_primaries_tree is not None:
+			self.split_primaries_tree.sync_source_data(_top_left, _bottom_right, roles)
 		if self._syncing_shapes_tree:
 			return
 		self._sync_shapes_tree_items_from_source_rows(_top_left, _bottom_right)
@@ -6383,7 +6687,7 @@ class MainWindow(QMainWindow):
 			self.split_map_edit_blendshape_tracker,
 		):
 			if tracker is not None:
-				print(f"Stopping active blendshape tracker {tracker.node_name}.")
+				# print(f"Stopping active blendshape tracker {tracker.node_name}.")
 				tracker.stop()
 
 	def _start_active_blendshape_trackers(self) -> None:
@@ -6393,7 +6697,7 @@ class MainWindow(QMainWindow):
 			self.split_map_edit_blendshape_tracker,
 		):
 			if tracker is not None:
-				print(f"Starting active blendshape tracker {tracker.node_name}.")
+				# print(f"Starting active blendshape tracker {tracker.node_name}.")
 				tracker.start()
 
 	def _reload_work_shapes_from_editor(self) -> None:
@@ -7680,7 +7984,7 @@ class MainWindow(QMainWindow):
 			self.set_current_editor(None)
 		self._set_status("Refreshed UI.")
 		# we need to check if we are in the split tab
-		if self.split_groups_list is not None and self.split_group_maps_list is not None:
+		if self.split_groups_tree is not None:
 			self._reload_split_settings_from_editor()
 
 	def show_about(self) -> None:

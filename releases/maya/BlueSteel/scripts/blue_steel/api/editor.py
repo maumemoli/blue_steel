@@ -637,9 +637,9 @@ class BlueSteelEditor(object):
             if shape.muted:
                 self.network.muted_shapes.add(shape)
             self.network.add_shape(shape)
-        if self.network._shapes.invalid_shapes:
-            shape_list_str = "    \n".join([str(s) for s in self.network._shapes.invalid_shapes])
-            print(f"Warning: The following shapes are invalid and were added as InvalidShape:\n{shape_list_str}")
+        # if self.network._shapes.invalid_shapes:
+        #     shape_list_str = "    \n".join([str(s) for s in self.network._shapes.invalid_shapes])
+        #     print(f"Warning: The following shapes are invalid and were added as InvalidShape:\n{shape_list_str}")
         if TIMED:
             print(f"Finished building network in {time.time() - start:.2f} seconds.")
         self.network_rebuild_count += 1
@@ -4014,11 +4014,11 @@ class BlueSteelEditor(object):
             str: The name of the current split map edit mesh.
         """
         if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
-            print("Split map edit blendshape does not exist")
+            #print("Split map edit blendshape does not exist")
             return None
         string_attr = self.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
         if not cmds.attributeQuery(string_attr, node=self.split_map_edit_blendshape, exists=True):
-            print("Split map edit current attribute does not exist")
+            #print("Split map edit current attribute does not exist")
             return None
         attr_name = f"{self.split_map_edit_blendshape}.{string_attr}"
         attr = cmds.getAttr(attr_name) or None
