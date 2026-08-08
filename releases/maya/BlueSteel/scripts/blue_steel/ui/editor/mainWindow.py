@@ -108,7 +108,6 @@ if env.MAYA_VERSION > 2024:
 		QComboBox,
 		QListWidget,
 		QListWidgetItem,
-		QTabBar,
 		QTabWidget,
 		QTableView,
 	)
@@ -146,7 +145,6 @@ else:
 		QComboBox,
 		QListWidget,
 		QListWidgetItem,
-		QTabBar,
 		QTabWidget,
 		QTableView,
 	)
@@ -2967,10 +2965,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		super().__init__(parent)
 		self.setObjectName(self.OBJECT_NAME)
 		self.version = version
-		icon_path = os.path.abspath(os.path.join(env.ICONS_PATH, "blue_steel_icon.png"))
-		self._window_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
-		if not self._window_icon.isNull():
-			self.setWindowIcon(self._window_icon)
 
 		self.current_editor: Optional[BlueSteelEditor] = None
 		self.scene_editor_tracker: Optional[BlueSteelEditorsTracker] = None
@@ -3114,30 +3108,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.dock_toggle_button.setToolTip("Undock Blue Steel" if docked else "Dock Blue Steel")
 		self.dock_close_button.setVisible(docked)
 
-	def _apply_workspace_control_icon(self) -> None:
-		if self._window_icon.isNull():
-			return
-		control_ptr = omui.MQtUtil.findControl(self.WORKSPACE_CONTROL_NAME)
-		if control_ptr is None:
-			return
-		control_widget = wrapInstance(int(control_ptr), QWidget)
-		control_widget.setWindowIcon(self._window_icon)
-		control_widget.window().setWindowIcon(self._window_icon)
-
-		control_label = cmds.workspaceControl(
-			self.WORKSPACE_CONTROL_NAME,
-			query=True,
-			label=True,
-		)
-		ancestor = control_widget.parentWidget()
-		while ancestor is not None:
-			for tab_bar in ancestor.findChildren(QTabBar):
-				for index in range(tab_bar.count()):
-					if tab_bar.tabText(index) == control_label:
-						tab_bar.setTabIcon(index, self._window_icon)
-						return
-			ancestor = ancestor.parentWidget()
-
 	def _dock_to_maya_panel(self) -> bool:
 		for target_control in self.DOCK_TARGET_CONTROLS:
 			if cmds.workspaceControl(target_control, query=True, exists=True):
@@ -3160,8 +3130,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				self.raise_()
 				self.activateWindow()
 				self._set_dock_button_state(docked=True)
-				QTimer.singleShot(0, self._apply_workspace_control_icon)
-				QTimer.singleShot(200, self._apply_workspace_control_icon)
 				return True
 		return False
 
@@ -3178,8 +3146,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			return
 		cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, edit=True, floating=True)
 		self._set_dock_button_state(docked=False)
-		QTimer.singleShot(0, self._apply_workspace_control_icon)
-		QTimer.singleShot(200, self._apply_workspace_control_icon)
 
 	def _build_ui(self) -> None:
 		self._create_menu_bar()
@@ -3493,7 +3459,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def showEvent(self, event):  # noqa: N802
 		super().showEvent(event)
-		QTimer.singleShot(0, self._apply_workspace_control_icon)
 		self._schedule_initial_splitter_layout()
 
 	def _schedule_initial_splitter_layout(self) -> None:
@@ -3892,12 +3857,16 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primary_name = item.data(0, self.PRIMARY_TREE_NAME_ROLE)
 		if not primary_name:
 			return
+		if not item.isSelected():
+			self.primaries_view.clearSelection()
+			item.setSelected(True)
 
 		primary_name = str(primary_name)
 		menu = QMenu(self.primaries_view)
 		rename_action = menu.addAction("Rename")
 		menu.addSeparator()
 		add_inbetween_action = menu.addAction("Add Inbetween")
+		split_selected_action = menu.addAction("Split selected shapes")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(self.primaries_view.viewport().mapToGlobal(pos))
 		else:
@@ -3907,6 +3876,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._begin_inline_primary_rename(item)
 		elif selected_action == add_inbetween_action:
 			self._on_add_inbetween_requested(primary_name)
+		elif selected_action == split_selected_action:
+			self._split_selected_shapes(self._selected_primary_tree_names())
 
 	def _on_add_inbetween_requested(self, primary_name: str) -> None:
 		if self.current_editor is None:
@@ -4208,6 +4179,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if self.split_primaries_tree is not None:
 			self.split_primaries_tree.assignmentChanged.connect(self._on_primary_split_group_changed)
 			self.split_primaries_tree.model().dataChanged.connect(self._on_split_primaries_tree_data_changed)
+			self.split_primaries_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+			self.split_primaries_tree.customContextMenuRequested.connect(self._show_split_primaries_context_menu)
 		if self.split_groups_tree is not None:
 			self.split_groups_tree.mapSelected.connect(self._on_split_group_map_selected)
 			self.split_groups_tree.mapsChanged.connect(self._on_split_group_maps_changed)
@@ -4846,6 +4819,41 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if self.split_primaries_tree is not None:
 			self._refresh_split_primary_assignments()
 		self._set_status(f"Assigned {len(target_names)} primary shape(s) to split group '{group_name}'.")
+
+	def _show_split_primaries_context_menu(self, pos) -> None:
+		if self.current_editor is None or self.split_primaries_tree is None:
+			return
+		item = self.split_primaries_tree.itemAt(pos)
+		if item is None or item.parent() is None:
+			return
+		if not item.isSelected():
+			self.split_primaries_tree.clearSelection()
+			item.setSelected(True)
+
+		menu = QMenu(self.split_primaries_tree)
+		split_selected_action = menu.addAction("Split selected shapes")
+		selected_action = menu.exec(self.split_primaries_tree.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_primaries_tree.viewport().mapToGlobal(pos))
+		if selected_action == split_selected_action:
+			self._split_selected_shapes(self._selected_split_primary_names())
+
+	def _split_selected_shapes(self, primary_names: Sequence[str]) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+		selected_names = list(dict.fromkeys(str(name) for name in primary_names if name))
+		if not selected_names:
+			self._set_status("No primary shapes selected.", warning=True)
+			return
+		try:
+			self._stop_active_blendshape_trackers()
+			self.current_editor.split_shapes(selected_names)
+		except Exception as exc:
+			self._set_status(f"Error splitting selected shapes: {exc}", error=True)
+			return
+		finally:
+			self._start_active_blendshape_trackers()
+			self._reload_shapes_from_editor()
+		self._set_status(f"Split {len(selected_names)} selected primary shape(s).")
 
 	def _on_split_group_map_selected(self, split_map_name: str) -> None:
 		if self.split_maps_list is None or not split_map_name:
@@ -5735,9 +5743,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		export_split_data_action.triggered.connect(self._export_split_data)
 		split_shapes_menu.addAction(export_split_data_action)
 
-		split_shapes_action = QAction("Split Current System", self)
-		split_shapes_action.triggered.connect(self._on_split_shapes_requested)
-		split_shapes_menu.addAction(split_shapes_action)
+		create_split_shapes_editor_action = QAction("Create Split Shapes Editor", self)
+		create_split_shapes_editor_action.triggered.connect(self._on_create_split_shapes_editor_requested)
+		split_shapes_menu.addAction(create_split_shapes_editor_action)
 
 		collapsed = True
 		if cmds.nodeEditor("nodeEditorPanel1NodeEditorEd", exists=True):
@@ -5851,14 +5859,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._set_status(f"Imported split data from '{directory}'.")
 
 			
-	def _on_split_shapes_requested(self) -> None:
+	def _on_create_split_shapes_editor_requested(self) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
 		combine_editor_name = self.current_editor.name
 		self._clear_trackers_for_scene_operation()
 		try:
-			split_editor_name = self.current_editor.split_shapes()
+			split_editor_name = self.current_editor.create_split_shapes_editor()
 
 
 		except Exception as exc:
@@ -6670,6 +6678,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			if shape_name:
 				names.append(str(shape_name))
 		return names
+
+	def _selected_split_primary_names(self) -> List[str]:
+		if self.split_primaries_tree is None:
+			return []
+		return [
+			str(item.data(0, ShapeItemsModel.NameRole))
+			for item in self.split_primaries_tree.selectedItems()
+			if item.parent() is not None and item.data(0, ShapeItemsModel.NameRole)
+		]
 
 	def _on_primary_drop_list_dropped(self, dropped_shape_names: Sequence[str]) -> None:
 		names: List[str] = []
