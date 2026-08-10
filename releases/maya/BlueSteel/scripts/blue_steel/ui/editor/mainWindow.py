@@ -65,7 +65,6 @@ from ..common.icons import (
 	PASTE_WEIGHTS_ICON,
 	PASTE_INVERTED_WEIGHTS_ICON,
 	PASTE_ADD_WEIGHTS_ICON,
-	PASTE_ADD_WEIGHTS_ICON,
 	PASTE_MINUS_WEIGHTS_ICON,
 	PASTE_MULTIPLY_WEIGHTS_ICON,
 	SOFT_MOD_ICON,
@@ -165,7 +164,7 @@ def get_maya_main_window() -> Optional[QWidget]:
 
 
 class SplitMapsTree(QTreeWidget):
-	"""Draggable split maps shown with normalization state and suffices."""
+	"""Draggable split maps shown with normalization state and suffixes."""
 
 	MIME_TYPE = "application/x-blue-steel-split-map"
 	MAP_NAME_ROLE = Qt.UserRole + 1
@@ -180,7 +179,7 @@ class SplitMapsTree(QTreeWidget):
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
 		self.setColumnCount(3)
-		self.setHeaderLabels(["", "Split Map", "Suffices"])
+		self.setHeaderLabels(["", "Split Map", "suffixes"])
 		self.setRootIsDecorated(False)
 		self.setIndentation(0)
 		self.setUniformRowHeights(True)
@@ -206,15 +205,15 @@ class SplitMapsTree(QTreeWidget):
 			self.clear()
 			selected_item = None
 			for map_name in sorted(map_weights):
-				suffices = []
+				suffixes = []
 				for raw_weight_name in map_weights[map_name]:
 					suffix = str(raw_weight_name)
 					prefix = f"{map_name}_"
 					if suffix.startswith(prefix):
 						suffix = suffix[len(prefix):]
-					suffices.append(suffix)
+					suffixes.append(suffix)
 				is_editing = map_name == editing_map
-				suffix_text = "[--EDIT MODE--]" if is_editing else f"[{', '.join(suffices)}]"
+				suffix_text = "[--EDIT MODE--]" if is_editing else f"[{', '.join(suffixes)}]"
 				map_item = QTreeWidgetItem(["", map_name, suffix_text])
 				map_item.setData(0, self.MAP_NAME_ROLE, map_name)
 				map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
@@ -2955,7 +2954,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	OBJECT_NAME = "BlueSteelEditor"
 	WORKSPACE_CONTROL_NAME = f"{OBJECT_NAME}WorkspaceControl"
-	DOCK_TARGET_CONTROLS = ("AttributeEditor", "ChannelBoxLayerEditor")
+	DOCK_TARGET_CONTROL = "Outliner"
 	EMPTY_SYSTEM_LABEL = "<Select System>"
 	SPLIT_PANELS_MAX_WIDTH = 600
 	PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
@@ -3094,9 +3093,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		pixmap = QPixmap(14, 14)
 		pixmap.fill(Qt.transparent)
 		points = (
-			[QPoint(3, 7), QPoint(11, 2), QPoint(11, 12)]
+			[QPoint(11, 7), QPoint(3, 2), QPoint(3, 12)]
 			if docked
-			else [QPoint(11, 7), QPoint(3, 2), QPoint(3, 12)]
+			else [QPoint(3, 7), QPoint(11, 2), QPoint(11, 12)]
 		)
 		painter = QPainter(pixmap)
 		painter.setRenderHint(QPainter.Antialiasing, True)
@@ -3109,29 +3108,28 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.dock_close_button.setVisible(docked)
 
 	def _dock_to_maya_panel(self) -> bool:
-		for target_control in self.DOCK_TARGET_CONTROLS:
-			if cmds.workspaceControl(target_control, query=True, exists=True):
-				cmds.workspaceControl(
-					self.WORKSPACE_CONTROL_NAME,
-					edit=True,
-					floating=False,
-				)
-				cmds.workspaceControl(
-					self.WORKSPACE_CONTROL_NAME,
-					edit=True,
-					tabToControl=(target_control, -1),
-				)
-				cmds.workspaceControl(
-					self.WORKSPACE_CONTROL_NAME,
-					edit=True,
-					restore=True,
-					visible=True,
-				)
-				self.raise_()
-				self.activateWindow()
-				self._set_dock_button_state(docked=True)
-				return True
-		return False
+		if not cmds.workspaceControl(self.DOCK_TARGET_CONTROL, query=True, exists=True):
+			return False
+		cmds.workspaceControl(
+			self.WORKSPACE_CONTROL_NAME,
+			edit=True,
+			floating=False,
+		)
+		cmds.workspaceControl(
+			self.WORKSPACE_CONTROL_NAME,
+			edit=True,
+			dockToControl=(self.DOCK_TARGET_CONTROL, "left"),
+		)
+		cmds.workspaceControl(
+			self.WORKSPACE_CONTROL_NAME,
+			edit=True,
+			restore=True,
+			visible=True,
+		)
+		self.raise_()
+		self.activateWindow()
+		self._set_dock_button_state(docked=True)
+		return True
 
 	def _toggle_docking(self) -> None:
 		if not cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, query=True, exists=True):
@@ -3251,8 +3249,17 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.primaries_view.setItemDelegateForColumn(0, self._primaries_delegate)
 
 		primaries_layout.addWidget(self.primaries_view, 1)
+		primaries_footer_layout = QVBoxLayout()
+		primaries_footer_layout.setContentsMargins(0, 0, 0, 0)
+		primaries_footer_layout.setSpacing(0)
+		self.remove_primaries_button = QPushButton("Remove Primaries")
+		self.remove_primaries_button.setIcon(DELETE_ICON)
+		self.remove_primaries_button.setToolTip("Remove selected primaries and their dependent shapes")
+		self.tool_buttons.append(self.remove_primaries_button)
+		primaries_footer_layout.addWidget(self.remove_primaries_button)
 		self.primaries_info = QLabel("Items: 0")
-		primaries_layout.addWidget(self.primaries_info)
+		primaries_footer_layout.addWidget(self.primaries_info)
+		primaries_layout.addLayout(primaries_footer_layout)
 
 		shapes_panel = QWidget()
 		self._allow_horizontal_collapse(shapes_panel)
@@ -3722,6 +3729,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			(PASTE_INVERTED_WEIGHTS_ICON, "Paste Inverted", "paste_inverted_edit_split_weight_map_values", "Pasted inverted values to", True),
 			(PASTE_ADD_WEIGHTS_ICON, "Add Copied Weights", "add_edit_split_weight_map_values", "Added copied values to", True),
 			(PASTE_MINUS_WEIGHTS_ICON, "Subtract Copied Weights", "subtract_edit_split_weight_map_values", "Subtracted copied values from", True),
+			(PASTE_MULTIPLY_WEIGHTS_ICON, "Multiply by Copied Weights", "paste_multiplied_edit_split_weight_map_values", "Multiplied", True),
 		]
 		for icon, tooltip, method_name, status_verb, requires_copy in operation_specs:
 			button = QPushButton()
@@ -4141,6 +4149,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.add_primary_button.clicked.connect(self._on_add_primary_clicked)
 		self.commit_shapes_button.clicked.connect(self.commit_selected)
 		self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
+		self.remove_primaries_button.clicked.connect(self.remove_selected_primaries)
 		self.remove_shapes_button.clicked.connect(self.remove_selected_shapes)
 		self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
 		self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
@@ -4613,7 +4622,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		map_weights = {}
 		for split_map_name in sorted(self.current_editor.get_split_maps()):
 			try:
-				map_weights[split_map_name] = self.current_editor.get_split_map_suffices(split_map_name)
+				map_weights[split_map_name] = self.current_editor.get_split_map_suffixes(split_map_name)
 			except Exception:
 				map_weights[split_map_name] = []
 		normalized_maps = {
@@ -4655,12 +4664,12 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 			return
 		try:
-			suffices = self.current_editor.get_edit_split_map_suffices()
+			suffixes = self.current_editor.get_edit_split_map_suffixes()
 			weight_values = self.current_editor.get_current_edit_split_map_weight_values()
 		except Exception as exc:
 			self._set_status(f"Error reading split map weights: {exc}", error=True)
 			return
-		for raw_suffix in suffices:
+		for raw_suffix in suffixes:
 			prefix = f"{split_map_name}_"
 			weight_name = str(raw_suffix)
 			if not weight_name.startswith(prefix):
@@ -4918,11 +4927,32 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if item.parent() is not None:
 			item = item.parent()
 		self.split_maps_list.setCurrentItem(item)
+		split_map_name = self.split_maps_list.map_name(item)
 		menu = QMenu(self.split_maps_list)
+		copy_weight_menu = menu.addMenu("Copy Weight")
+		copy_weight_actions = {}
+		try:
+			for weight in self.current_editor.get_split_map_weights(split_map_name):
+				weight_name = str(weight)
+				copy_weight_actions[copy_weight_menu.addAction(weight_name)] = weight_name
+		except Exception as exc:
+			self._set_status(f"Error reading weights for split map '{split_map_name}': {exc}", error=True)
+			return
+		copy_weight_menu.setEnabled(bool(copy_weight_actions))
+		menu.addSeparator()
 		remove_action = menu.addAction("Remove")
 		normalize_action = menu.addAction("Normalize Weights")
 		selected_action = menu.exec(self.split_maps_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_maps_list.viewport().mapToGlobal(pos))
-		if selected_action == remove_action:
+		weight_name = copy_weight_actions.get(selected_action)
+		if weight_name is not None:
+			try:
+				self.current_editor.copy_split_weight_map_values(weight_name)
+			except Exception as exc:
+				self._set_status(f"Error copying split-map weight '{weight_name}': {exc}", error=True)
+				return
+			self._update_split_map_weight_operation_buttons()
+			self._set_status(f"Copied weight map '{weight_name}'.")
+		elif selected_action == remove_action:
 			self._on_remove_split_map_clicked()
 		elif selected_action == normalize_action:
 			self._on_normalize_split_map_weights_requested()
@@ -4942,8 +4972,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		paste_inverted_action = menu.addAction("Paste Inverted")
 		add_action = menu.addAction("Add Copied Weights")
 		subtract_action = menu.addAction("Subtract Copied Weights")
+		multiply_action = menu.addAction("Multiply by Copied Weights")
 		can_paste = self.current_editor.copied_weight_map_values is not None
-		for action in [paste_action, paste_inverted_action, add_action, subtract_action]:
+		for action in [paste_action, paste_inverted_action, add_action, subtract_action, multiply_action]:
 			action.setEnabled(can_paste)
 		selected_action = menu.exec(self.split_map_weights_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_map_weights_list.viewport().mapToGlobal(pos))
 		operations = {
@@ -4953,6 +4984,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			paste_inverted_action: ("paste_inverted_edit_split_weight_map_values", "Pasted inverted values to"),
 			add_action: ("add_edit_split_weight_map_values", "Added copied values to"),
 			subtract_action: ("subtract_edit_split_weight_map_values", "Subtracted copied values from"),
+			multiply_action: ("paste_multiplied_edit_split_weight_map_values", "Multiplied"),
 		}
 		operation = operations.get(selected_action)
 		if operation is not None:
@@ -5095,17 +5127,17 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_map_name = (split_map_name or "").strip()
 		if not split_map_name:
 			return
-		suffices_text, ok = QInputDialog.getText(
+		suffixes_text, ok = QInputDialog.getText(
 			self,
 			"Add Split Map Weights",
-			"Weight suffices (comma-separated, optional):",
+			"Weight suffixes (comma-separated, optional):",
 			text="L,R",
 		)
 		if not ok:
 			return
-		suffices = [token.strip() for token in str(suffices_text).split(",") if token.strip()]
+		suffixes = [token.strip() for token in str(suffixes_text).split(",") if token.strip()]
 		try:
-			self.current_editor.create_split_map(split_map_name, suffices)
+			self.current_editor.create_split_map(split_map_name, suffixes)
 		except Exception as exc:
 			self._set_status(f"Error adding split map: {exc}", error=True)
 			return
@@ -5504,6 +5536,31 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._set_status(f"Removed {len(removed_shapes)} shape(s) from '{self.current_editor.name}'.")
+
+	def remove_selected_primaries(self) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		primary_names = self._selected_primary_tree_names()
+		if not primary_names:
+			self._set_status("No primaries selected.", warning=True)
+			return
+
+		try:
+			self._stop_active_blendshape_trackers()
+			removed_shapes = self.current_editor.remove_shapes(primary_names)
+		except Exception as exc:
+			self._set_status(f"Error removing primaries: {exc}", error=True)
+			return
+		finally:
+			self._start_active_blendshape_trackers()
+
+		self._reload_shapes_from_editor()
+		self._set_status(
+			f"Removed {len(primary_names)} primary shape(s) and "
+			f"{len(removed_shapes) - len(primary_names)} dependent shape(s) from '{self.current_editor.name}'."
+		)
 
 	def toggle_mute_selected_shapes(self) -> None:
 		if self.current_editor is None:

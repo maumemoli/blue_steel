@@ -186,7 +186,7 @@ class Shape(str):
         return utilities.get_unsplit_name(self, self.separator)
 
     @property
-    def split_suffices(self):
+    def split_suffixes(self):
         """
         Get the split suffixes of the shape (parts after the first parent).
 

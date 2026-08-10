@@ -348,26 +348,26 @@ def find_split_suffix(primary_name: str):
             break    
     return suffix
 
-def get_split_suffices(shape_name: str, separator=SEPARATOR):
-    """Get the split suffices for each primary shape in the shape name.
+def get_split_suffixes(shape_name: str, separator=SEPARATOR):
+    """Get the split suffixes for each primary shape in the shape name.
 
     Parameters:
         shape_name (str): The shape name to process.
         separator (str): Separator used in the shape name.
 
     Returns:
-        list: List of split suffices for each primary shape.
+        list: List of split suffixes for each primary shape.
 
     Example:
-        >>> get_split_suffices("aR_bTR25", separator="_")
+        >>> get_split_suffixes("aR_bTR25", separator="_")
         ['R', 'TR']
     """
     shape_primaries = get_primaries(shape_name, separator)
-    suffices = list()
+    suffixes = list()
     for primary in shape_primaries:
         suffix = find_split_suffix(primary)
-        suffices.append(suffix)
-    return suffices
+        suffixes.append(suffix)
+    return suffixes
 
 
 def get_unsplit_name(shape_name: str, separator=SEPARATOR):

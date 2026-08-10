@@ -330,7 +330,7 @@ class Network(object):
             split_names = [
                 f"{split_name}{short_suffix}"
                 for split_name in split_names
-                for long_suffix, short_suffix in split_map.suffices.items()
+                for long_suffix, short_suffix in split_map.suffixes.items()
             ]
         return split_names
 
@@ -347,8 +347,8 @@ class Network(object):
             shape_name = shape[:-2]
         split_names = [shape_name]
         for split_map in self.shape_split_maps_association[shape_name]:
-            suffices = list(split_map.suffices.values())
-            split_names = [f"{split_name}{s}{value}" for split_name in split_names for s in suffices]
+            suffixes = list(split_map.suffixes.values())
+            split_names = [f"{split_name}{s}{value}" for split_name in split_names for s in suffixes]
         return split_names
 
     def info(self):

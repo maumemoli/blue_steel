@@ -8,38 +8,38 @@ SEPARATOR = env.SEPARATOR
 
 class SplitMap(object):
     """
-    This class will hold the suffices of the split map
+    This class will hold the suffixes of the split map
     """
-    def __init__(self, name: str, suffices: dict):
+    def __init__(self, name: str, suffixes: dict):
         """
         Set up the split map
         :param name: the name of the split map
-        :param suffices: the suffices of the split map the long name is the key and the short name is the value
+        :param suffixes: the suffixes of the split map the long name is the key and the short name is the value
         """
         self.name = name
-        self.suffices = suffices
+        self.suffixes = suffixes
 
     def __str__(self):
         return self.name
 
     def __repr__(self):
-        return f"({self.name}, suffices: {self.suffices})"
+        return f"({self.name}, suffixes: {self.suffixes})"
 
     @property
-    def short_suffices(self):
+    def short_suffixes(self):
         """
-        Returns the short suffices
-        :return: the short suffices
+        Returns the short suffixes
+        :return: the short suffixes
         """
-        return self.suffices.values()
+        return self.suffixes.values()
 
     @property
-    def long_suffices(self):
+    def long_suffixes(self):
         """
-        Returns the long suffices
-        :return: the long suffices
+        Returns the long suffixes
+        :return: the long suffixes
         """
-        return self.suffices.keys()
+        return self.suffixes.keys()
 
 
     @classmethod
@@ -49,7 +49,7 @@ class SplitMap(object):
         :return: the none split map
         """
 
-        return cls(name = "DEFAULT",suffices = {"NONE": ""})
+        return cls(name = "DEFAULT",suffixes = {"NONE": ""})
 
     @classmethod
     def create_left_right(cls, shapes= set):
@@ -57,7 +57,7 @@ class SplitMap(object):
         Create a left right split map
         :return: the left right split map
         """
-        return cls(name = "LEFT_RIGHT", suffices = {"LEFT": "L", "RIGHT": "R"})
+        return cls(name = "LEFT_RIGHT", suffixes = {"LEFT": "L", "RIGHT": "R"})
 
     @classmethod
     def create_four(cls):
@@ -66,7 +66,7 @@ class SplitMap(object):
         :return: the quad split map
         """
         return cls(name = "QUAD",
-                   suffices= {"TOPLEFT": "TL",
+                   suffixes= {"TOPLEFT": "TL",
                               "TOPRIGHT": "TR",
                               "BOTTOMLEFT": "BL",
                               "BOTTOMRIGHT": "BR",})
@@ -77,4 +77,4 @@ class SplitMap(object):
         Create a left right split map
         :return: the left right split map
         """
-        return cls(name = "TOP_BOTTOM",suffices = {"TOP": "T", "BOTTOM": "B"})
+        return cls(name = "TOP_BOTTOM",suffixes = {"TOP": "T", "BOTTOM": "B"})

@@ -324,6 +324,9 @@ def _get_shape_editor_ui():
 def get_softselection_values() -> list:
     """Get the current soft selection as a dense vertex weight map.
 
+    Maya symmetry is temporarily disabled while capturing the rich selection and
+    restored to its original state immediately afterward.
+
     Returns:
         list: One weight per mesh vertex. Unselected vertices have a weight of 0.0.
 
@@ -331,7 +334,14 @@ def get_softselection_values() -> list:
         ValueError: If the selection contains vertices from more than one mesh.
     """
     rich_selection = om.MRichSelection()
-    om.MGlobal.getRichSelection(rich_selection)
+    symmetry_enabled = cmds.symmetricModelling(query=True, symmetry=True)
+    try:
+        if symmetry_enabled:
+            cmds.symmetricModelling(symmetry=False)
+        om.MGlobal.getRichSelection(rich_selection)
+    finally:
+        if symmetry_enabled:
+            cmds.symmetricModelling(symmetry=True)
 
     selection = om.MSelectionList()
     rich_selection.getSelection(selection)

@@ -98,8 +98,8 @@ class TestShape(unittest.TestCase):
         return True
 
     @staticmethod
-    def create_split_map(name, long_suffices, short_suffices, shapes):
-        return sm.SplitMap(name, {k: v for k, v in zip(long_suffices, short_suffices)}, shapes)
+    def create_split_map(name, long_suffixes, short_suffixes, shapes):
+        return sm.SplitMap(name, {k: v for k, v in zip(long_suffixes, short_suffixes)}, shapes)
 
     @classmethod
     def create_split_maps(cls):
