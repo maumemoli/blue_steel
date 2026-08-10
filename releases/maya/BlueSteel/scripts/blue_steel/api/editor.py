@@ -3319,16 +3319,11 @@ class BlueSteelEditor(object):
         self.split_blendshape.remove_target_dir(split_map_dir[0])
         # we need to update the split groups attribute
         split_groups = self.read_split_groups_attributes()
-        empty_groups = []
+        # empty_groups = []
         for group, maps in split_groups.items():
             if split_map_name in maps:
                 maps.remove(split_map_name)
-                if not maps:
-                    empty_groups.append(group)
                 split_groups[group] = maps
-
-        for group in empty_groups:
-            del split_groups[group]
         # we need to update the split maps order attribute
         split_maps_order = self.read_split_maps_order_attribute()
         if split_map_name in split_maps_order:
