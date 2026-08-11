@@ -80,6 +80,9 @@ if env.MAYA_VERSION > 2024:
 	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
+		QCheckBox,
+		QDialog,
+		QDialogButtonBox,
 		QMenu,
 		QFileDialog,
 		QGroupBox,
@@ -117,6 +120,9 @@ else:
 	from PySide2.QtWidgets import (
 		QAction,
 		QAbstractItemView,
+		QCheckBox,
+		QDialog,
+		QDialogButtonBox,
 		QMenu,
 		QFileDialog,
 		QGroupBox,
@@ -6026,9 +6032,51 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._set_status("Import cancelled.")
 			return
 
+		choice_dialog = QDialog(self)
+		choice_dialog.setWindowTitle("Import Split Data")
+		choice_layout = QVBoxLayout(choice_dialog)
+		choice_layout.addWidget(QLabel("Choose the split data to import:", choice_dialog))
+		split_groups_checkbox = QCheckBox("Split Groups", choice_dialog)
+		split_groups_checkbox.setChecked(True)
+		choice_layout.addWidget(split_groups_checkbox)
+		split_maps_checkbox = QCheckBox("Split Maps", choice_dialog)
+		split_maps_checkbox.setChecked(True)
+		choice_layout.addWidget(split_maps_checkbox)
+		dialog_buttons = QDialogButtonBox(
+			QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+			parent=choice_dialog,
+		)
+		dialog_buttons.button(QDialogButtonBox.Ok).setText("Import")
+		dialog_buttons.accepted.connect(choice_dialog.accept)
+		dialog_buttons.rejected.connect(choice_dialog.reject)
+		choice_layout.addWidget(dialog_buttons)
+		if hasattr(choice_dialog, "exec"):
+			result = choice_dialog.exec()
+		else:
+			result = choice_dialog.exec_()
+		if result != QDialog.Accepted:
+			self._set_status("Import cancelled.")
+			return
+
+		import_settings = split_groups_checkbox.isChecked()
+		import_weights = split_maps_checkbox.isChecked()
+		if not import_settings and not import_weights:
+			self._set_status("Select at least one split data type to import.", warning=True)
+			return
+		if import_settings and import_weights:
+			import_label = "split groups and split maps"
+		elif import_settings:
+			import_label = "split groups"
+		else:
+			import_label = "split maps"
+
 		self._clear_trackers_for_scene_operation()
 		try:
-			self.current_editor.import_split_data(directory)
+			self.current_editor.import_split_data(
+				directory,
+				import_weights=import_weights,
+				import_settings=import_settings,
+			)
 		except Exception as exc:
 			self._set_status(f"Error importing split data: {exc}", error=True)
 			return
@@ -6038,7 +6086,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
 		self._split_map_normalization_cache.clear()
-		self._set_status(f"Imported split data from '{directory}'.")
+		self._set_status(f"Imported {import_label} from '{directory}'.")
 
 			
 	def _on_create_split_shapes_editor_requested(self) -> None:

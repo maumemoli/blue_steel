@@ -3979,7 +3979,7 @@ class BlueSteelEditor(object):
 
     @pause_shape_editor
     @undoable
-    def import_split_data(self, import_path: str):
+    def import_split_data(self, import_path: str, import_weights: bool = True, import_settings: bool = True):
         """
         Import the split data from a directory.
         Parameters:
@@ -3987,8 +3987,10 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
-        self.import_split_maps_weights(import_path)
-        self.import_split_settings(import_path)
+        if import_weights:
+            self.import_split_maps_weights(import_path)
+        if import_settings:
+            self.import_split_settings(import_path)
 
     def get_primaries_split_groups_association(self):
         """
@@ -4254,11 +4256,14 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        valid_split_maps = self.get_split_maps()
         import_file = os.path.join(import_path, "split_settings.json")
         if os.path.exists(import_file):
             with open(import_file, "r") as f:
                 split_settings = json.load(f)
             split_groups = split_settings.get("split_groups", {})
+            for group, split_maps in split_groups.items():
+                split_groups[group] = [split_map for split_map in split_maps if split_map in valid_split_maps]
             split_maps_order = split_settings.get("split_maps_order", [])
             split_map_associations = split_settings.get("split_map_associations", {})
             self.write_split_groups_attributes(split_groups)
@@ -4267,9 +4272,12 @@ class BlueSteelEditor(object):
             primary_shapes = self.get_primary_shapes()
             for primary, group in split_map_associations.items():
                 if primary not in primary_shapes:
-                    print(f"Primary shape {primary} does not exist in the blendshape. Skipping association.")
+                    #print(f"Primary shape {primary} does not exist in the blendshape. Skipping association.")
                     continue
                 self.set_primaries_split_group([primary], group)
+            # we need to check if the split maps in the split_groups are valid. If not, we need to remove them from the split_groups.
+            
+
             
     def export_split_maps_weights(self, export_path: str):
         """
@@ -4304,6 +4312,7 @@ class BlueSteelEditor(object):
         """
         self.clear_all_split_maps()
         import_file = os.path.join(import_path, "split_maps_weights.json")
+        base_mesh_vertex_count = cmds.polyEvaluate(self.base_mesh, vertex=True)
         if os.path.exists(import_file):
             with open(import_file, "r") as f:
                 split_maps_weights = json.load(f)
@@ -4314,6 +4323,10 @@ class BlueSteelEditor(object):
                     weight = self.split_blendshape.get_weight_by_name(weight)
                     if weight is None:
                         raise ValueError(f"Weight {weight} does not exist in the split_blendshape")
+                    # we need to check if the length of the weight_map_values matches the base_mesh_vertex_count
+                    if len(weight_map_values) != base_mesh_vertex_count:
+                        print(f"Warning: Weight map values for weight {weight} in split map {split_map} does not match the base mesh vertex count. Skipping this weight.")
+                        continue
                     self.split_blendshape.set_weight_map_values(weight.id, weight_map_values)
 
     def clear_all_split_maps(self):
