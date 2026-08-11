@@ -163,6 +163,129 @@ def get_maya_main_window() -> Optional[QWidget]:
 	return wrapInstance(int(main_window_ptr), QWidget)
 
 
+def _normalized_search_terms(terms) -> List[str]:
+	if isinstance(terms, str):
+		terms = [terms]
+	return [str(term).strip().lower() for term in (terms or []) if str(term).strip()]
+
+
+class TokenSearchBar(QWidget):
+	"""Search field that commits Enter-separated terms as removable tokens."""
+
+	searchChanged = Signal(object)
+
+	def __init__(self, placeholder: str = "", parent: Optional[QWidget] = None) -> None:
+		super().__init__(parent)
+		self._tokens: List[str] = []
+		self._token_widgets: Dict[str, QWidget] = {}
+		self._layout = QVBoxLayout(self)
+		self._layout.setContentsMargins(0, 0, 0, 0)
+		self._layout.setSpacing(3)
+		self._editor = QLineEdit(self)
+		self._editor.setMinimumWidth(40)
+		self._editor.setPlaceholderText(placeholder)
+		self._layout.addWidget(self._editor, 1)
+		self._token_container = QWidget(self)
+		self._token_layout = QHBoxLayout(self._token_container)
+		self._token_layout.setContentsMargins(0, 0, 0, 0)
+		self._token_layout.setSpacing(3)
+		self._token_layout.addStretch(1)
+		self._token_container.setVisible(False)
+		self._layout.addWidget(self._token_container)
+		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		self.setStyleSheet(
+			"TokenSearchBar QLabel { border: 0px; background: transparent; }"
+			"TokenSearchBar QPushButton { border: 0px; padding: 0px 3px; font-weight: bold; }"
+		)
+		self._editor.textChanged.connect(self._emit_search_changed)
+		self._editor.returnPressed.connect(self._commit_editor_text)
+
+	def setPlaceholderText(self, text: str) -> None:  # noqa: N802
+		self._editor.setPlaceholderText(text)
+
+	def text(self) -> str:
+		return self._editor.text()
+
+	def terms(self) -> List[str]:
+		terms = list(self._tokens)
+		draft = self._editor.text().strip()
+		if draft:
+			terms.append(draft)
+		return terms
+
+	def setText(self, text: str) -> None:  # noqa: N802
+		for token in list(self._tokens):
+			self._remove_token(token, emit=False)
+		was_blocked = self._editor.blockSignals(True)
+		try:
+			self._editor.setText(text)
+		finally:
+			self._editor.blockSignals(was_blocked)
+		self._emit_search_changed()
+
+	def clear(self) -> None:
+		for token in list(self._tokens):
+			self._remove_token(token, emit=False)
+		was_blocked = self._editor.blockSignals(True)
+		try:
+			self._editor.clear()
+		finally:
+			self._editor.blockSignals(was_blocked)
+		self._emit_search_changed()
+
+	def _commit_editor_text(self) -> None:
+		term = self._editor.text().strip()
+		if not term:
+			return
+		if term.lower() in {token.lower() for token in self._tokens}:
+			was_blocked = self._editor.blockSignals(True)
+			self._editor.clear()
+			self._editor.blockSignals(was_blocked)
+			self._emit_search_changed()
+			return
+
+		self._tokens.append(term)
+		token_widget = QWidget(self._token_container)
+		token_widget.setObjectName("searchToken")
+		token_widget.setStyleSheet(
+			"QWidget#searchToken { border: 1px solid #9a8eaa; border-radius: 6px; background-color: #746b82; }"
+			"QWidget#searchToken QLabel { color: #f1edf4; font-weight: bold; }"
+			"QWidget#searchToken QPushButton { color: #f1edf4; border-radius: 4px; }"
+			"QWidget#searchToken QPushButton:hover { color: #ffffff; background-color: #5d536c; }"
+		)
+		token_layout = QHBoxLayout(token_widget)
+		token_layout.setContentsMargins(5, 1, 1, 1)
+		token_layout.setSpacing(2)
+		token_layout.addWidget(QLabel(term, token_widget))
+		remove_button = QPushButton("x", token_widget)
+		remove_button.setFixedSize(16, 16)
+		remove_button.setToolTip(f"Remove '{term}' filter")
+		remove_button.clicked.connect(lambda _checked=False, token=term: self._remove_token(token))
+		token_layout.addWidget(remove_button)
+		self._token_widgets[term] = token_widget
+		self._token_layout.insertWidget(self._token_layout.count() - 1, token_widget)
+		self._token_container.setVisible(True)
+		was_blocked = self._editor.blockSignals(True)
+		self._editor.clear()
+		self._editor.blockSignals(was_blocked)
+		self._editor.setFocus()
+		self._emit_search_changed()
+
+	def _remove_token(self, token: str, emit: bool = True) -> None:
+		if token not in self._tokens:
+			return
+		self._tokens.remove(token)
+		widget = self._token_widgets.pop(token, None)
+		if widget is not None:
+			widget.deleteLater()
+		self._token_container.setVisible(bool(self._tokens))
+		if emit:
+			self._emit_search_changed()
+
+	def _emit_search_changed(self, *_args) -> None:
+		self.searchChanged.emit(self.terms())
+
+
 class SplitMapsTree(QTreeWidget):
 	"""Draggable split maps shown with normalization state and suffixes."""
 
@@ -840,12 +963,15 @@ class PrimaryShapesProxyModel(QSortFilterProxyModel):
 
 	def __init__(self, parent: Optional[QWidget] = None):
 		super().__init__(parent)
-		self._search_text = ""
+		self._search_terms: List[str] = []
 		self.setDynamicSortFilter(False)
 
-	def set_search_text(self, text: str) -> None:
-		self._search_text = (text or "").strip().lower()
+	def set_search_terms(self, terms) -> None:
+		self._search_terms = _normalized_search_terms(terms)
 		self.invalidateFilter()
+
+	def set_search_text(self, text: str) -> None:
+		self.set_search_terms([text])
 
 	def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
 		model = self.sourceModel()
@@ -855,10 +981,10 @@ class PrimaryShapesProxyModel(QSortFilterProxyModel):
 		shape_type = model.data(index, ShapeItemsModel.TypeRole)
 		if shape_type != "PrimaryShape":
 			return False
-		if not self._search_text:
+		if not self._search_terms:
 			return True
 		name = (model.data(index, ShapeItemsModel.NameRole) or "").lower()
-		return self._search_text in name
+		return any(term in name for term in self._search_terms)
 
 
 class ShapesFilterProxyModel(QSortFilterProxyModel):
@@ -871,7 +997,7 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 
 	def __init__(self, parent: Optional[QWidget] = None):
 		super().__init__(parent)
-		self._search_text = ""
+		self._search_terms: List[str] = []
 		self._selected_primaries: Set[str] = set()
 		self._visible_names: Optional[Set[str]] = None
 		self._active_only = False
@@ -951,10 +1077,13 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		# Run proxy sort in ascending mode; lessThan applies requested direction.
 		super().sort(column, Qt.AscendingOrder)
 
-	def set_search_text(self, text: str) -> None:
-		self._search_text = (text or "").strip().lower()
+	def set_search_terms(self, terms) -> None:
+		self._search_terms = _normalized_search_terms(terms)
 		self._invalidate_level_count_cache()
 		self.invalidateFilter()
+
+	def set_search_text(self, text: str) -> None:
+		self.set_search_terms([text])
 
 	def set_selected_primaries(self, primary_names: Sequence[str]) -> None:
 		self._selected_primaries = set(primary_names)
@@ -992,7 +1121,7 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		name = model.data(index, ShapeItemsModel.NameRole) or ""
 		if self._visible_names is not None and name not in self._visible_names:
 			return False
-		if self._search_text and self._search_text not in name.lower():
+		if self._search_terms and not any(term in name.lower() for term in self._search_terms):
 			return False
 		if self._active_only:
 			value = float(model.data(index, ShapeItemsModel.ValueRole) or 0.0)
@@ -3041,7 +3170,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._initial_splitter_layout_timer.setSingleShot(True)
 		self._initial_splitter_layout_timer.timeout.connect(self._apply_initial_splitter_layout)
 		self.main_tabs: Optional[QTabWidget] = None
-		self.split_primary_search: Optional[QLineEdit] = None
+		self.split_primary_search: Optional[TokenSearchBar] = None
 		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsView] = None
 		self._split_primary_slider_delegate: Optional[SliderItemDelegate] = None
 		self.split_groups_tree: Optional[SplitGroupsTree] = None
@@ -3230,8 +3359,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_header_layout.addWidget(QLabel("Primaries"))
 		primaries_header_layout.addStretch(1)
 		primaries_layout.addLayout(primaries_header_layout)
-		self.primaries_search = QLineEdit()
-		self.primaries_search.setPlaceholderText("Filter primaries...")
+		self.primaries_search = TokenSearchBar("Filter primaries...")
 		primaries_layout.addWidget(self.primaries_search)
 		self.primaries_view = PrimaryTreeWidget()
 		self._allow_horizontal_collapse(self.primaries_view)
@@ -3265,8 +3393,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._allow_horizontal_collapse(shapes_panel)
 		shapes_layout = QVBoxLayout(shapes_panel)
 		shapes_layout.addWidget(QLabel("Shapes"))
-		self.shapes_search = QLineEdit()
-		self.shapes_search.setPlaceholderText("Filter shapes...")
+		self.shapes_search = TokenSearchBar("Filter shapes...")
 		shapes_layout.addWidget(self.shapes_search)
 		self.shapes_view = ShapeTreeWidget()
 		self._allow_horizontal_collapse(self.shapes_view)
@@ -3428,8 +3555,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		active_shapes_section = QGroupBox("Active Shapes")
 		active_shapes_layout = QVBoxLayout(active_shapes_section)
-		self.active_shapes_search = QLineEdit()
-		self.active_shapes_search.setPlaceholderText("Filter active shapes...")
+		self.active_shapes_search = TokenSearchBar("Filter active shapes...")
 		active_shapes_layout.addWidget(self.active_shapes_search)
 		self.active_shapes_view = SliderListView()
 		self._allow_horizontal_collapse(self.active_shapes_view)
@@ -3509,8 +3635,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_group = QGroupBox("Primary Split Group Assignments")
 		self._allow_horizontal_collapse(primaries_group)
 		primaries_layout = QVBoxLayout(primaries_group)
-		self.split_primary_search = QLineEdit()
-		self.split_primary_search.setPlaceholderText("Search primaries...")
+		self.split_primary_search = TokenSearchBar("Search primaries...")
 		primaries_layout.addWidget(self.split_primary_search)
 		self.split_primaries_tree = SplitPrimaryAssignmentsView()
 		self._allow_horizontal_collapse(self.split_primaries_tree)
@@ -4119,9 +4244,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._primary_drop_delegate.lockToggleRequested.connect(self._on_primary_drop_lock_toggle_requested)
 		self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
 		self._work_shapes_delegate.connectedMeshRequested.connect(self._on_work_shape_connected_mesh_requested)
-		self.primaries_search.textChanged.connect(self._on_primaries_search_changed)
-		self.shapes_search.textChanged.connect(self._on_shapes_search_changed)
-		self.active_shapes_search.textChanged.connect(self._on_active_shapes_search_changed)
+		self.primaries_search.searchChanged.connect(self._on_primaries_search_changed)
+		self.shapes_search.searchChanged.connect(self._on_shapes_search_changed)
+		self.active_shapes_search.searchChanged.connect(self._on_active_shapes_search_changed)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
 		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
 		self.shapes_highlight_related_button.toggled.connect(lambda _: self._update_related_shape_highlights_from_selection())
@@ -4184,7 +4309,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.primaries_view.itemDoubleClicked.connect(self._on_primaries_item_double_clicked)
 		self.primaries_view.customContextMenuRequested.connect(self._show_primaries_context_menu)
 		if self.split_primary_search is not None:
-			self.split_primary_search.textChanged.connect(self._on_split_primary_search_changed)
+			self.split_primary_search.searchChanged.connect(self._on_split_primary_search_changed)
 		if self.split_primaries_tree is not None:
 			self.split_primaries_tree.assignmentChanged.connect(self._on_primary_split_group_changed)
 			self.split_primaries_tree.model().dataChanged.connect(self._on_split_primaries_tree_data_changed)
@@ -4594,7 +4719,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			except Exception:
 				assignments[primary] = "NoSplit"
 		self.split_primaries_tree.set_assignments(group_names, assignments)
-		self._on_split_primary_search_changed(self.split_primary_search.text() if self.split_primary_search else "")
+		self._on_split_primary_search_changed(self.split_primary_search.terms() if self.split_primary_search else [])
 
 	def _refresh_split_groups(self) -> None:
 		if self.split_groups_tree is None:
@@ -4795,9 +4920,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		for button in self._split_map_weight_paste_operation_buttons:
 			button.setEnabled(editing and has_weight and can_paste)
 
-	def _on_split_primary_search_changed(self, text: str) -> None:
+	def _on_split_primary_search_changed(self, terms) -> None:
 		if self.split_primaries_tree is not None:
-			self.split_primaries_tree.set_search_text(text)
+			self.split_primaries_tree.set_search_terms(terms)
 
 	def _on_split_primaries_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
 		if self.current_editor is None or self.split_primaries_tree is None:
@@ -6232,7 +6357,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_search.blockSignals(True)
 		self.shapes_search.setText("")
 		self.shapes_search.blockSignals(False)
-		self._shapes_proxy.set_search_text("")
+		self._shapes_proxy.set_search_terms([])
 		self._shapes_proxy.set_selected_primaries(tuple())
 		self._shapes_proxy.set_visible_names(None)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
@@ -6244,19 +6369,19 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if not keep_selection:
 			self._set_status("Cleared all shapes filters.")
 
-	def _on_primaries_search_changed(self, text: str) -> None:
-		self._apply_primaries_tree_filter(text)
+	def _on_primaries_search_changed(self, terms) -> None:
+		self._apply_primaries_tree_filter(terms)
 		self._update_delegate_name_columns()
 		self._update_info_labels()
 
-	def _on_shapes_search_changed(self, text: str) -> None:
-		self._shapes_proxy.set_search_text(text)
+	def _on_shapes_search_changed(self, terms) -> None:
+		self._shapes_proxy.set_search_terms(terms)
 		self._rebuild_shapes_tree()
 		self._update_delegate_name_columns()
 		self._update_info_labels()
 
-	def _on_active_shapes_search_changed(self, text: str) -> None:
-		self._active_shapes_proxy.set_search_text(text)
+	def _on_active_shapes_search_changed(self, terms) -> None:
+		self._active_shapes_proxy.set_search_terms(terms)
 		self._update_delegate_name_columns()
 		self._update_info_labels()
 
@@ -7644,12 +7769,13 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		finally:
 			self._syncing_primaries_tree = False
 
-	def _apply_primaries_tree_filter(self, text: str) -> None:
+	def _apply_primaries_tree_filter(self, terms) -> None:
 		"""Filter primaries tree while preserving parent groups for matching children."""
-		query = (text or "").strip().lower()
+		search_terms = _normalized_search_terms(terms)
 
 		def visit(item: QTreeWidgetItem) -> bool:
-			own_match = not query or query in item.text(0).lower()
+			item_text = item.text(0).lower()
+			own_match = not search_terms or any(term in item_text for term in search_terms)
 			child_match = False
 			for i in range(item.childCount()):
 				if visit(item.child(i)):

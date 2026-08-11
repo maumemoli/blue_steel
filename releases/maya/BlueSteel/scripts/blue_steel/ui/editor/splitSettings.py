@@ -63,7 +63,7 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 		super().__init__(parent)
 		self._source_model = None
 		self._assignments: Dict[str, str] = {}
-		self._search_text = ""
+		self._search_terms: List[str] = []
 		self._drag_primary_names: List[str] = []
 		self._pressed_primary_names: List[str] = []
 		self.setColumnCount(1)
@@ -158,7 +158,7 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 				self._update_group_icon(group_item)
 		finally:
 			self.blockSignals(False)
-		self.set_search_text(self._search_text)
+		self.set_search_terms(self._search_terms)
 
 	def sync_source_data(self, top_left, bottom_right, roles) -> None:
 		if self._source_model is None:
@@ -183,17 +183,25 @@ class SplitPrimaryAssignmentsView(QTreeWidget):
 						self.blockSignals(False)
 					break
 
-	def set_search_text(self, text: str) -> None:
-		self._search_text = (text or "").strip().lower()
+	def set_search_terms(self, terms) -> None:
+		if isinstance(terms, str):
+			terms = [terms]
+		self._search_terms = [
+			str(term).strip().lower()
+			for term in (terms or [])
+			if str(term).strip()
+		]
 		for row in range(self.topLevelItemCount()):
 			group_item = self.topLevelItem(row)
-			visible_children = 0
+			group_item.setHidden(False)
 			for child_row in range(group_item.childCount()):
 				child = group_item.child(child_row)
-				visible = not self._search_text or self._search_text in str(child.data(0, PRIMARY_NAME_ROLE) or "").lower()
+				name = str(child.data(0, PRIMARY_NAME_ROLE) or "").lower()
+				visible = not self._search_terms or any(term in name for term in self._search_terms)
 				child.setHidden(not visible)
-				visible_children += int(visible)
-			group_item.setHidden(bool(self._search_text) and visible_children == 0)
+
+	def set_search_text(self, text: str) -> None:
+		self.set_search_terms([text])
 
 	def startDrag(self, supported_actions) -> None:  # noqa: N802
 		selected_names = list(dict.fromkeys(
