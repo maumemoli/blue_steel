@@ -690,11 +690,29 @@ class Blendshape(object):
         return matched_dirs
     
     def set_target_weight_paint_mode(self, weight: Weight):
-        #artSetToolAndSelectAttr( "artAttrCtx", "blendShape.MetaHuman_mainBlendshape.baseWeights" );
-        #artAttrInitPaintableAttr;
-        #artBlendShapeSelectTarget artAttrCtx "browDownL";
+        """
+        Sets the blendShape node to weight paint mode for the specified weight.
+        Parameters:
+            weight (Weight): The weight object representing the target to set in paint mode.
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> weight = blendshape.get_weight_by_name("Smile")
+            >>> blendshape.set_target_weight_paint_mode(weight)
+        """
         base_mesh = self.get_base()
-        cmds.select(base_mesh)
+        if base_mesh is None:
+            raise ValueError(f"Blendshape node '{self.name}' has no base mesh connected.")
+        else:
+            base_mesh = base_mesh[0]
+        components = cmds.filterExpand(sm=[31, 32, 34],fp=True) or []
+        if components:
+            mesh_shape = components[0].split('.')[0]
+            if not cmds.objExists(mesh_shape):
+                raise ValueError(f"Mesh '{mesh_shape}' does not exist.")
+            base_mesh = cmds.ls(base_mesh, long=True)[0]
+            if mesh_shape != base_mesh:
+                cmds.select(base_mesh, r=True)
+
     
         mel.eval(f'artSetToolAndSelectAttr("artAttrCtx", "blendShape.{self.name}.baseWeights")')
         mel.eval(f'artAttrInitPaintableAttr')
