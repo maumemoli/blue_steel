@@ -77,7 +77,7 @@ WINDOW = None
 SHOW_UPDATE_CHECK = True
 if env.MAYA_VERSION > 2024:
 	from PySide6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt, QSize, Signal, QEvent, QRect, QPoint, QPersistentModelIndex, QTimer, QItemSelectionModel, QMimeData
-	from PySide6.QtGui import QAction, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
+	from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
 	from PySide6.QtWidgets import (
 		QAbstractItemView,
 		QCheckBox,
@@ -119,6 +119,7 @@ else:
 	from PySide2.QtGui import QColor, QCursor, QDoubleValidator, QIcon, QPainter, QPixmap, QPolygon, QDrag, QGuiApplication, QPalette
 	from PySide2.QtWidgets import (
 		QAction,
+		QActionGroup,
 		QAbstractItemView,
 		QCheckBox,
 		QDialog,
@@ -3176,6 +3177,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._primary_subset_proxy.setSourceModel(self._shape_model)
 		self._active_shapes_proxy.setSourceModel(self._shape_model)
 		self._active_shapes_proxy.set_active_only(True)
+		self._exclusive_primary_filter = False
 		self._primary_tree_sort_by_value = False
 		self._primaries_drag_active = False
 		self._linked_drag_active = False
@@ -3421,6 +3423,32 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_layout.addLayout(primaries_header_layout)
 		self.primaries_search = TokenSearchBar("Filter primaries...")
 		primaries_layout.addWidget(self.primaries_search)
+		primaries_filter_toolbar = QHBoxLayout()
+		primaries_filter_toolbar.setContentsMargins(0, 0, 0, 0)
+		self.primary_filter_button = QPushButton("Filtering Method: Standard")
+		self._prepare_toolbar_button(self.primary_filter_button)
+		self.primary_filter_button.setToolTip("Choose how selected primaries filter the Shapes list")
+		primary_filter_menu = QMenu(self.primary_filter_button)
+		primary_filter_menu.addSection("Filtering Method")
+		self.primary_filter_action_group = QActionGroup(primary_filter_menu)
+		self.primary_filter_action_group.setExclusive(True)
+		self.standard_filter_action = primary_filter_menu.addAction("Standard (Match Any Primary)")
+		self.standard_filter_action.setCheckable(True)
+		self.standard_filter_action.setChecked(True)
+		self.standard_filter_action.setToolTip(
+			"Show shapes that share any selected primary"
+		)
+		self.exclusive_filter_action = primary_filter_menu.addAction("Exclusive (Exact Relationship)")
+		self.exclusive_filter_action.setCheckable(True)
+		self.exclusive_filter_action.setToolTip(
+			"Show the exact related-shape result for the selected primaries"
+		)
+		self.primary_filter_action_group.addAction(self.standard_filter_action)
+		self.primary_filter_action_group.addAction(self.exclusive_filter_action)
+		self.primary_filter_button.setMenu(primary_filter_menu)
+		primaries_filter_toolbar.addWidget(self.primary_filter_button)
+		primaries_filter_toolbar.addStretch(1)
+		primaries_layout.addLayout(primaries_filter_toolbar)
 		self.primaries_view = PrimaryTreeWidget()
 		self._allow_horizontal_collapse(self.primaries_view)
 		self.primaries_view._sort_by_value = False
@@ -4363,6 +4391,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self.work_shapes_view.selectionModel().selectionChanged.connect(self._on_work_shapes_selection_changed)
 
 		self.primaries_view.itemSelectionChanged.connect(self._on_primaries_selection_changed)
+		self.exclusive_filter_action.toggled.connect(self._on_exclusive_filter_toggled)
 		self.primaries_view.itemExpanded.connect(self._on_primaries_item_expanded)
 		self.primaries_view.itemCollapsed.connect(self._on_primaries_item_collapsed)
 		self.primaries_view.itemClicked.connect(self._on_primaries_item_clicked)
@@ -6460,9 +6489,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_search.setText("")
 		self.shapes_search.blockSignals(False)
 		self._shapes_proxy.set_search_terms([])
-		self._shapes_proxy.set_selected_primaries(tuple())
-		self._shapes_proxy.set_visible_names(None)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
+		selected_names = self._selected_primary_tree_names() if keep_selection else []
+		self._apply_primary_selection_shapes_filter(selected_names)
 		if rebuild_ui:
 			self._apply_shapes_name_sort()
 			self._rebuild_shapes_tree()
@@ -8077,19 +8106,43 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.set_current_editor(name)
 
 	def _on_primaries_selection_changed(self, *_args) -> None:
-		selected_names = set()
+		selected_names = []
 		for item in self.primaries_view.selectedItems():
 			shape_name = item.data(0, self.PRIMARY_TREE_NAME_ROLE)
 			if shape_name:
-				selected_names.add(shape_name)
+				selected_names.append(str(shape_name))
 		# Changing primary selection should remove directional (upstream/downstream) filters.
-		self._shapes_proxy.set_visible_names(None)
 		self._active_shapes_proxy.set_visible_names(None)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
-		self._shapes_proxy.set_selected_primaries(selected_names)
+		self._apply_primary_selection_shapes_filter(selected_names)
 		self._rebuild_shapes_tree()
 		self._update_delegate_name_columns()
 		self._update_info_labels()
+
+	def _on_exclusive_filter_toggled(self, checked: bool) -> None:
+		self._exclusive_primary_filter = bool(checked)
+		method_name = "Exclusive" if checked else "Standard"
+		self.primary_filter_button.setText(f"Filtering Method: {method_name}")
+		self._on_primaries_selection_changed()
+
+	def _apply_primary_selection_shapes_filter(self, selected_names: Sequence[str]) -> None:
+		selected_names = list(dict.fromkeys(str(name) for name in selected_names if name))
+		if not selected_names or not getattr(self, "_exclusive_primary_filter", False):
+			self._shapes_proxy.set_visible_names(None)
+			self._shapes_proxy.set_selected_primaries(selected_names)
+			return
+
+		self._shapes_proxy.set_selected_primaries(tuple())
+		if self.current_editor is None:
+			self._shapes_proxy.set_visible_names(tuple())
+			return
+		try:
+			related_shapes = self.current_editor.get_related_shapes(selected_names) or []
+		except Exception as exc:
+			self._shapes_proxy.set_visible_names(tuple())
+			self._set_status(f"Error filtering strict relationships: {exc}", error=True)
+			return
+		self._shapes_proxy.set_visible_names(tuple(str(shape) for shape in related_shapes))
 
 	def _on_primary_value_committed(self, shape_name: str, value: float) -> None:
 		self._set_status(f"Set '{shape_name}' to {value:.3f}")
