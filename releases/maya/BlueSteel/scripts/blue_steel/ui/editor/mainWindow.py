@@ -2847,6 +2847,37 @@ class ShapeTreeWidget(QTreeWidget):
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
 	toggleUpstreamFilterRequested = Signal()
 
+	def __init__(self, parent=None) -> None:
+		super().__init__(parent)
+		self._toggle_icon_click_active = False
+
+	def _resolve_toggle_icon_click(self, event_pos) -> Optional[tuple]:
+		index = self.indexAt(event_pos)
+		delegate = self.itemDelegateForColumn(0)
+		if not index.isValid() or not isinstance(delegate, SliderItemDelegate):
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		mute_rect = delegate._mute_icon_rect(option, index)
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+		if mute_rect.contains(event_pos):
+			current_muted = bool(index.data(ShapeItemsModel.MutedRole))
+			return delegate.muteToggleRequested, shape_name, (not current_muted)
+
+		lock_rect = delegate._lock_icon_rect(option, index)
+		if not lock_rect.isNull() and lock_rect.contains(event_pos):
+			current_locked = bool(index.data(ShapeItemsModel.LockedRole))
+			return delegate.lockToggleRequested, shape_name, (not current_locked)
+		return None
+
 	def _selected_draggable_shape_names(self) -> List[str]:
 		shape_names: List[str] = []
 		for item in self.selectedItems():
@@ -2913,6 +2944,24 @@ class ShapeTreeWidget(QTreeWidget):
 				return
 		super().keyPressEvent(event)
 
+	def mousePressEvent(self, event):  # noqa: N802
+		if event.button() == Qt.LeftButton:
+			toggle_payload = self._resolve_toggle_icon_click(event.pos())
+			if toggle_payload is not None:
+				toggle_signal, shape_name, next_state = toggle_payload
+				toggle_signal.emit(shape_name, next_state)
+				self._toggle_icon_click_active = True
+				event.accept()
+				return
+		super().mousePressEvent(event)
+
+	def mouseDoubleClickEvent(self, event):  # noqa: N802
+		if event.button() == Qt.LeftButton and self._resolve_toggle_icon_click(event.pos()) is not None:
+			self._toggle_icon_click_active = True
+			event.accept()
+			return
+		super().mouseDoubleClickEvent(event)
+
 	def mouseMoveEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
@@ -2922,6 +2971,11 @@ class ShapeTreeWidget(QTreeWidget):
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
+		if self._toggle_icon_click_active and event.button() == Qt.LeftButton:
+			self._toggle_icon_click_active = False
+			event.accept()
+			return
+
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
@@ -6609,7 +6663,51 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._update_heat_map_target_from_active_shapes_selection()
 
 	def _on_active_shapes_double_clicked(self, proxy_index: QModelIndex) -> None:
-		self._set_shape_pose_from_proxy_index(self._active_shapes_proxy, proxy_index)
+		if not proxy_index.isValid():
+			return
+		shape_name = str(self._active_shapes_proxy.data(proxy_index, ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return
+		self._select_shape_and_primaries(shape_name, focus_shape=True)
+
+	def _select_shape_and_primaries(self, shape_name: str, *, focus_shape: bool = False) -> bool:
+		if self.current_editor is None:
+			return False
+		shape = self.current_editor.get_shape(shape_name)
+		if shape is None:
+			self._set_status(f"Shape '{shape_name}' not found.", warning=True)
+			return False
+
+		first_primary_item = None
+		was_blocked = self.primaries_view.blockSignals(True)
+		try:
+			self.primaries_view.clearSelection()
+			for primary in shape.primaries:
+				item = self._primary_tree_items.get(str(primary))
+				if item is None:
+					continue
+				item.setSelected(True)
+				if first_primary_item is None:
+					first_primary_item = item
+			if first_primary_item is not None:
+				self.primaries_view.setCurrentItem(
+					first_primary_item,
+					0,
+					QItemSelectionModel.NoUpdate,
+				)
+				self.primaries_view.scrollToItem(first_primary_item, QAbstractItemView.PositionAtCenter)
+		finally:
+			self.primaries_view.blockSignals(was_blocked)
+		self._on_primaries_selection_changed()
+
+		if not self._select_shape_in_shapes_tree(shape_name, ensure_visible=True):
+			return False
+		item = self._shape_tree_items.get(shape_name)
+		if item is not None:
+			self.shapes_view.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+		if focus_shape:
+			self.shapes_view.setFocus(Qt.MouseFocusReason)
+		return True
 
 	def _set_shape_pose_from_proxy_index(self, proxy_model: QSortFilterProxyModel, proxy_index: QModelIndex) -> None:
 		"""Set a shape to its pose using a row from a shapes proxy model."""
@@ -7266,40 +7364,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				return
 			connected_shape_name = str(connected_shape_name)
 			self._set_shape_pose_by_name(connected_shape_name)
-
-			connected_shape = self.current_editor.get_shape(connected_shape_name)
-			if connected_shape is None:
-				self._set_status(f"Connected shape '{connected_shape_name}' not found.", warning=True)
-				return
-
-			shape_primaries = tuple(str(name) for name in (getattr(connected_shape, "parents", None) or ()) if name)
-			if shape_primaries:
-				first_primary_item = None
-				was_blocked = self.primaries_view.blockSignals(True)
-				try:
-					self.primaries_view.clearSelection()
-					for primary_name in shape_primaries:
-						item = self._primary_tree_items.get(primary_name)
-						if item is None:
-							continue
-						item.setSelected(True)
-						if first_primary_item is None:
-							first_primary_item = item
-					if first_primary_item is not None:
-						self.primaries_view.setCurrentItem(
-							first_primary_item,
-							0,
-							QItemSelectionModel.NoUpdate,
-						)
-						self.primaries_view.scrollToItem(first_primary_item, QAbstractItemView.PositionAtCenter)
-				finally:
-					self.primaries_view.blockSignals(was_blocked)
-				self._on_primaries_selection_changed()
-
-			if self._select_shape_in_shapes_tree(connected_shape_name, ensure_visible=True):
-				item = self._shape_tree_items.get(connected_shape_name)
-				if item is not None:
-					self.shapes_view.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+			self._select_shape_and_primaries(connected_shape_name)
 			return
 		self._begin_inline_workshape_rename(model_index)
 
