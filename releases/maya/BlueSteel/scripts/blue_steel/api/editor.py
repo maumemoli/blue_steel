@@ -11,6 +11,7 @@ from . import attrUtils
 from .mayaUtils import undoable, pause_shape_editor
 from .container import Container
 from .blendshape import Blendshape, Weight
+from .skinCluster import SkinCluster
 from ..logic.shape import Shape
 from ..logic.shapeList import ShapeList
 from ..logic.network import Network
@@ -87,6 +88,7 @@ class BlueSteelEditor(object):
             self._delete_heat_map_blendshape()
             print("DGA nodes are not supported in this Maya version. Heat map visualization will be disabled.")
 
+        self.skin_cluster = None
 
         self.separator = separator
         self.blendshape = None
@@ -143,7 +145,28 @@ class BlueSteelEditor(object):
         self._sync_up_split_maps_attributes()
         # make sure the split map edit mesh is hidden when the editor is initialized
         self.switch_visibility_to_split_map_edit_mesh(False)
+        self._get_skin_cluster()
+        self.zero_out()
 
+    #-----------------------------
+    # SkinCluster Setup
+    #-----------------------------
+    def _get_skin_cluster(self):
+        """
+        Get the skinCluster node connected to the base mesh.
+        Returns:
+            str: The name of the skinCluster node, or None if not found
+        """
+        base_mesh = self.base_mesh
+        if not base_mesh:
+            raise ValueError("Base mesh not found in the editor.")
+        try:
+            skin_cluster = SkinCluster.from_mesh(base_mesh)
+        except RuntimeError as e:
+            self.skin_cluster = None
+            print(f"Warning: {e}")
+        else:
+            self.skin_cluster = skin_cluster
     #-----------------------------
     # HUD SETUP
     #-----------------------------
@@ -1734,6 +1757,8 @@ class BlueSteelEditor(object):
             if cmds.attributeQuery("nodeState", node=deformer, exists=True):
                 if deformer == self.blendshape.name:
                     continue
+                if self.skin_cluster is not None and deformer == self.skin_cluster.name:
+                    continue
                 node_state_value = cmds.getAttr(f"{deformer}.nodeState")
                 try:
                     cmds.setAttr(f"{deformer}.nodeState", 1)
@@ -1776,6 +1801,13 @@ class BlueSteelEditor(object):
             self.set_shape_pose(shape)
             # we need to duplicate the extraction mesh with the shape name
             extracted_shape_mesh = cmds.duplicate(extraction_mesh, name=shape_name)[0]
+            # we need to unlock the transform attributes of the extracted shape mesh to avoid issues with the parent constraint
+            for axis in "XYZ":
+                for attr in ["translate", "rotate", "scale"]:
+                    attr_name = f"{attr}{axis}"
+                    if cmds.attributeQuery(attr_name, node=extracted_shape_mesh, exists=True):
+                        if cmds.getAttr(f"{extracted_shape_mesh}.{attr_name}", lock=True):
+                            cmds.setAttr(f"{extracted_shape_mesh}.{attr_name}", lock=False)
             parented = cmds.parent(extracted_shape_mesh, extraction_group)[0] #making sure name does not change
             if parented.split("|")[-1] != shape_name:
                 extracted_shape_mesh = cmds.rename(parented, shape_name)
@@ -2237,7 +2269,7 @@ class BlueSteelEditor(object):
                 ctrl_attr = attrUtils.add_float_attr(self.face_ctrl, shape)
             if ctrl_attr is None:
                 raise ValueError(f"Could not add control attribute for primary shape '{shape}' to face cibtrik group.")
-            w = self.blendshape.add_target(weight_name=shape, target_object=mesh)
+            w = self.blendshape.add_target(weight_name=shape)
             # we need to connect the the blendshape weight to the face control attribute
             cmds.connectAttr(ctrl_attr,f"{self.blendshape.name}.{shape}", force=True)
             self.container.bind_attribute(ctrl_attr)
@@ -2257,6 +2289,9 @@ class BlueSteelEditor(object):
             # will add a split attribute to the shape to store the split maps
             self.add_primary_split_map_attribute(shape)
             self.set_shape_pose(shape)
+            inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+            self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+            cmds.delete(inverted_shape)
 
         else:
             w = self.blendshape.get_weight_by_name(shape)
@@ -2264,8 +2299,9 @@ class BlueSteelEditor(object):
             self.blendshape.reset_target(weight=w)
             self.set_shape_pose(shape)
             # extracting the combo shape
-            delta = self.blendshape.get_delta_from_mesh(mesh)
-            self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
+            inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+            self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+            cmds.delete(inverted_shape)
             if VERBOSE:
                 print(f"Updating existing {shape.type} shape {shape}")
             return_value = "UPDATED"
@@ -2288,6 +2324,10 @@ class BlueSteelEditor(object):
         if base_mesh is None:
             raise ValueError("Base mesh not found.")
         duplicated = cmds.duplicate(base_mesh, name=mesh_name)[0]
+        # we need to unlock all the transform attributes of the duplicated mesh
+        for axis in ["X", "Y", "Z"]:
+            for attr in ["translate", "rotate", "scale"]:
+                cmds.setAttr(f"{duplicated}.{attr}{axis}", lock=False)
         # we need to remove all the intermediate objects.
         shapes = cmds.listRelatives(duplicated, shapes=True, fullPath=True) or []
         for shape in shapes:
@@ -2297,6 +2337,7 @@ class BlueSteelEditor(object):
         base_points = self.blendshape.get_base_points()
         mayaUtils.set_points_from_numpy(duplicated, base_points)
         return duplicated
+
 
     def duplicate_base_mesh_at_current_pose(self)->str: 
         """
@@ -2311,6 +2352,10 @@ class BlueSteelEditor(object):
         if base_mesh is None:
             raise ValueError("Base mesh not found.")
         extracted = cmds.duplicate(base_mesh, name=pose_name)
+        # we need to unlock all the transform attributes of the duplicated mesh
+        for axis in ["X", "Y", "Z"]:
+            for attr in ["translate", "rotate", "scale"]:
+                cmds.setAttr(f"{extracted[0]}.{attr}{axis}", lock=False)
         if extracted[0] != pose_name:
             extract_group = cmds.createNode("transform", name=f"{pose_name}_extracted_GRP")
             extracted = cmds.parent(extracted[0], extract_group)[0]
@@ -2471,9 +2516,9 @@ class BlueSteelEditor(object):
         # setting the pose of the rig to the inbetween shape
         self.set_shape_pose(shape)
         # extracting the inbetween shape
-        delta = self.blendshape.get_delta_from_mesh(mesh)
-
-        self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
+        inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+        self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+        cmds.delete(inverted_shape)
         return return_value
 
     def add_combo_shape(self, mesh: str, shape: Shape):
@@ -2520,8 +2565,9 @@ class BlueSteelEditor(object):
         # we need to reset the delta of the shape before extracting the combo shape
         self.blendshape.reset_target(weight=w)
         # extracting the combo shape
-        delta = self.blendshape.get_delta_from_mesh(mesh)
-        self.blendshape.set_target_delta(input_target_index=w.id, delta=delta)
+        inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+        self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+        cmds.delete(inverted_shape)
         return return_value
 
     def add_split_map_attribute_group(self, group_name: str):

@@ -2716,6 +2716,7 @@ class WorkShapesListView(SliderListView):
 		normalize_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
 		clear_weights_callback: Optional[Callable[[str], None]] = None,
 		can_paste_weights_callback: Optional[Callable[[], bool]] = None,
+		can_extract_mesh_callback: Optional[Callable[[], bool]] = None,
 		parent=None,
 	) -> None:
 		super().__init__(parent)
@@ -2731,6 +2732,7 @@ class WorkShapesListView(SliderListView):
 		self._normalize_weights_callback = normalize_weights_callback
 		self._clear_weights_callback = clear_weights_callback
 		self._can_paste_weights_callback = can_paste_weights_callback
+		self._can_extract_mesh_callback = can_extract_mesh_callback
 		self.setAcceptDrops(True)
 		self.setDragDropMode(QAbstractItemView.DropOnly)
 		self.setDefaultDropAction(Qt.CopyAction)
@@ -2793,6 +2795,11 @@ class WorkShapesListView(SliderListView):
 		menu = QMenu(self)
 		duplicate_action = menu.addAction(f"Duplicate")
 		extract_work_shape_mesh_action = menu.addAction("Extract Mesh")
+		can_extract_mesh = self._can_extract_mesh_callback is None or self._can_extract_mesh_callback()
+		extract_work_shape_mesh_action.setEnabled(can_extract_mesh)
+		if not can_extract_mesh:
+			extract_work_shape_mesh_action.setToolTip("Extract Mesh is not supported on meshes with a skinCluster")
+			menu.setToolTipsVisible(True)
 		connections_menu = menu.addMenu("Connections")
 		break_link_action = connections_menu.addAction("Break Link")
 
@@ -3633,6 +3640,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._on_work_shapes_normalize_weights_requested,
 			self._on_work_shape_clear_weights_requested,
 			self._has_copied_work_weight_map_values,
+			lambda: self.current_editor is not None and self.current_editor.skin_cluster is None,
 		)
 		self._allow_horizontal_collapse(self.work_shapes_view)
 		self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
