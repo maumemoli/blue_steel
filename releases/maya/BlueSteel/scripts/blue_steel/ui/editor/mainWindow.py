@@ -68,6 +68,7 @@ from ..common.icons import (
 	PASTE_MINUS_WEIGHTS_ICON,
 	PASTE_MULTIPLY_WEIGHTS_ICON,
 	SOFT_MOD_ICON,
+	FILTER_ACTIVE_VALUES_ICON,
 
 
 )
@@ -3228,6 +3229,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._shapes_header_button_labels: Dict[QPushButton, str] = {}
 		self._shapes_header_full_width = 0
 		self._shapes_header_compact_mode = False
+		self._shapes_active_filter_enabled = False
 		self._tools_panel_compact_mode = False
 		self._tools_panel_compact_threshold = 165
 		self._tools_panel_compact_width = 76
@@ -3238,6 +3240,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._initial_splitter_layout_timer = QTimer(self)
 		self._initial_splitter_layout_timer.setSingleShot(True)
 		self._initial_splitter_layout_timer.timeout.connect(self._apply_initial_splitter_layout)
+		self._active_shapes_filter_refresh_timer = QTimer(self)
+		self._active_shapes_filter_refresh_timer.setSingleShot(True)
+		self._active_shapes_filter_refresh_timer.setInterval(33)
+		self._active_shapes_filter_refresh_timer.timeout.connect(self._refresh_active_shapes_filter)
 		self.main_tabs: Optional[QTabWidget] = None
 		self.split_primary_search: Optional[TokenSearchBar] = None
 		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsView] = None
@@ -3529,6 +3535,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_auto_pose_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_auto_pose_button, 1)
 
+		self.shapes_list_active_button = QPushButton("List Active")
+		self._prepare_toolbar_button(self.shapes_list_active_button)
+		self.shapes_list_active_button.setIcon(FILTER_ACTIVE_VALUES_ICON)
+		self.shapes_list_active_button.setIconSize(QSize(16, 16))
+		self.shapes_list_active_button.setToolTip("List only shapes with an active value")
+		self.shapes_list_active_button.setCheckable(True)
+		self.shapes_list_active_button.setChecked(False)
+		shapes_header_layout.addWidget(self.shapes_list_active_button, 1)
+
 		self.shapes_downstream_button = QPushButton("Downstream")
 		self._prepare_toolbar_button(self.shapes_downstream_button)
 		self.shapes_downstream_button.setIcon(DOWN_ARROW_ICON)
@@ -3557,6 +3572,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		shapes_header_layout.addWidget(self.shapes_highlight_related_button, 1)
 		self._shapes_header_buttons = [
 			self.shapes_auto_pose_button,
+			self.shapes_list_active_button,
 			self.shapes_downstream_button,
 			self.shapes_upstream_button,
 			self.shapes_highlight_related_button,
@@ -4343,6 +4359,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.primaries_search.searchChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.searchChanged.connect(self._on_shapes_search_changed)
 		self.active_shapes_search.searchChanged.connect(self._on_active_shapes_search_changed)
+		self.shapes_list_active_button.toggled.connect(self._filter_shapes_active)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
 		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
 		self.shapes_highlight_related_button.toggled.connect(lambda _: self._update_related_shape_highlights_from_selection())
@@ -6442,6 +6459,43 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_downstream_button.blockSignals(False)
 		self.shapes_upstream_button.blockSignals(False)
 
+	def _set_active_shapes_filter_state(self, checked: bool) -> None:
+		self._shapes_active_filter_enabled = bool(checked)
+		self._shapes_proxy.set_active_only(checked)
+
+	def _set_shapes_value_filter_button_state(self, checked: bool) -> None:
+		was_blocked = self.shapes_list_active_button.blockSignals(True)
+		try:
+			self.shapes_list_active_button.setChecked(checked)
+		finally:
+			self.shapes_list_active_button.blockSignals(was_blocked)
+
+	def _filter_shapes_active(self, checked: bool) -> None:
+		if not checked:
+			self._clear_shapes_filters()
+			return
+		self._clear_shapes_filters(rebuild_ui=False)
+		visible_names = []
+		for row in range(self._shape_model.rowCount()):
+			index = self._shape_model.index(row, 0)
+			if self._shapes_proxy._is_with_value_shape(self._shape_model, index):
+				visible_names.append(str(self._shape_model.data(index, ShapeItemsModel.NameRole)))
+		self._shapes_proxy.set_visible_names(visible_names)
+		self._set_shapes_value_filter_button_state(True)
+		self._apply_shapes_name_sort()
+		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
+		self._update_info_labels()
+		self._set_status("Listed shapes with value at the time of filtering.")
+
+	def _refresh_active_shapes_filter(self) -> None:
+		if not self._shapes_active_filter_enabled:
+			return
+		self._shapes_proxy.invalidateFilter()
+		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
+		self._update_info_labels()
+
 	def _filter_shapes_downstream(self, checked: bool) -> None:
 		if not checked:
 			self._clear_shapes_filters(keep_selection=True)
@@ -6491,12 +6545,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._set_status(f"Filtered upstream shapes from '{shape_name}'.")
 
 	def _clear_shapes_filters(self, keep_selection: bool = False, rebuild_ui: bool = True) -> None:
+		self._set_shapes_value_filter_button_state(False)
 		if not keep_selection:
 			self.primaries_view.clearSelection()
 		self.shapes_search.blockSignals(True)
 		self.shapes_search.setText("")
 		self.shapes_search.blockSignals(False)
 		self._shapes_proxy.set_search_terms([])
+		self._set_active_shapes_filter_state(False)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 		selected_names = self._selected_primary_tree_names() if keep_selection else []
 		self._apply_primary_selection_shapes_filter(selected_names)
@@ -6531,6 +6587,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if self._syncing_shapes_tree:
 			return
 		self._sync_shapes_tree_items_from_source_rows(_top_left, _bottom_right)
+		if self._shapes_active_filter_enabled and (
+			not roles or ShapeItemsModel.ValueRole in roles or Qt.DisplayRole in roles
+		):
+			self._active_shapes_filter_refresh_timer.start()
 		if roles and all(
 			role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole, ShapeItemsModel.LockedRole)
 			for role in roles
@@ -7391,6 +7451,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if not shape_name:
 			return
 		if QGuiApplication.keyboardModifiers() & Qt.AltModifier:
+			if self.shapes_list_active_button.isChecked():
+				self.shapes_list_active_button.setChecked(False)
 			try:
 				connected_shape_name = self.current_editor.get_work_shape_driver(shape_name)
 			except Exception as exc:
@@ -8114,13 +8176,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.set_current_editor(name)
 
 	def _on_primaries_selection_changed(self, *_args) -> None:
+		self._set_shapes_value_filter_button_state(False)
 		selected_names = []
 		for item in self.primaries_view.selectedItems():
 			shape_name = item.data(0, self.PRIMARY_TREE_NAME_ROLE)
 			if shape_name:
 				selected_names.append(str(shape_name))
-		# Changing primary selection should remove directional (upstream/downstream) filters.
+		# Changing primary selection should remove active and directional filters.
 		self._active_shapes_proxy.set_visible_names(None)
+		self._set_active_shapes_filter_state(False)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
 		self._apply_primary_selection_shapes_filter(selected_names)
 		self._rebuild_shapes_tree()
@@ -8531,6 +8595,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def refresh_ui(self) -> None:
 		"""Refresh model and editor list while preserving current selection when possible."""
+		self._clear_shapes_filters(rebuild_ui=False)
 		selected_name = self.current_editor.name if self.current_editor else None
 		self._reload_editor_menu()
 		if selected_name and cmds.objExists(selected_name):

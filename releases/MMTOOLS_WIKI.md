@@ -8,9 +8,13 @@ mesh-editing operations.
 It focuses on:
 
 - Cluster creation, painting, mirroring, and linking.
-- Vertex position copy/paste workflows.
+- Fast and reliable vertex position copy/paste workflows.
 - Intermediate object updates.
 - Fast attribute connection between selected nodes.
+
+The standout workflow is **Copy Vtx Positions -> Paste Vtx Positions** for
+Blendshape target editing. In production this is especially effective when used
+with Blue Steel WorkShapes to make non-destructive facial rig changes.
 
 ## Launching MMTools
 
@@ -61,14 +65,56 @@ Implemented in:
 
 Available actions:
 
-- Copy Vtx Positions: stores selected mesh vertex positions in a buffer.
+- Copy Vtx Positions: stores selected mesh vertex positions in a plugin buffer.
 - Paste Vtx Positions: pastes buffered positions to selected mesh.
 - Update Intermediate Object: updates target intermediate shape from source.
 
 ### Notes
 
-- Copy/paste requires compatible vertex counts.
+- Copy/paste is backed by `bsMeshPointsClipboard` and auto-loads the plugin on
+  first use.
+- Copy/paste requires compatible topology/vertex count.
+- Paste expects a selected transform with a mesh shape.
+- On meshes with history, paste is history-aware and works through the
+  intermediate/orig shape path so the visible output shape matches your copied
+  data.
+- If a history mesh has no tweak connection, paste is blocked and MMTools shows
+  an in-view warning.
 - Update Intermediate Object expects exactly two selected transforms.
+
+## Why Copy/Paste Is So Useful For Blendshape Work
+
+When a blendshape target is in edit mode, artists often need to move sculpted
+vertex deltas between targets, cleanup passes, or versions without baking or
+collapsing deformation history.
+
+In practice, this is especially valuable when artists are working with meshes
+snapped to scans. Being able to quickly copy vertex positions from a mesh
+produced by wrapping software and paste them onto a target in edit mode makes
+facial target iteration much faster and safer.
+
+MMTools Copy/Paste is ideal for this because:
+
+- It is quick enough for iterative sculpt loops.
+- It preserves a non-destructive workflow when used on history-driven meshes.
+- It pairs naturally with Blue Steel WorkShapes for facial exploration and
+  refinement.
+
+## WorkShape + Blendshape Edit-Mode Workflow (Recommended)
+
+This is the workflow we recommend for non-destructive facial blendshape rig
+iteration in Blue Steel:
+
+1. In Blue Steel, create/select a WorkShape and put the intended target into
+   edit mode.
+2. Sculpt or otherwise modify the source shape.
+3. Select the source mesh transform and run **Copy Vtx Positions**.
+4. Select the destination blendshape target/workshape mesh transform.
+5. Run **Paste Vtx Positions**.
+6. Validate deformation in context and continue iterating.
+
+This pattern is very effective for transferring detailed facial edits while
+keeping your rig process flexible and non-destructive.
 
 ## Attribute Tools
 
@@ -109,6 +155,14 @@ UI sections map directly to function modules:
 2. Select target mesh with matching topology.
 3. Run Paste Vtx Positions.
 
+### Facial blendshape non-destructive workflow
+
+1. Open the Blue Steel editor and choose a WorkShape.
+2. Set the destination blendshape target/workshape to edit mode.
+3. Copy from a source facial shape using Copy Vtx Positions.
+4. Paste into the target using Paste Vtx Positions.
+5. Repeat as needed to build and refine the final facial target set.
+
 ### Fast control hookup workflow
 
 1. Select source node, then target node.
@@ -126,6 +180,8 @@ UI sections map directly to function modules:
 
 - Ensure vertex count matches copied buffer.
 - Ensure selected object is a transform with mesh shape.
+- Ensure `bsMeshPointsClipboard` is available and loadable.
+- If the mesh has history, ensure tweak/orig-shape plumbing is valid.
 
 ### Attribute connect misses channels
 
