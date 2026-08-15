@@ -188,7 +188,7 @@ class TokenSearchBar(QWidget):
 		self._token_widgets: Dict[str, QWidget] = {}
 		self._layout = QVBoxLayout(self)
 		self._layout.setContentsMargins(0, 0, 0, 0)
-		self._layout.setSpacing(3)
+		self._layout.setSpacing(2)
 		self._editor = QLineEdit(self)
 		self._editor.setMinimumWidth(40)
 		self._editor.setPlaceholderText(placeholder)
@@ -196,14 +196,14 @@ class TokenSearchBar(QWidget):
 		self._token_container = QWidget(self)
 		self._token_layout = QHBoxLayout(self._token_container)
 		self._token_layout.setContentsMargins(0, 0, 0, 0)
-		self._token_layout.setSpacing(3)
+		self._token_layout.setSpacing(2)
 		self._token_layout.addStretch(1)
 		self._token_container.setVisible(False)
 		self._layout.addWidget(self._token_container)
 		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 		self.setStyleSheet(
 			"TokenSearchBar QLabel { border: 0px; background: transparent; }"
-			"TokenSearchBar QPushButton { border: 0px; padding: 0px 3px; font-weight: bold; }"
+			"TokenSearchBar QPushButton { border: 0px; padding: 0px 1px; font-weight: bold; }"
 		)
 		self._editor.textChanged.connect(self._emit_search_changed)
 		self._editor.returnPressed.connect(self._commit_editor_text)
@@ -262,8 +262,8 @@ class TokenSearchBar(QWidget):
 			"QWidget#searchToken QPushButton:hover { color: #ffffff; background-color: #5d536c; }"
 		)
 		token_layout = QHBoxLayout(token_widget)
-		token_layout.setContentsMargins(5, 1, 1, 1)
-		token_layout.setSpacing(2)
+		token_layout.setContentsMargins(2, 0, 1, 0)
+		token_layout.setSpacing(1)
 		token_layout.addWidget(QLabel(term, token_widget))
 		remove_button = QPushButton("x", token_widget)
 		remove_button.setFixedSize(16, 16)
@@ -2416,7 +2416,7 @@ class SplitMapWeightSliderDelegate(SliderItemDelegate):
 	VALUE_FIELD_GAP = 5
 
 	def sizeHint(self, option, index):  # noqa: N802
-		return QSize(1, 40)
+		return QSize(1, 28)
 
 	def _row_rects(self, option, index):
 		rect = option.rect
@@ -3155,6 +3155,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	DOCK_TARGET_CONTROL = "Outliner"
 	EMPTY_SYSTEM_LABEL = "<Select System>"
 	SPLIT_PANELS_MAX_WIDTH = 600
+	COMPACT_MARGIN = 2
+	COMPACT_SPACING = 2
 	PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
 	PRIMARY_TREE_FOLDER_ROLE = Qt.UserRole + 201
 
@@ -3289,7 +3291,11 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		widget.setMinimumWidth(0)
 		widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
-	def _prepare_toolbar_button(self, button: QPushButton, *, height: int = 32) -> None:
+	def _compact_layout(self, layout: QLayout, *, margin: int = 0) -> None:
+		layout.setContentsMargins(margin, margin, margin, margin)
+		layout.setSpacing(self.COMPACT_SPACING)
+
+	def _prepare_toolbar_button(self, button: QPushButton, *, height: int = 24) -> None:
 		button.setStyleSheet("padding: 0px;")
 		button.setFixedHeight(height)
 
@@ -3355,13 +3361,16 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		central = QWidget(self)
 		self.setCentralWidget(central)
 		root_layout = QVBoxLayout(central)
-		root_layout.setContentsMargins(6, 6, 6, 6)
+		self._compact_layout(root_layout, margin=self.COMPACT_MARGIN)
 
 		controls_layout = QHBoxLayout()
+		self._compact_layout(controls_layout)
 		self.refresh_button = QPushButton("Refresh")
 		self.refresh_button.setIcon(REFRESH_ICON)
+		self._prepare_toolbar_button(self.refresh_button)
 		self.create_system_button = QPushButton("New")
 		self.create_system_button.setIcon(ADD_ICON)
+		self._prepare_toolbar_button(self.create_system_button)
 		self.editor_combo = QComboBox()
 		self.editor_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
 		controls_layout.addWidget(self.refresh_button)
@@ -3374,8 +3383,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.heat_map_switch.setCheckable(True)
 		self.heat_map_switch.setChecked(False)
 		#self.heat_map_switch.adjustSize()
-		self.heat_map_switch.setFixedHeight(self.refresh_button.sizeHint().height())
-		self.heat_map_switch.setFixedWidth(self.heat_map_switch.sizeHint().width() + 6)
+		self.heat_map_switch.setFixedHeight(24)
+		self.heat_map_switch.setFixedWidth(self.heat_map_switch.sizeHint().width() + 2)
 		self.heat_map_switch.setToolTip("Toggle heat map visualization for selected shape targets")
 		self.heat_map_switch.setVisible(bool(env.DGA_NODES_SUPPORTED))
 		self.heat_map_switch.setEnabled(bool(env.DGA_NODES_SUPPORTED))
@@ -3397,6 +3406,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		workspace_splitter = QSplitter(Qt.Horizontal)
 		workspace_splitter.setChildrenCollapsible(True)
+		workspace_splitter.setHandleWidth(2)
 		self._allow_horizontal_collapse(workspace_splitter)
 		self._main_splitter = workspace_splitter
 		root_layout.addWidget(workspace_splitter, 1)
@@ -3421,6 +3431,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		splitter = QSplitter(Qt.Horizontal)
 		splitter.setChildrenCollapsible(True)
+		splitter.setHandleWidth(2)
 		self._allow_horizontal_collapse(splitter)
 		self._editor_splitter = splitter
 		editor_tab_layout.addWidget(splitter, 1)
@@ -3428,21 +3439,21 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_panel = QWidget()
 		self._allow_horizontal_collapse(primaries_panel)
 		primaries_layout = QVBoxLayout(primaries_panel)
+		self._compact_layout(primaries_layout, margin=self.COMPACT_MARGIN)
 		primaries_header_layout = QHBoxLayout()
-		primaries_header_layout.setContentsMargins(0, 0, 0, 0)
-		primaries_header_layout.setSpacing(4)
+		self._compact_layout(primaries_header_layout)
 		primaries_header_layout.addWidget(QLabel("Primaries"))
 		primaries_header_layout.addStretch(1)
 		primaries_layout.addLayout(primaries_header_layout)
 		self.primaries_search = TokenSearchBar("Filter primaries...")
 		primaries_layout.addWidget(self.primaries_search)
 		primaries_filter_toolbar = QHBoxLayout()
-		primaries_filter_toolbar.setContentsMargins(0, 0, 0, 0)
-		self.primary_filter_button = QPushButton("Filtering Method: Standard")
+		self._compact_layout(primaries_filter_toolbar)
+		self.primary_filter_button = QPushButton("Filtering: Standard")
 		self._prepare_toolbar_button(self.primary_filter_button)
 		self.primary_filter_button.setToolTip("Choose how selected primaries filter the Shapes list")
 		primary_filter_menu = QMenu(self.primary_filter_button)
-		primary_filter_menu.addSection("Filtering Method")
+		primary_filter_menu.addSection("Filtering")
 		self.primary_filter_action_group = QActionGroup(primary_filter_menu)
 		self.primary_filter_action_group.setExclusive(True)
 		self.standard_filter_action = primary_filter_menu.addAction("Standard (Match Any Primary)")
@@ -3483,6 +3494,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_footer_layout.setSpacing(0)
 		self.remove_primaries_button = QPushButton("Remove Primaries")
 		self.remove_primaries_button.setIcon(DELETE_ICON)
+		self._prepare_toolbar_button(self.remove_primaries_button)
 		self.remove_primaries_button.setToolTip("Remove selected primaries and their dependent shapes")
 		self.tool_buttons.append(self.remove_primaries_button)
 		primaries_footer_layout.addWidget(self.remove_primaries_button)
@@ -3493,6 +3505,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		shapes_panel = QWidget()
 		self._allow_horizontal_collapse(shapes_panel)
 		shapes_layout = QVBoxLayout(shapes_panel)
+		self._compact_layout(shapes_layout, margin=self.COMPACT_MARGIN)
 		shapes_layout.addWidget(QLabel("Shapes"))
 		self.shapes_search = TokenSearchBar("Filter shapes...")
 		shapes_layout.addWidget(self.shapes_search)
@@ -3511,8 +3524,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				height: 0px;
 			}
 			QTreeView::item {
-				padding-top: 2px;
-				padding-bottom: 2px;
+				padding-top: 1px;
+				padding-bottom: 1px;
 			}
 			"""
 		)
@@ -3589,6 +3602,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		shapes_footer_layout.setSpacing(0)
 		self.remove_shapes_button = QPushButton("Remove Shapes")
 		self.remove_shapes_button.setIcon(DELETE_ICON)
+		self._prepare_toolbar_button(self.remove_shapes_button)
 		self.tool_buttons.append(self.remove_shapes_button)
 		shapes_footer_layout.addWidget(self.remove_shapes_button)
 		self.shapes_info = QLabel("Items: 0")
@@ -3599,15 +3613,19 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._allow_horizontal_collapse(third_column_panel)
 		third_column_layout = QVBoxLayout(third_column_panel)
 		third_column_layout.setContentsMargins(0, 0, 0, 0)
-		third_column_layout.setSpacing(8)
+		third_column_layout.setSpacing(self.COMPACT_SPACING)
 		third_column_splitter = QSplitter(Qt.Vertical)
 		third_column_splitter.setChildrenCollapsible(True)
+		third_column_splitter.setHandleWidth(2)
 		third_column_layout.addWidget(third_column_splitter, 1)
 
 		primary_drop_section = QGroupBox("Sliders Drop Box")
 		primary_drop_layout = QVBoxLayout(primary_drop_section)
+		self._compact_layout(primary_drop_layout, margin=self.COMPACT_MARGIN)
 		primary_drop_toolbar = QHBoxLayout()
+		self._compact_layout(primary_drop_toolbar)
 		self.primary_drop_get_active_button = QPushButton("Get Active")
+		self._prepare_toolbar_button(self.primary_drop_get_active_button)
 		primary_drop_toolbar.addWidget(self.primary_drop_get_active_button)
 		primary_drop_toolbar.addStretch(1)
 		primary_drop_layout.addLayout(primary_drop_toolbar)
@@ -3624,7 +3642,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		work_shapes_section = QGroupBox("Work Shapes")
 		work_shapes_layout = QVBoxLayout(work_shapes_section)
+		self._compact_layout(work_shapes_layout, margin=self.COMPACT_MARGIN)
 		work_toolbar = QHBoxLayout()
+		self._compact_layout(work_toolbar)
 		#work_toolbar.addWidget(QLabel("Tools"))
 		self.work_add_button = QPushButton("Add")
 		self.work_add_button.setToolTip("Add a new work blendshape target")
@@ -3641,6 +3661,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.apply_work_shapes_button = QPushButton("Apply All")
 		self.apply_work_shapes_button.setToolTip("Apply changes to all linked work blendshape targets")
 		work_toolbar.addWidget(self.apply_work_shapes_button)
+		for button in (
+			self.work_add_button,
+			self.work_remove_button,
+			self.work_paint_button,
+			self.work_edit_mode_button,
+			self.apply_work_shapes_button,
+		):
+			self._prepare_toolbar_button(button)
 		work_toolbar.addStretch(1)
 		work_shapes_layout.addLayout(work_toolbar)
 		self.work_shapes_view = WorkShapesListView(
@@ -3667,6 +3695,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		active_shapes_section = QGroupBox("Active Shapes")
 		active_shapes_layout = QVBoxLayout(active_shapes_section)
+		self._compact_layout(active_shapes_layout, margin=self.COMPACT_MARGIN)
 		self.active_shapes_search = TokenSearchBar("Filter active shapes...")
 		active_shapes_layout.addWidget(self.active_shapes_search)
 		self.active_shapes_view = SliderListView()
@@ -3738,15 +3767,16 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _build_split_settings_tab(self, parent_widget: QWidget) -> None:
 		layout = QVBoxLayout(parent_widget)
-		layout.setContentsMargins(6, 6, 6, 6)
-		layout.setSpacing(0)
+		self._compact_layout(layout, margin=self.COMPACT_MARGIN)
 		split_settings_splitter = QSplitter(Qt.Horizontal)
 		split_settings_splitter.setChildrenCollapsible(False)
+		split_settings_splitter.setHandleWidth(2)
 		layout.addWidget(split_settings_splitter, 1)
 
 		primaries_group = QGroupBox("Primary Split Group Assignments")
 		self._allow_horizontal_collapse(primaries_group)
 		primaries_layout = QVBoxLayout(primaries_group)
+		self._compact_layout(primaries_layout, margin=self.COMPACT_MARGIN)
 		self.split_primary_search = TokenSearchBar("Search primaries...")
 		primaries_layout.addWidget(self.split_primary_search)
 		self.split_primaries_tree = SplitPrimaryAssignmentsView()
@@ -3756,7 +3786,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.split_primaries_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
 		self.split_primaries_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
 		self.split_primaries_tree.setIndentation(0)
-		self.split_primaries_tree.setStyleSheet("QTreeView::item { padding-top: 2px; padding-bottom: 2px; }")
+		self.split_primaries_tree.setStyleSheet("QTreeView::item { padding-top: 1px; padding-bottom: 1px; }")
 		self._split_primary_slider_delegate = SliderItemDelegate(self.split_primaries_tree)
 		self.split_primaries_tree.setItemDelegateForColumn(0, self._split_primary_slider_delegate)
 		primaries_layout.addWidget(self.split_primaries_tree, 1)
@@ -3767,25 +3797,27 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		right_column.setMaximumWidth(self.SPLIT_PANELS_MAX_WIDTH)
 		right_layout = QVBoxLayout(right_column)
 		right_layout.setContentsMargins(0, 0, 0, 0)
-		right_layout.setSpacing(8)
+		right_layout.setSpacing(self.COMPACT_SPACING)
 
 		split_groups_maps_splitter = QSplitter(Qt.Horizontal)
 		split_groups_maps_splitter.setChildrenCollapsible(False)
+		split_groups_maps_splitter.setHandleWidth(2)
 		right_layout.addWidget(split_groups_maps_splitter, 1)
 
 		split_groups_group = QGroupBox("Split Groups")
 		self._allow_horizontal_collapse(split_groups_group)
 		split_groups_layout = QHBoxLayout(split_groups_group)
+		self._compact_layout(split_groups_layout, margin=self.COMPACT_MARGIN)
 		split_groups_splitter = QSplitter(Qt.Horizontal)
 		split_groups_splitter.setChildrenCollapsible(False)
+		split_groups_splitter.setHandleWidth(2)
 		split_groups_layout.addWidget(split_groups_splitter, 1)
 		split_groups_maps_splitter.addWidget(split_groups_group)
 
 		split_group_controls_widget = QWidget()
 		self._allow_horizontal_collapse(split_group_controls_widget)
 		split_group_controls = QVBoxLayout(split_group_controls_widget)
-		split_group_controls.setContentsMargins(0, 0, 0, 0)
-		split_group_controls.setSpacing(4)
+		self._compact_layout(split_group_controls)
 		self.split_group_add_button = QPushButton("Add Group")
 		self.split_group_add_button.setIcon(ADD_ICON)
 		self.split_group_remove_button = QPushButton("Remove Group")
@@ -3804,9 +3836,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setToolTip(self._split_group_button_labels[button])
 			button.setMinimumWidth(0)
 			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setStyleSheet("text-align: left; padding-left: 2px;")
 			button.setIconSize(self._tools_panel_expanded_icon_size)
-			button.setFixedHeight(34)
+			button.setFixedHeight(26)
 			split_group_controls.addWidget(button)
 		split_group_controls.addStretch(1)
 		split_groups_splitter.addWidget(split_group_controls_widget)
@@ -3821,16 +3853,17 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_maps_browser_group = QGroupBox("Split Maps")
 		self._allow_horizontal_collapse(split_maps_browser_group)
 		split_maps_group_layout = QHBoxLayout(split_maps_browser_group)
+		self._compact_layout(split_maps_group_layout, margin=self.COMPACT_MARGIN)
 		split_maps_lists_splitter = QSplitter(Qt.Horizontal)
 		split_maps_lists_splitter.setChildrenCollapsible(False)
+		split_maps_lists_splitter.setHandleWidth(2)
 		split_maps_group_layout.addWidget(split_maps_lists_splitter, 1)
 		split_groups_maps_splitter.addWidget(split_maps_browser_group)
 
 		split_map_controls_widget = QWidget()
 		self._allow_horizontal_collapse(split_map_controls_widget)
 		split_map_controls = QVBoxLayout(split_map_controls_widget)
-		split_map_controls.setContentsMargins(0, 0, 0, 0)
-		split_map_controls.setSpacing(4)
+		self._compact_layout(split_map_controls)
 		self.split_map_add_button = QPushButton("Add Split Map")
 		self.split_map_add_button.setIcon(ADD_ICON)
 		self.split_map_rename_button = QPushButton("Rename Split Map")
@@ -3868,9 +3901,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setToolTip(self._split_map_button_labels[button])
 			button.setMinimumWidth(0)
 			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setStyleSheet("text-align: left; padding-left: 2px;")
 			button.setIconSize(self._tools_panel_expanded_icon_size)
-			button.setFixedHeight(34)
+			button.setFixedHeight(26)
 			split_map_controls.addWidget(button)
 		split_map_controls.addStretch(1)
 		split_maps_lists_splitter.addWidget(split_map_controls_widget)
@@ -3878,7 +3911,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_maps_browser_widget = QWidget()
 		self._allow_horizontal_collapse(split_maps_browser_widget)
 		split_maps_browser_layout = QVBoxLayout(split_maps_browser_widget)
-		split_maps_browser_layout.setContentsMargins(0, 0, 0, 0)
+		self._compact_layout(split_maps_browser_layout)
 		self.split_maps_list = SplitMapsTree()
 		self._allow_horizontal_collapse(self.split_maps_list)
 		self.split_maps_list.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -3913,14 +3946,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._split_map_editor_group_widget = split_maps_group
 		split_maps_group.setEnabled(False)
 		split_maps_layout = QVBoxLayout(split_maps_group)
+		self._compact_layout(split_maps_layout, margin=self.COMPACT_MARGIN)
 
 		split_map_weights_splitter = QSplitter(Qt.Horizontal)
 		split_map_weights_splitter.setChildrenCollapsible(False)
+		split_map_weights_splitter.setHandleWidth(2)
 		split_map_weight_controls_widget = QWidget()
 		self._allow_horizontal_collapse(split_map_weight_controls_widget)
 		split_map_weight_controls = QVBoxLayout(split_map_weight_controls_widget)
-		split_map_weight_controls.setContentsMargins(0, 0, 0, 0)
-		split_map_weight_controls.setSpacing(4)
+		self._compact_layout(split_map_weight_controls)
 		self._split_map_weight_buttons = [
 			self.split_map_edit_button,
 			self.split_map_weight_add_button,
@@ -3936,9 +3970,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setToolTip(self._split_map_weight_button_labels[button])
 			button.setMinimumWidth(0)
 			button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-			button.setStyleSheet("text-align: left; padding-left: 5px;")
+			button.setStyleSheet("text-align: left; padding-left: 2px;")
 			button.setIconSize(self._tools_panel_expanded_icon_size)
-			button.setFixedHeight(34)
+			button.setFixedHeight(26)
 			split_map_weight_controls.addWidget(button)
 		split_map_weight_controls.addStretch(1)
 		split_map_weights_splitter.addWidget(split_map_weight_controls_widget)
@@ -3947,7 +3981,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._allow_horizontal_collapse(split_map_weights_column_widget)
 		split_map_weights_column = QVBoxLayout()
 		split_map_weights_column_widget.setLayout(split_map_weights_column)
-		split_map_weights_column.setContentsMargins(0, 0, 0, 0)
+		self._compact_layout(split_map_weights_column)
 		self.split_map_weights_list = SplitMapWeightsList()
 		self._allow_horizontal_collapse(self.split_map_weights_list)
 		self.split_map_weights_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -3957,8 +3991,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._split_map_weight_slider_delegate = SplitMapWeightSliderDelegate(self.split_map_weights_list)
 		self.split_map_weights_list.setItemDelegate(self._split_map_weight_slider_delegate)
 		split_map_weight_operations = QHBoxLayout()
-		split_map_weight_operations.setContentsMargins(0, 0, 0, 4)
-		split_map_weight_operations.setSpacing(3)
+		self._compact_layout(split_map_weight_operations)
 		operation_specs = [
 			(SOFT_MOD_ICON, "Convert Soft Selection to Split Weight Map", "convert_soft_selection_to_edit_split_weight_map", "Converted soft selection to", False),
 			(COPY_WEIGHTS_ICON, "Copy Weight Map", "copy_edit_split_weight_map_values", "Copied", False),
@@ -3971,8 +4004,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		for icon, tooltip, method_name, status_verb, requires_copy in operation_specs:
 			button = QPushButton()
 			button.setIcon(icon)
-			button.setIconSize(self._tools_panel_compact_icon_size)
-			button.setFixedSize(34, 34)
+			button.setIconSize(self._tools_panel_expanded_icon_size)
+			button.setFixedSize(26, 26)
 			button.setToolTip(tooltip)
 			button.clicked.connect(
 				lambda _checked=False, method_name=method_name, status_verb=status_verb:
@@ -3986,7 +4019,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_map_weights_column.addLayout(split_map_weight_operations)
 		split_map_weights_column.addWidget(self.split_map_weights_list, 1)
 		split_map_edit_actions = QHBoxLayout()
-		split_map_edit_actions.setContentsMargins(0, 4, 0, 0)
+		self._compact_layout(split_map_edit_actions)
 		self.split_map_weight_apply_button.setToolTip("Apply split-map weight edits")
 		self.split_map_weight_cancel_button.setToolTip("Cancel split-map weight edits")
 		split_map_edit_actions.addWidget(self.split_map_weight_apply_button, 1)
@@ -4012,11 +4045,12 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._set_split_map_buttons_compact_mode(True)
 		self._set_split_map_weight_buttons_compact_mode(True)
 		split_groups_maps_splitter.setSizes([500, 500])
-		split_groups_splitter.setSizes([40, 500])
-		split_maps_lists_splitter.setSizes([40, 500])
-		split_map_weights_splitter.setSizes([40, 500])
+		split_groups_splitter.setSizes([30, 500])
+		split_maps_lists_splitter.setSizes([30, 500])
+		split_map_weights_splitter.setSizes([30, 500])
 
 		split_map_labels_layout = QHBoxLayout()
+		self._compact_layout(split_map_labels_layout)
 		self.split_map_weights_label = QLabel("Editing Split Map: None")
 		split_map_labels_layout.addWidget(self.split_map_weights_label)
 		split_maps_layout.addLayout(split_map_labels_layout)
@@ -4045,8 +4079,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				height: 0px;
 			}
 			QTreeView::item {
-				padding-top: 2px;
-				padding-bottom: 2px;
+				padding-top: 1px;
+				padding-bottom: 1px;
 			}
 			"""
 		)
@@ -4245,7 +4279,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _build_tools_panel(self, parent_layout) -> None:
 		tools_group = QGroupBox()
 		self._tools_group = tools_group
-		tools_group.setContentsMargins(2, 2, 2, 2)
+		tools_group.setContentsMargins(0, 0, 0, 0)
 		tools_group.setMinimumWidth(self._tools_panel_compact_width)
 		tools_group.setMaximumWidth(self._tools_panel_expanded_width)
 		tools_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -4257,7 +4291,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._tools_panel_sections = []
 		self._tools_panel_section_labels = {}
 		main_tools_layout = QVBoxLayout(tools_group)
-		main_tools_layout.setSpacing(10)
+		self._compact_layout(main_tools_layout, margin=self.COMPACT_MARGIN)
 		main_tools_layout.setSizeConstraint(QLayout.SetMinimumSize)
 
 		self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, track_enabled=False)
@@ -4312,6 +4346,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		main_tools_layout.addWidget(editor_frame_layout, 0)
 		main_tools_layout.addWidget(preview_shapes_frame_layout, 0)
 		main_tools_layout.addWidget(debug_shapes_frame_layout, 0)
+		for section in self._tools_panel_sections:
+			section.layout.setSpacing(0)
+			section.content_layout.setContentsMargins(0, 1, 0, 1)
+			section.content_layout.setSpacing(1)
 		main_tools_layout.addStretch(1)
 		self._set_tools_panel_compact_mode(True, force=True)
 		tools_group.setMinimumWidth(0)
@@ -4321,7 +4359,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _create_tool_button(self, label: str, icon: Optional[QIcon] = None, *, track_enabled: bool = True) -> QPushButton:
 		button = QPushButton(label)
-		button.setStyleSheet("text-align: left; padding-left: 5px;")
+		button.setStyleSheet("text-align: left; padding-left: 2px;")
 		if icon is not None:
 			button.setIcon(icon)
 			button.setIconSize(self._tools_panel_expanded_icon_size)
@@ -4518,7 +4556,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _on_split_groups_splitter_moved(self, pos: int, index: int) -> None:
 		if self._split_groups_splitter is None or index != 1:
 			return
-		compact_width = 40
+		compact_width = 30
 		expanded_width = self._split_group_buttons_expanded_width
 		compact = pos < (compact_width + expanded_width) // 2
 		self._set_split_group_buttons_compact_mode(compact)
@@ -4544,7 +4582,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setStyleSheet(
 				"text-align: center; padding-left: 0px;"
 				if compact
-				else "text-align: left; padding-left: 5px;"
+				else "text-align: left; padding-left: 2px;"
 			)
 			button.setIconSize(
 				self._tools_panel_compact_icon_size
@@ -4556,7 +4594,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _on_split_maps_splitter_moved(self, pos: int, index: int) -> None:
 		if self._split_maps_lists_splitter is None or index != 1:
 			return
-		compact_width = 40
+		compact_width = 30
 		expanded_width = self._split_map_buttons_expanded_width
 		compact = pos < (compact_width + expanded_width) // 2
 		self._set_split_map_buttons_compact_mode(compact)
@@ -4582,7 +4620,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setStyleSheet(
 				"text-align: center; padding-left: 0px;"
 				if compact
-				else "text-align: left; padding-left: 5px;"
+				else "text-align: left; padding-left: 2px;"
 			)
 			button.setIconSize(
 				self._tools_panel_compact_icon_size
@@ -4597,7 +4635,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		sizes = self._split_map_weights_splitter.sizes()
 		if len(sizes) < 2:
 			return
-		compact_width = 40
+		compact_width = 30
 		expanded_width = self._split_map_weight_buttons_expanded_width
 		compact = sizes[0] < (compact_width + expanded_width) // 2
 		self._set_split_map_weight_buttons_compact_mode(compact)
@@ -4625,7 +4663,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			button.setStyleSheet(
 				"text-align: center; padding-left: 0px;"
 				if compact
-				else "text-align: left; padding-left: 5px;"
+				else "text-align: left; padding-left: 2px;"
 			)
 			button.setIconSize(
 				self._tools_panel_compact_icon_size
@@ -4723,10 +4761,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				button.setText("")
 				button.setStyleSheet("text-align: center; padding-left: 0px;")
 				button.setIconSize(self._tools_panel_compact_icon_size)
-				button.setFixedHeight(34)
+				button.setFixedHeight(26)
 			else:
 				button.setText(label)
-				button.setStyleSheet("text-align: left; padding-left: 5px;")
+				button.setStyleSheet("text-align: left; padding-left: 2px;")
 				button.setIconSize(self._tools_panel_expanded_icon_size)
 				button.setMinimumHeight(0)
 				button.setMaximumHeight(16777215)
@@ -4745,7 +4783,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				title_button.setText(label)
 				title_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
 				title_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-				section.layout.setContentsMargins(3, 3, 3, 3)
+				section.layout.setContentsMargins(2, 2, 2, 2)
 
 	def _update_tools_button_panel(self) -> None:
 		activate = self.current_editor is not None
@@ -5969,14 +6007,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _create_menu_bar(self) -> None:
 		"""Create the top menu bar migrated from the legacy editor window."""
 		menu_widget = QWidget(self)
-		menu_widget.setFixedHeight(30)
+		menu_widget.setFixedHeight(24)
 		menu_layout = QHBoxLayout(menu_widget)
 		menu_layout.setContentsMargins(0, 0, 2, 0)
 		menu_layout.setSpacing(2)
 		menu_bar = QMenuBar(menu_widget)
 		menu_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 		menu_layout.addWidget(menu_bar, 1)
-		button_size = 26
+		button_size = 20
 		self.dock_toggle_button = QPushButton(menu_widget)
 		self.dock_toggle_button.setFixedSize(button_size, button_size)
 		self.dock_toggle_button.setIconSize(QSize(14, 14))
@@ -8194,7 +8232,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _on_exclusive_filter_toggled(self, checked: bool) -> None:
 		self._exclusive_primary_filter = bool(checked)
 		method_name = "Exclusive" if checked else "Standard"
-		self.primary_filter_button.setText(f"Filtering Method: {method_name}")
+		self.primary_filter_button.setText(f"Filtering: {method_name}")
 		self._on_primaries_selection_changed()
 
 	def _apply_primary_selection_shapes_filter(self, selected_names: Sequence[str]) -> None:
