@@ -1964,7 +1964,135 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
-        
+
+
+    def import_blendshape_node(self, import_path: str):
+        """
+        Import a blendshape node from a mb or ma file into the Blue Steel rig.
+        Parameters:
+            import_path (str): The path to the mb or ma file to import
+        Returns:
+            The name of the imported blendshape node
+        """
+        if not os.path.isfile(import_path):
+            raise ValueError(f"Import path '{import_path}' is not a valid file.")
+        extension = os.path.splitext(import_path)[1].lower()
+        file_types = {".ma": "mayaAscii", ".mb": "mayaBinary"}
+        if extension not in file_types:
+            raise ValueError("Import path must end with '.ma' or '.mb'.")
+        # importing the blendshape node
+        imported_nodes = cmds.file(
+            import_path,
+            i=True,
+            type=file_types[extension],
+            options="v=0",
+            returnNewNodes=True,
+            namespace="imported_blendshape",
+        )
+        # filtering the imported nodes to find the blendshape node
+        imported_blendshapes = [node for node in imported_nodes if cmds.nodeType(node) == "blendShape"]
+        if not imported_blendshapes:
+            raise ValueError(f"No blendshape node found in '{import_path}'.")
+        if len(imported_blendshapes) > 1:
+            raise ValueError(f"Multiple blendshape nodes found in '{import_path}'. Expected only one.")
+        return imported_blendshapes[0]
+
+    def create_absolute_delta_blendshape(self):
+        """
+        Create a new blendshape node that contains the absolute delta of the main blendshape.
+        Parameters:
+        Returns:
+            str: The name of the new blendshape node
+        """
+        # we need to duplicate the base mesh in neutral state.
+        neutral_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_neutralMesh")
+        blendshape_name = f"{self.editor_base_name}_absoluteDelta"
+        delta_blenshape = cmds.blendShape(neutral_mesh, name=blendshape_name)[0]
+        delta_blenshape = Blendshape(delta_blenshape)
+        # we need the shape names from the main blendshape
+        shapes = self.get_all_shapes()
+        for shape in shapes.sort_for_insertion():
+            self.set_shape_pose(shape)
+            delta_blenshape.add_target(weight_name=shape, target_object=self.base_mesh, disconnect_target=True)
+        return delta_blenshape.name
+    
+    def export_blendshape_node(self, blendshape_name: str, export_path: str):
+        """
+        Export the Blue Steel rig's blendshape node as a mb or ma file.
+        Parameters:
+            blendshape_name (str): The name of the blendshape node to export
+            export_path (str): The path to export the mb or ma file to
+        Returns:
+            None
+        """
+        if self.blendshape is None:
+            raise ValueError("Main blendshape not found.")
+
+        extension = os.path.splitext(export_path)[1].lower()
+        file_types = {".ma": "mayaAscii", ".mb": "mayaBinary"}
+        if extension not in file_types:
+            raise ValueError("Export path must end with '.ma' or '.mb'.")
+
+        original_selection = cmds.ls(selection=True, long=True) or []
+        was_container_member = blendshape_name in self.container.members
+        disconnected = []
+        try:
+            if was_container_member:
+                self.container.remove_member(blendshape_name)
+
+            incoming = cmds.listConnections(
+                blendshape_name,
+                source=True,
+                destination=False,
+                connections=True,
+                plugs=True,
+            ) or []
+            outgoing = cmds.listConnections(
+                blendshape_name,
+                source=False,
+                destination=True,
+                connections=True,
+                plugs=True,
+            ) or []
+
+            connections = []
+            connections.extend((incoming[i + 1], incoming[i]) for i in range(0, len(incoming), 2))
+            connections.extend((outgoing[i], outgoing[i + 1]) for i in range(0, len(outgoing), 2))
+            connections = list(dict.fromkeys(connections))
+
+            for source, destination in connections:
+                if not cmds.isConnected(source, destination):
+                    continue
+                cmds.disconnectAttr(source, destination)
+                disconnected.append((source, destination))
+            current_mid_layer_parent = self.blendshape.mid_layer_parent
+            self.blendshape.set_mid_layer_parent(0)
+            cmds.select(blendshape_name, replace=True)
+            print(f"Exporting blendshape node '{blendshape_name}' to '{export_path}'...")
+            cmds.file(
+                export_path,
+                force=True,
+                options="v=0",
+                type=file_types[extension],
+                exportSelected=True,
+            )
+        finally:
+            for source, destination in disconnected:
+                try:
+                    cmds.connectAttr(source, destination, force=True)
+                except Exception as e:
+                    print(f"Warning: Could not reconnect '{source}' to '{destination}'. Error: {e}")
+
+            if was_container_member:
+                self.container.add_member(blendshape_name)
+
+            if original_selection:
+                cmds.select(original_selection, replace=True)
+            else:
+                cmds.select(clear=True)
+            self.blendshape.set_mid_layer_parent(current_mid_layer_parent)
+
+
     @undoable
     def export_all_objs(self, export_directory: str, custom_mesh_name: str = None):
         """

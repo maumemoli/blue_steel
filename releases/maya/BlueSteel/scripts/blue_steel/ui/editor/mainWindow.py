@@ -3492,12 +3492,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		primaries_footer_layout = QVBoxLayout()
 		primaries_footer_layout.setContentsMargins(0, 0, 0, 0)
 		primaries_footer_layout.setSpacing(0)
-		self.remove_primaries_button = QPushButton("Remove Primaries")
-		self.remove_primaries_button.setIcon(DELETE_ICON)
-		self._prepare_toolbar_button(self.remove_primaries_button)
-		self.remove_primaries_button.setToolTip("Remove selected primaries and their dependent shapes")
-		self.tool_buttons.append(self.remove_primaries_button)
-		primaries_footer_layout.addWidget(self.remove_primaries_button)
 		self.primaries_info = QLabel("Items: 0")
 		primaries_footer_layout.addWidget(self.primaries_info)
 		primaries_layout.addLayout(primaries_footer_layout)
@@ -3600,11 +3594,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		shapes_footer_layout = QVBoxLayout()
 		shapes_footer_layout.setContentsMargins(0, 0, 0, 0)
 		shapes_footer_layout.setSpacing(0)
-		self.remove_shapes_button = QPushButton("Remove Shapes")
-		self.remove_shapes_button.setIcon(DELETE_ICON)
-		self._prepare_toolbar_button(self.remove_shapes_button)
-		self.tool_buttons.append(self.remove_shapes_button)
-		shapes_footer_layout.addWidget(self.remove_shapes_button)
 		self.shapes_info = QLabel("Items: 0")
 		shapes_footer_layout.addWidget(self.shapes_info)
 		shapes_layout.addLayout(shapes_footer_layout)
@@ -4320,9 +4309,13 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.add_selected_at_current_pose_button = self._create_tool_button("Add/Commit At Current Pose", ADD_AT_POSE_ICON)
 		self.add_selected_at_current_pose_button.setToolTip("Add the selected mesh at the current pose extrapolating the name from the active values in the controller.\nFor example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen\nIf no mesh is selected an empty shape will be added.")
 		self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON)
+		self.remove_shapes_button = self._create_tool_button("Remove Shapes", DELETE_ICON)
+		self.remove_shapes_button.setFocusPolicy(Qt.NoFocus)
+		self.remove_shapes_button.setToolTip("Remove the selection from the focused Primaries or Shapes list")
 		edit_shapes_frame_layout.addWidget(self.commit_shapes_button)
 		edit_shapes_frame_layout.addWidget(self.add_primary_button)
 		edit_shapes_frame_layout.addWidget(self.add_selected_at_current_pose_button)
+		edit_shapes_frame_layout.addWidget(self.remove_shapes_button)
 
 
 		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
@@ -4425,8 +4418,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.add_primary_button.clicked.connect(self._on_add_primary_clicked)
 		self.commit_shapes_button.clicked.connect(self.commit_selected)
 		self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
-		self.remove_primaries_button.clicked.connect(self.remove_selected_primaries)
-		self.remove_shapes_button.clicked.connect(self.remove_selected_shapes)
+		self.remove_shapes_button.clicked.connect(self.remove_shapes_from_focused_view)
 		self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
 		self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
 		self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
@@ -5813,6 +5805,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._set_status(f"Removed {len(removed_shapes)} shape(s) from '{self.current_editor.name}'.")
+
+	def remove_shapes_from_focused_view(self) -> None:
+		if self.primaries_view.hasFocus():
+			self.remove_selected_primaries()
+			return
+		if self.shapes_view.hasFocus():
+			self.remove_selected_shapes()
+			return
+		self._set_status("Focus the Primaries or Shapes list before removing shapes.", warning=True)
 
 	def remove_selected_primaries(self) -> None:
 		if self.current_editor is None:
