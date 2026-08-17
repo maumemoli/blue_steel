@@ -1357,7 +1357,7 @@ class BlueSteelEditor(object):
         self.sync_network()
 
 
-    def commit_shape(self, shape_name: str, mesh: str):
+    def commit_shape(self, shape_name: str, mesh: str, invert_shape: bool = True):
         """
         Commit a single shape to the Blue Steel rig.
         Parameters:
@@ -1375,12 +1375,12 @@ class BlueSteelEditor(object):
         # next_shape_type = sorted_shapes[i+1].type if i < len(sorted_shapes)-1 else None
         # we need to check what kind of shape it is and if it needs to be extracted
         if shape.type == "PrimaryShape":
-            self.add_primary_shape(mesh, shape)
+            self.add_primary_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
         elif shape.type == "InbetweenShape":
             # setting the pose of the rig to the inbetween shape
-            self.add_inbetween_shape(mesh, shape)
+            self.add_inbetween_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
         elif shape.type in ["ComboShape", "ComboInbetweenShape"]:
-            self.add_combo_shape(mesh, shape)
+            self.add_combo_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
         return shape
 
     def add_selected_at_current_pose(self):
@@ -1526,7 +1526,7 @@ class BlueSteelEditor(object):
 
     @pause_shape_editor
     @undoable
-    def commit_shapes(self, selected: list, close_shape_editor: bool = True):
+    def commit_shapes(self, selected: list):
         """
         Commit the selected shapes to the Blue Steel rig.
         Parameters:
@@ -1964,8 +1964,69 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
+    def ingest_shapes_from_blendshape_node(self, blendshape_node: str, absolute_delta: bool = False):
+        """
+        Ingest shapes from a blendshape node into the Blue Steel rig.
+        Parameters:
+            blendshape_node (str): The name of the blendshape node to ingest
+            absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
+        Returns:
+            None
+        """
+        # we need to create a commit mesh and link it to the blendshape node.
+        commit_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_commitMesh")
+        
+        temp_blendshape = cmds.blendShape(commit_mesh, name=f"{self.editor_base_name}_tempBlendshape")[0]
+        cmds.delete(temp_blendshape)
+        commit_mesh_shape, commit_mesh_origin = cmds.listRelatives(commit_mesh, shapes=True, fullPath=True) or []
+        cmds.connectAttr(f"{blendshape_node}.outputGeometry[0]", f"{commit_mesh_shape}.inMesh", force=True)
+        cmds.connectAttr(f"{commit_mesh_origin}.worldMesh[0]", f"{blendshape_node}.input[0].inputGeometry", force=True)
+        # CaesarSkin_commitMeshShapeOrig.outMesh to CaesarSkin_tempBlendshape.originalGeometry
+        cmds.connectAttr(f"{commit_mesh_origin}.outMesh", f"{blendshape_node}.originalGeometry[0]", force=True)
+        delta_blendshape = Blendshape(blendshape_node)
+        # let's get the weights from the blendshape node and build a network to see if there are invalid shapes.
+        network = Network()
+        shapes_names = utilities.sort_for_insertion(delta_blendshape.get_weights(), self.separator)
+        for weight in shapes_names:
+            # we also make sure the weights are all at 0
+            delta_blendshape.set_weight_value(weight, 0.0)
+            shape = network.create_shape(weight)
+            network.add_shape(shape)
+        if network.get_invalid_shapes():
+            raise ValueError(f"Blendshape node '{blendshape_node}' contains invalid shape names: {network.get_invalid_shapes()}")
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        total_shapes = len(shapes_names)
+        try:
+            # --- Start the progress bar ---
+            cmds.progressBar(gMainProgressBar, edit=True,
+                            beginProgress=True,
+                            isInterruptable=True,
+                            status=f'Processing {total_shapes} shapes...',
+                            maxValue=total_shapes)
 
 
+            for weight in shapes_names:
+                # we need to advance the progress bar for each shape
+                cmds.progressBar(gMainProgressBar,
+                                 edit=True,
+                                 step=1,
+                                 status=f'Committing shape: {weight}...')
+                delta_blendshape.set_weight_value(weight, 1.0)
+                self.commit_shape(weight, commit_mesh, invert_shape=absolute_delta)
+                delta_blendshape.set_weight_value(weight, 0.0)
+        except Exception as e:
+            print("="*60)
+            print(f"Error committing shape selected meshes:")
+            traceback.print_exc()
+            print("="*60)
+        finally:
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            cmds.disconnectAttr(f"{delta_blendshape.name}.outputGeometry[0]", f"{commit_mesh_shape}.inMesh")
+            cmds.disconnectAttr(f"{commit_mesh_origin}.worldMesh[0]", f"{blendshape_node}.input[0].inputGeometry")
+            cmds.disconnectAttr(f"{commit_mesh_origin}.outMesh", f"{blendshape_node}.originalGeometry[0]")
+            cmds.delete(commit_mesh)
+            
+        
     def import_blendshape_node(self, import_path: str):
         """
         Import a blendshape node from a mb or ma file into the Blue Steel rig.
@@ -2011,10 +2072,31 @@ class BlueSteelEditor(object):
         delta_blenshape = Blendshape(delta_blenshape)
         # we need the shape names from the main blendshape
         shapes = self.get_all_shapes()
-        for shape in shapes.sort_for_insertion():
-            self.set_shape_pose(shape)
-            delta_blenshape.add_target(weight_name=shape, target_object=self.base_mesh, disconnect_target=True)
-        return delta_blenshape.name
+        # we need to create a progress bar for the shape insertion
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        total_shapes = len(shapes)
+        try:
+                # --- Start the progress bar ---
+                cmds.progressBar(gMainProgressBar, edit=True,
+                                beginProgress=True,
+                                isInterruptable=True,
+                                status=f'Processing {total_shapes} shapes...',
+                                maxValue=total_shapes)
+                for i, shape in enumerate(shapes.sort_for_insertion(), start=1):
+                    self.set_shape_pose(shape)
+                    delta_blenshape.add_target(weight_name=shape, target_object=self.base_mesh, disconnect_target=True)
+                    cmds.progressBar(gMainProgressBar, edit=True, step=1, status=f'Processing {i}/{total_shapes} shapes...')
+        except Exception as e:
+            print("="*60)
+            print(f"Error committing shape selected meshes:")
+            traceback.print_exc()
+            print("="*60)
+        # we can disconnect the neutral mesh and get rid of it.
+        finally:
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            cmds.disconnectAttr(f"{delta_blenshape.name}.outputGeometry[0]", f"{neutral_mesh}.inMesh")
+            cmds.delete(neutral_mesh)
+            return delta_blenshape.name
     
     def export_blendshape_node(self, blendshape_name: str, export_path: str):
         """
@@ -2374,12 +2456,13 @@ class BlueSteelEditor(object):
         """
         return self.network.get_shape(shape_name)
 
-    def add_primary_shape(self, mesh: str, shape: Shape):
+    def add_primary_shape(self, mesh: str, shape: Shape, invert_shape: bool = True):
         """
         Add a primary shape to the Blue Steel rig.
         Parameters:
-            shape_name (str): The name of the shape to add
-            split_maps (list): A list of SplitMap instances to use for the shape
+            mesh (str): The name of the mesh to add the shape to
+            shape (Shape): The shape instance to add
+            invert_shape (bool): Whether to invert the shape
         Returns:
             Either if the shape was ADDED or UPDATED.
         """
@@ -2417,22 +2500,22 @@ class BlueSteelEditor(object):
             # will add a split attribute to the shape to store the split maps
             self.add_primary_split_map_attribute(shape)
             self.set_shape_pose(shape)
-            inverted_shape = cmds.invertShape(self.base_mesh, mesh)
-            self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
-            cmds.delete(inverted_shape)
-
         else:
             w = self.blendshape.get_weight_by_name(shape)
                     # we need to reset the delta of the shape before extracting the combo shape
             self.blendshape.reset_target(weight=w)
             self.set_shape_pose(shape)
+            if VERBOSE:
+                print(f"Updating existing {shape.type} shape {shape}")
+            return_value = "UPDATED"
+        if invert_shape:
             # extracting the combo shape
             inverted_shape = cmds.invertShape(self.base_mesh, mesh)
             self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
             cmds.delete(inverted_shape)
-            if VERBOSE:
-                print(f"Updating existing {shape.type} shape {shape}")
-            return_value = "UPDATED"
+        else:
+            self.blendshape.connect_mesh_to_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
         shape.weight_id = w.id
         self.network.add_shape(shape)
         # we will set the shape now
@@ -2595,13 +2678,15 @@ class BlueSteelEditor(object):
             self.blendshape.reset_target(weight=w, use_api=False)  
 
 
-    def add_inbetween_shape(self, mesh: str, shape: Shape):
+    def add_inbetween_shape(self, mesh: str, shape: Shape, invert_shape: bool = True):
         """
         Add an inbetween shape to the Blue Steel rig.
         Parameters:
-            shape_name (str): The name of the shape to add
+            mesh (str): The name of the mesh to add the shape to
+            shape (Shape): The shape to add
+            invert_shape (bool): Whether to invert the shape
         Returns:
-            Either if the shape was ADDED or UPDATED.
+            str: Either "ADDED" if the shape was added or "UPDATED" if the shape was updated.
         """
         if mesh is None or not cmds.objExists(mesh):
             mesh = self.base_mesh
@@ -2644,16 +2729,20 @@ class BlueSteelEditor(object):
         # setting the pose of the rig to the inbetween shape
         self.set_shape_pose(shape)
         # extracting the inbetween shape
-        inverted_shape = cmds.invertShape(self.base_mesh, mesh)
-        self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
-        cmds.delete(inverted_shape)
+        if invert_shape:
+            inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+            self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+            cmds.delete(inverted_shape)
+        else:
+            self.blendshape.connect_mesh_to_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
         return return_value
 
-    def add_combo_shape(self, mesh: str, shape: Shape):
+    def add_combo_shape(self, mesh: str, shape: Shape, invert_shape: bool = True):
         """
         Add a combo shape to the Blue Steel rig.
         Parameters:
-            shape_name (str): The name of the shape to add
+            shape (Shape): The shape to add
         Returns:
             Either if the shape was ADDED or UPDATED.
         """
@@ -2692,10 +2781,14 @@ class BlueSteelEditor(object):
         self.network.add_shape(shape)
         # we need to reset the delta of the shape before extracting the combo shape
         self.blendshape.reset_target(weight=w)
-        # extracting the combo shape
-        inverted_shape = cmds.invertShape(self.base_mesh, mesh)
-        self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
-        cmds.delete(inverted_shape)
+        if invert_shape:
+            # extracting the combo shape
+            inverted_shape = cmds.invertShape(self.base_mesh, mesh)
+            self.blendshape.connect_mesh_to_target(w.id, inverted_shape)
+            cmds.delete(inverted_shape)
+        else:
+            self.blendshape.connect_mesh_to_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
         return return_value
 
     def add_split_map_attribute_group(self, group_name: str):
