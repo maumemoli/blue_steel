@@ -2058,6 +2058,40 @@ class BlueSteelEditor(object):
             raise ValueError(f"Multiple blendshape nodes found in '{import_path}'. Expected only one.")
         return imported_blendshapes[0]
 
+    def import_shapes_from_blendshape_node(self, import_path: str, absolute_delta: bool = False):
+        """
+        Import shapes from a blendshape node in a mb or ma file into the Blue Steel rig.
+        Parameters:
+            import_path (str): The path to the mb or ma file to import
+            absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
+        """
+        blendshape_node = self.import_blendshape_node(import_path)
+        self.ingest_shapes_from_blendshape_node(blendshape_node, absolute_delta=absolute_delta)
+        # we can delete the imported blendshape node now
+        cmds.delete(blendshape_node)
+
+    def export_shapes_as_blendshape_node(self, export_path: str, absolute_delta: bool = False):
+        """
+        Export the Blue Steel rig's shapes as a blendshape node in a mb or ma file.
+        Parameters:
+            export_path (str): The path to export the mb or ma file to
+            absolute_delta (bool): Whether to export the blendshape node as an absolute delta
+        """
+        if self.blendshape is None:
+            raise ValueError("Main blendshape not found.")
+
+        # we need to make sure that the folders of the export path exist
+        os.makedirs(os.path.dirname(export_path), exist_ok=True)
+        if absolute_delta:
+            absolute_blendshape = self.create_absolute_delta_blendshape()
+            self.export_blendshape_node(absolute_blendshape, export_path)
+            cmds.delete(absolute_blendshape)
+        else:
+            blendshape_name = self.blendshape.name
+            self.export_blendshape_node(blendshape_name, export_path)
+
+
+
     def create_absolute_delta_blendshape(self):
         """
         Create a new blendshape node that contains the absolute delta of the main blendshape.
@@ -2096,7 +2130,7 @@ class BlueSteelEditor(object):
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
             cmds.disconnectAttr(f"{delta_blenshape.name}.outputGeometry[0]", f"{neutral_mesh}.inMesh")
             cmds.delete(neutral_mesh)
-            return delta_blenshape.name
+        return delta_blenshape.name
     
     def export_blendshape_node(self, blendshape_name: str, export_path: str):
         """
@@ -2515,7 +2549,7 @@ class BlueSteelEditor(object):
             cmds.delete(inverted_shape)
         else:
             self.blendshape.connect_mesh_to_target(w.id, mesh)
-            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id)
         shape.weight_id = w.id
         self.network.add_shape(shape)
         # we will set the shape now
@@ -2735,7 +2769,7 @@ class BlueSteelEditor(object):
             cmds.delete(inverted_shape)
         else:
             self.blendshape.connect_mesh_to_target(w.id, mesh)
-            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id)
         return return_value
 
     def add_combo_shape(self, mesh: str, shape: Shape, invert_shape: bool = True):
@@ -2788,7 +2822,7 @@ class BlueSteelEditor(object):
             cmds.delete(inverted_shape)
         else:
             self.blendshape.connect_mesh_to_target(w.id, mesh)
-            self.blendshape.disconnect_mesh_from_target(w.id, mesh)
+            self.blendshape.disconnect_mesh_from_target(w.id)
         return return_value
 
     def add_split_map_attribute_group(self, group_name: str):

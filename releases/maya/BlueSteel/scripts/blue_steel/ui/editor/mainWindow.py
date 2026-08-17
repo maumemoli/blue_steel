@@ -3212,6 +3212,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.convert_simplex_action: Optional[QAction] = None
 		self.connect_simplex_controllers_action: Optional[QAction] = None
 		self.prepare_for_publishing_action: Optional[QAction] = None
+		self.blendshape_node_io_actions: List[QAction] = []
 		self._workshape_rename_editor: Optional[QLineEdit] = None
 		self._workshape_rename_old_name: str = ""
 		self._primary_rename_editor: Optional[QLineEdit] = None
@@ -4793,6 +4794,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self.connect_simplex_controllers_action.setEnabled(activate)
 		if self.prepare_for_publishing_action is not None:
 			self.prepare_for_publishing_action.setEnabled(activate)
+		for action in self.blendshape_node_io_actions:
+			action.setEnabled(activate)
 		if self.main_tabs is not None:
 			self.main_tabs.setTabEnabled(1, activate)
 
@@ -6049,11 +6052,31 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		import_objs_action = QAction("Import Objs", self)
 		import_objs_action.triggered.connect(self._import_objs)
 		import_menu.addAction(import_objs_action)
+		import_blendshape_node_menu = import_menu.addMenu("Import From BlendShape Node")
+		import_blendshape_node_action = QAction("Relative Shapes", self)
+		import_blendshape_node_action.triggered.connect(lambda _checked=False: self._import_shapes_from_blendshape_node(absolute_delta=False))
+		import_blendshape_node_menu.addAction(import_blendshape_node_action)
+		import_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
+		import_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._import_shapes_from_blendshape_node(absolute_delta=True))
+		import_blendshape_node_menu.addAction(import_absolute_blendshape_node_action)
 
 		export_menu = file_menu.addMenu("Export")
 		export_objs_action = QAction("Export Objs", self)
 		export_objs_action.triggered.connect(self._export_objs)
 		export_menu.addAction(export_objs_action)
+		export_blendshape_node_menu = export_menu.addMenu("Export To BlendShape Node")
+		export_blendshape_node_action = QAction("Relative Shapes", self)
+		export_blendshape_node_action.triggered.connect(lambda _checked=False: self._export_shapes_as_blendshape_node(absolute_delta=False))
+		export_blendshape_node_menu.addAction(export_blendshape_node_action)
+		export_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
+		export_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._export_shapes_as_blendshape_node(absolute_delta=True))
+		export_blendshape_node_menu.addAction(export_absolute_blendshape_node_action)
+		self.blendshape_node_io_actions = [
+			import_blendshape_node_action,
+			import_absolute_blendshape_node_action,
+			export_blendshape_node_action,
+			export_absolute_blendshape_node_action,
+		]
 
 		utilities_menu = menu_bar.addMenu("Utilities")
 		self.rename_editor_action = QAction("Rename Editor", self)
@@ -6168,6 +6191,36 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._reload_shapes_from_editor()
 		self._reload_editor_menu()
 		self._set_status(f"Imported all OBJs from '{directory}' as shapes.")
+
+	def _import_shapes_from_blendshape_node(self, absolute_delta: bool = False) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		delta_label = "Absolute" if absolute_delta else "Relative"
+		import_path, _selected_filter = QFileDialog.getOpenFileName(
+			self,
+			f"Import {delta_label} Shapes From BlendShape Node",
+			"",
+			"Maya Files (*.ma *.mb);;Maya ASCII (*.ma);;Maya Binary (*.mb)",
+		)
+		if not import_path:
+			self._set_status("Import cancelled.")
+			return
+
+		self._clear_trackers_for_scene_operation()
+		try:
+			self.current_editor.import_shapes_from_blendshape_node(import_path, absolute_delta=absolute_delta)
+		except Exception as exc:
+			self._set_status(f"Error importing shapes from blendshape node: {exc}", error=True)
+			return
+		finally:
+			self._restart_trackers_after_scene_operation()
+
+		self._reload_shapes_from_editor()
+		self._reload_editor_menu()
+		delta_label = "absolute" if absolute_delta else "relative"
+		self._set_status(f"Imported shapes from '{import_path}' as {delta_label} deltas.")
 
 	def _import_split_data(self) -> None:
 		if self.current_editor is None:
@@ -6309,6 +6362,36 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		self._reload_shapes_from_editor()
 		self._set_status(f"Exported all shapes as OBJs to '{directory}'.")
+
+	def _export_shapes_as_blendshape_node(self, absolute_delta: bool = False) -> None:
+		if self.current_editor is None:
+			self._set_status("No system selected.", warning=True)
+			return
+
+		delta_label = "Absolute" if absolute_delta else "Relative"
+		export_path, _selected_filter = QFileDialog.getSaveFileName(
+			self,
+			f"Export {delta_label} Shapes To BlendShape Node",
+			f"{self.current_editor.name}.mb",
+			"Maya Binary (*.mb);;Maya ASCII (*.ma);;Maya Files (*.ma *.mb)",
+		)
+		if not export_path:
+			self._set_status("Export cancelled.")
+			return
+		if os.path.splitext(export_path)[1].lower() not in (".ma", ".mb"):
+			export_path += ".mb"
+
+		self._clear_trackers_for_scene_operation()
+		try:
+			self.current_editor.export_shapes_as_blendshape_node(export_path, absolute_delta=absolute_delta)
+		except Exception as exc:
+			self._set_status(f"Error exporting shapes as blendshape node: {exc}", error=True)
+			return
+		finally:
+			self._restart_trackers_after_scene_operation()
+
+		delta_label = "absolute" if absolute_delta else "relative"
+		self._set_status(f"Exported {delta_label} shapes as a blendshape node to '{export_path}'.")
 
 	def _rename_current_editor(self) -> None:
 		if self.current_editor is None:
