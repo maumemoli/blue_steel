@@ -74,6 +74,7 @@ class BlueSteelEditor(object):
     PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
     COMBO_SHAPES_GRP_NAME = "Combos_GRP"
     INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
+    CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER = "customShapesColor"
     def __init__(self, container, separator=SEPARATOR):
         if not cmds.objExists(container):
             raise ValueError(f"Container '{container}' does not exist.")
@@ -143,6 +144,8 @@ class BlueSteelEditor(object):
         self.sync_up_muted_shapes()
         self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
         self._sync_up_split_maps_attributes()
+        # custom coloring for the shapes
+        self._add_custom_shapes_color_attribute()
         # make sure the split map edit mesh is hidden when the editor is initialized
         self.switch_visibility_to_split_map_edit_mesh(False)
         self._get_skin_cluster()
@@ -3239,6 +3242,65 @@ class BlueSteelEditor(object):
         cmds.delete(self.container.name)
         
         # we need to pull out the 
+
+    # CUSTOM SHAPES COLORING
+    def _add_custom_shapes_color_attribute(self):
+        """Add a custom attribute to the container to store the custom shapes color.
+        The attribute is a JSON string mapping shape names to colors in the format "#RRGGBB".
+        """
+        if not cmds.attributeQuery(self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
+            cmds.addAttr(self.container.name, longName=self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, dataType="string")
+            cmds.setAttr(f"{self.container.name}.{self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER}", "", type="string")
+
+    def read_custom_shapes_colors(self) -> dict:
+        """ Reads the custom shapes color attribute string and returns adictionary
+        with the name of the shape as key and the color as value in the format "#RRGGBB"
+        Returns:
+            dict: A dictionary with the name of the shape as key and the color as value in the format "#RRGGBB"
+        """
+        color_attr = self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
+        if not cmds.attributeQuery(color_attr, node=self.container.name, exists=True):
+            return {}
+        color_dict = attrUtils.read_json_attr(self.container.name, color_attr) or {}
+        return color_dict
+
+    def write_custom_shapes_colors(self, color_dict: dict):
+        """ Writes the custom shapes color attribute string from a dictionary
+        with the name of the shape as key and the color as value in the format "#RRGGBB"
+        Parameters:
+            color_dict (dict): A dictionary with the name of the shape as key and the color as value in the format "#RRGGBB"
+        """
+        color_attr = self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
+        if not cmds.attributeQuery(color_attr, node=self.container.name, exists=True):
+            self._add_custom_shapes_color_attribute()
+        attrUtils.write_json_attr(self.container.name, color_attr, color_dict)
+
+    def clear_custom_shapes_colors(self):
+        """ Clear the custom shapes color attribute string
+        """
+        self.write_custom_shapes_colors({})
+
+    def set_shape_custom_color(self, shape_name: str, color: str):
+        """Set a custom color for a shape.
+        Parameters:
+            shape_name (str): The name of the shape to set the color for.
+            color (str): A string with the color in the format "#RRGGBB".
+        """
+        if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
+            raise ValueError("Color must be a string in the format '#RRGGBB'")
+        color_dict = self.read_custom_shapes_colors()
+        color_dict[shape_name] = color
+        self.write_custom_shapes_colors(color_dict)
+
+    def remove_shape_custom_color(self, shape_name: str):
+        """Remove a custom color for a shape.
+        Parameters:
+            shape_name (str): The name of the shape to remove the color for.
+        """
+        color_dict = self.read_custom_shapes_colors()
+        if shape_name in color_dict:
+            del color_dict[shape_name]
+            self.write_custom_shapes_colors(color_dict)
 
     # SPLIT MAPS
     def _sync_up_split_maps_attributes(self):

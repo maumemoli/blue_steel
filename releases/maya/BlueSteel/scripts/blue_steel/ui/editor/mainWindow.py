@@ -177,6 +177,37 @@ def _normalized_search_terms(terms) -> List[str]:
 	return [str(term).strip().lower() for term in (terms or []) if str(term).strip()]
 
 
+SHAPE_CUSTOM_COLORS = {
+	"Red": "#e74c3c",
+	"Blue": "#4a90d9",
+	"Green": "#4ba66d",
+	"Yellow": "#f1c40f",
+	"Pink": "#e84393",
+	"Purple": "#9b59b6",
+}
+
+
+def _color_swatch_icon(color_hex: str, size: int = 14) -> QIcon:
+	"""Create a solid color swatch icon for a menu action."""
+	pixmap = QPixmap(size, size)
+	pixmap.fill(QColor(color_hex))
+	return QIcon(pixmap)
+
+
+def _shape_custom_color_to_qcolor(value) -> Optional[QColor]:
+	"""Convert a stored custom color ("#RRGGBB" or legacy [R, G, B]) to a QColor."""
+	if isinstance(value, str):
+		color = QColor(value)
+	elif isinstance(value, (list, tuple)) and len(value) == 3:
+		try:
+			color = QColor(*[int(component) for component in value])
+		except (TypeError, ValueError):
+			return None
+	else:
+		return None
+	return color if color.isValid() else None
+
+
 class TokenSearchBar(QWidget):
 	"""Search field that commits Enter-separated terms as removable tokens."""
 
@@ -637,6 +668,7 @@ class ShapeItemsModel(QAbstractListModel):
 	DownstreamRelatedRole = Qt.UserRole + 12
 	LockedRole = Qt.UserRole + 13
 	LockIconVisibleRole = Qt.UserRole + 14
+	ColorRole = Qt.UserRole + 15
 
 	primaryValueCommitted = Signal(str, float)
 
@@ -673,6 +705,7 @@ class ShapeItemsModel(QAbstractListModel):
 			self.DownstreamRelatedRole: b"downstreamRelated",
 			self.LockedRole: b"locked",
 			self.LockIconVisibleRole: b"lockIconVisible",
+			self.ColorRole: b"customColor",
 		}
 
 	def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
@@ -708,6 +741,8 @@ class ShapeItemsModel(QAbstractListModel):
 			return bool(row.get("locked", False))
 		if role == self.LockIconVisibleRole:
 			return bool(row.get("lock_icon_visible", False))
+		if role == self.ColorRole:
+			return row.get("color", None)
 		if role == Qt.ToolTipRole:
 			return row.get("tooltip", None)
 		return None
@@ -781,6 +816,7 @@ class ShapeItemsModel(QAbstractListModel):
 		weights = editor.blendshape.get_weights() or set()
 		weight_by_name = {str(weight): weight for weight in weights}
 		locked_shape_names = {str(name) for name in (getattr(editor, "locked_shapes", set()) or set())}
+		custom_colors = editor.read_custom_shapes_colors() or {}
 
 		valid_shapes = [shape for shape in all_shapes if shape.type != "InvalidShape"]
 		level_counts: Dict[int, int] = {}
@@ -814,6 +850,7 @@ class ShapeItemsModel(QAbstractListModel):
 			weight = weight_by_name.get(str(shape))
 			value = editor.blendshape.get_weight_value(weight) if weight is not None else 0.0
 			primaries = tuple(str(primary) for primary in shape.primaries)
+			custom_color = custom_colors.get(str(shape))
 			row_data = {
 				"name": str(shape),
 				"type": shape.type,
@@ -827,6 +864,7 @@ class ShapeItemsModel(QAbstractListModel):
 				"header_level": level,
 				"locked": str(shape) in locked_shape_names,
 				"lock_icon_visible": shape.type != "PrimaryShape",
+				"color": _shape_custom_color_to_qcolor(custom_color),
 			}
 			self._row_by_name[row_data["name"]] = len(self._rows)
 			self._rows.append(row_data)
@@ -904,6 +942,16 @@ class ShapeItemsModel(QAbstractListModel):
 		row["locked"] = target
 		model_index = self.index(row_index, 0)
 		self.dataChanged.emit(model_index, model_index, [self.LockedRole, Qt.DisplayRole])
+
+	def set_shape_color_local(self, shape_name: str, color: Optional[QColor]) -> None:
+		"""Update the custom text color in-model without forcing a full rebuild."""
+		row_index = self._row_by_name.get(shape_name)
+		if row_index is None:
+			return
+		row = self._rows[row_index]
+		row["color"] = color
+		model_index = self.index(row_index, 0)
+		self.dataChanged.emit(model_index, model_index, [self.ColorRole, Qt.DisplayRole])
 
 	def refresh_locked_states_from_editor(self) -> int:
 		"""Sync lock flags for all non-header rows from editor lock state."""
@@ -1010,6 +1058,9 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		self._visible_names: Optional[Set[str]] = None
 		self._active_only = False
 		self._collapsed_levels: Set[int] = set()
+		self._color_filter_hexes: Optional[Set[str]] = None
+		self._color_filter_include_no_color = False
+		self._color_filter_enabled = False
 		self._sort_order = Qt.AscendingOrder
 		self._level_visible_count_cache: Dict[int, int] = {}
 		self._with_value_epsilon = 1e-6
@@ -1049,6 +1100,11 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		self._invalidate_level_count_cache()
 		# Re-filter only for proxies where row visibility depends on values.
 		# This is mainly the active-only panel; throttle to keep slider drags smooth.
+		if self._color_filter_enabled and (
+			(not roles) or (ShapeItemsModel.ColorRole in roles) or (Qt.DisplayRole in roles)
+		):
+			self._filter_invalidate_timer.start()
+			return
 		if not self._active_only:
 			return
 		if (not roles) or (ShapeItemsModel.ValueRole in roles) or (Qt.DisplayRole in roles):
@@ -1111,6 +1167,22 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		self._invalidate_level_count_cache()
 		self.invalidateFilter()
 
+	def set_color_filter(self, color_hexes: Optional[Set[str]], include_no_color: bool = False) -> None:
+		"""Filter rows by custom shape colors; pass color_hexes=None to disable."""
+		if color_hexes is None:
+			self._color_filter_enabled = False
+			self._color_filter_hexes = None
+			self._color_filter_include_no_color = False
+		else:
+			self._color_filter_enabled = True
+			self._color_filter_hexes = {QColor(str(color_hex)).name() for color_hex in color_hexes}
+			self._color_filter_include_no_color = bool(include_no_color)
+		self._invalidate_level_count_cache()
+		self.invalidateFilter()
+
+	def color_filter_active(self) -> bool:
+		return self._color_filter_enabled
+
 	def toggle_level_collapsed(self, level: int) -> None:
 		level = int(level)
 		if level in self._collapsed_levels:
@@ -1134,6 +1206,13 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 		if self._active_only:
 			value = float(model.data(index, ShapeItemsModel.ValueRole) or 0.0)
 			if value <= self._with_value_epsilon:
+				return False
+		if self._color_filter_enabled:
+			row_color = model.data(index, ShapeItemsModel.ColorRole)
+			if isinstance(row_color, QColor) and row_color.isValid():
+				if row_color.name() not in (self._color_filter_hexes or set()):
+					return False
+			elif not self._color_filter_include_no_color:
 				return False
 
 		if not self._selected_primaries:
@@ -2108,6 +2187,9 @@ class SliderItemDelegate(QStyledItemDelegate):
 			progress_rect = QRect(track_rect.left(), track_rect.top(), progress_width, track_rect.height())
 			painter.fillRect(progress_rect, fill_color)
 
+		custom_color = model.data(index, ShapeItemsModel.ColorRole)
+		if isinstance(custom_color, QColor) and custom_color.isValid():
+			name_text_color = custom_color
 		if muted:
 			name_text_color = QColor("gray")
 		if in_edit_mode:
@@ -3570,26 +3652,80 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_upstream_button.setChecked(False)
 		shapes_header_layout.addWidget(self.shapes_upstream_button, 1)
 
-		self.shapes_highlight_related_button = QPushButton("Highlight Related")
-		self._prepare_toolbar_button(self.shapes_highlight_related_button)
-		self.shapes_highlight_related_button.setIcon(HIGHLIGHT_ICON)
-		self.shapes_highlight_related_button.setIconSize(QSize(24, 24))
-		self.shapes_highlight_related_button.setToolTip("When enabled, highlight upstream/downstream related shapes on selection")
-		self.shapes_highlight_related_button.setCheckable(True)
-		self.shapes_highlight_related_button.setChecked(False)
-		shapes_header_layout.addWidget(self.shapes_highlight_related_button, 1)
 		self._shapes_header_buttons = [
 			self.shapes_auto_pose_button,
 			self.shapes_list_active_button,
 			self.shapes_downstream_button,
 			self.shapes_upstream_button,
-			self.shapes_highlight_related_button,
 		]
 		self._shapes_header_button_labels = {
 			button: button.text() for button in self._shapes_header_buttons
 		}
 		self._shapes_header_full_width = sum(button.sizeHint().width() for button in self._shapes_header_buttons)
 		shapes_layout.addLayout(shapes_header_layout)
+
+		# Color filter swatch row: six colors + a "no color" swatch, all toggleable.
+		color_filter_row = QHBoxLayout()
+		color_filter_row.setContentsMargins(0, 0, 0, 0)
+		color_filter_row.setSpacing(0)
+		# Non-interactive label styled like the swatch buttons.
+		filter_label = QPushButton("COLOR FILTER:")
+		filter_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+		filter_label.setFocusPolicy(Qt.NoFocus)
+		filter_label.setStyleSheet(
+			"QPushButton { border: 1px solid #222; border-radius: 2px; padding: 0 6px; }"
+		)
+		# Pin the width to the text so the layout can never shrink it below the label.
+		filter_label.setFixedSize(
+			filter_label.fontMetrics().horizontalAdvance("COLOR FILTER:") + 16,
+			18,
+		)
+		color_filter_row.addWidget(filter_label, 0)
+		self._color_filter_swatch_buttons: List[QPushButton] = []
+		self._color_filter_swatch_colors: Dict[QPushButton, Optional[str]] = {}
+		for color_name, color_hex in SHAPE_CUSTOM_COLORS.items():
+			swatch = QPushButton()
+			swatch.setCheckable(True)
+			swatch.setChecked(False)
+			swatch.setMinimumWidth(12)
+			swatch.setFixedHeight(18)
+			swatch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+			swatch.setToolTip(
+				f"Show only shapes colored {color_name}.\n"
+				"Toggle on to filter; toggle off to clear.\n"
+				"Multiple colors can be combined."
+			)
+			swatch.setStyleSheet(
+				f"QPushButton {{ background-color: {color_hex}; border: 1px solid #222; border-radius: 2px; }}"
+				f"QPushButton:checked {{ border: 2px solid #ffffff; }}"
+			)
+			swatch.toggled.connect(self._on_color_filter_swatch_toggled)
+			self._color_filter_swatch_buttons.append(swatch)
+			self._color_filter_swatch_colors[swatch] = color_hex
+			color_filter_row.addWidget(swatch, 1)
+		# No Color swatch (shows an empty/transparent box).
+		self._no_color_swatch = QPushButton()
+		self._no_color_swatch.setCheckable(True)
+		self._no_color_swatch.setChecked(False)
+		self._no_color_swatch.setMinimumWidth(12)
+		self._no_color_swatch.setFixedHeight(18)
+		self._no_color_swatch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		self._no_color_swatch.setToolTip(
+			"Show only shapes with no custom color assigned.\n"
+			"Toggle on to filter; toggle off to clear.\n"
+			"Can be combined with color filters."
+		)
+		# Match the default text color from the application palette.
+		default_text_color = QGuiApplication.palette().color(QPalette.WindowText).name()
+		self._no_color_swatch.setStyleSheet(
+			f"QPushButton {{ background-color: {default_text_color}; border: 1px solid #222; border-radius: 2px; }}"
+			"QPushButton:checked { border: 2px solid #4ba66d; }"
+		)
+		self._no_color_swatch.toggled.connect(self._on_color_filter_swatch_toggled)
+		self._color_filter_swatch_buttons.append(self._no_color_swatch)
+		self._color_filter_swatch_colors[self._no_color_swatch] = None
+		color_filter_row.addWidget(self._no_color_swatch, 1)
+		shapes_layout.addLayout(color_filter_row)
 
 		shapes_layout.addWidget(self.shapes_view, 1)
 		shapes_footer_layout = QVBoxLayout()
@@ -4394,7 +4530,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_list_active_button.toggled.connect(self._filter_shapes_active)
 		self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
 		self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
-		self.shapes_highlight_related_button.toggled.connect(lambda _: self._update_related_shape_highlights_from_selection())
 		self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
 		self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
 		self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
@@ -6611,7 +6746,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._set_status("Listed shapes with value at the time of filtering.")
 
 	def _refresh_active_shapes_filter(self) -> None:
-		if not self._shapes_active_filter_enabled:
+		if not self._shapes_active_filter_enabled and not self._shapes_proxy.color_filter_active():
 			return
 		self._shapes_proxy.invalidateFilter()
 		self._rebuild_shapes_tree()
@@ -6666,6 +6801,42 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._update_info_labels()
 		self._set_status(f"Filtered upstream shapes from '{shape_name}'.")
 
+	def _on_color_filter_swatch_toggled(self, *_args) -> None:
+		"""Apply the color filter based on the checked swatch buttons."""
+		selected_hexes = set()
+		include_no_color = False
+		for swatch, color_hex in self._color_filter_swatch_colors.items():
+			try:
+				if not swatch.isChecked():
+					continue
+			except RuntimeError:
+				continue
+			if color_hex is None:
+				include_no_color = True
+			else:
+				selected_hexes.add(color_hex)
+		if not selected_hexes and not include_no_color:
+			self._shapes_proxy.set_color_filter(None)
+		else:
+			self._shapes_proxy.set_color_filter(set(selected_hexes), include_no_color)
+		self._apply_shapes_name_sort()
+		self._rebuild_shapes_tree()
+		self._update_delegate_name_columns()
+		self._update_info_labels()
+
+	def _clear_color_filter_actions(self) -> None:
+		"""Uncheck all color filter swatches without triggering refiltering per swatch."""
+		for swatch in self._color_filter_swatch_buttons:
+			try:
+				was_blocked = swatch.blockSignals(True)
+				try:
+					swatch.setChecked(False)
+				finally:
+					swatch.blockSignals(was_blocked)
+			except RuntimeError:
+				continue
+		self._shapes_proxy.set_color_filter(None)
+
 	def _clear_shapes_filters(self, keep_selection: bool = False, rebuild_ui: bool = True) -> None:
 		self._set_shapes_value_filter_button_state(False)
 		if not keep_selection:
@@ -6676,6 +6847,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._shapes_proxy.set_search_terms([])
 		self._set_active_shapes_filter_state(False)
 		self._set_directional_shapes_filter_state(downstream_checked=False, upstream_checked=False)
+		self._clear_color_filter_actions()
 		selected_names = self._selected_primary_tree_names() if keep_selection else []
 		self._apply_primary_selection_shapes_filter(selected_names)
 		if rebuild_ui:
@@ -6713,6 +6885,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			not roles or ShapeItemsModel.ValueRole in roles or Qt.DisplayRole in roles
 		):
 			self._active_shapes_filter_refresh_timer.start()
+		elif self._shapes_proxy.color_filter_active() and (
+			not roles or ShapeItemsModel.ColorRole in roles or Qt.DisplayRole in roles
+		):
+			self._active_shapes_filter_refresh_timer.start()
 		if roles and all(
 			role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole, ShapeItemsModel.LockedRole)
 			for role in roles
@@ -6733,7 +6909,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _on_shapes_selection_changed(self) -> None:
 		self._update_info_labels()
-		self._update_related_shape_highlights_from_selection()
 		self._update_heat_map_target_from_shapes_selection()
 		if self.current_editor is None or not self.shapes_auto_pose_button.isChecked():
 			return
@@ -6748,39 +6923,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._set_status("No system selected.", warning=True)
 			return
 		self.shapes_upstream_button.toggle()
-
-	def _update_related_shape_highlights_from_selection(self) -> None:
-		"""Highlight upstream/downstream rows related to current shapes selection."""
-		if not self.shapes_highlight_related_button.isChecked():
-			self._shape_model.set_related_shape_names(tuple(), tuple())
-			self.shapes_view.viewport().update()
-			return
-		if self.current_editor is None:
-			self._shape_model.set_related_shape_names(tuple(), tuple())
-			self.shapes_view.viewport().update()
-			return
-
-		selected_names = {str(name) for name in self._selected_shape_names_from_shapes_view() if name}
-		if not selected_names:
-			self._shape_model.set_related_shape_names(tuple(), tuple())
-			self.shapes_view.viewport().update()
-			return
-
-		upstream_related_names: Set[str] = set()
-		downstream_related_names: Set[str] = set()
-		for shape_name in selected_names:
-			try:
-				upstream_names = self._get_cached_related_shape_names(shape_name, upstream=True)
-				downstream_names = self._get_cached_related_shape_names(shape_name, upstream=False)
-			except Exception:
-				continue
-			upstream_related_names.update(upstream_names)
-			downstream_related_names.update(downstream_names)
-
-		upstream_related_names.difference_update(selected_names)
-		downstream_related_names.difference_update(selected_names)
-		self._shape_model.set_related_shape_names(tuple(upstream_related_names), tuple(downstream_related_names))
-		self.shapes_view.viewport().update()
 
 	def _on_shapes_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
 		"""Set clicked shape to its pose from the shapes tree."""
@@ -6808,11 +6950,22 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		menu = QMenu(sender)
 		extract_action = menu.addAction("Extract Selected")
 		reset_deltas_action = menu.addAction("Reset Deltas")
+		set_color_menu = menu.addMenu("Set Color")
+		color_actions = {}
+		for color_name, color_hex in SHAPE_CUSTOM_COLORS.items():
+			color_action = set_color_menu.addAction(_color_swatch_icon(color_hex), color_name)
+			color_actions[color_action] = color_hex
+		set_color_menu.addSeparator()
+		clear_color_action = set_color_menu.addAction("Clear")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(sender.mapToGlobal(pos))
 		else:
 			selected_action = menu.exec_(sender.mapToGlobal(pos))
-		if selected_action == extract_action:
+		if selected_action in color_actions:
+			self._set_shapes_custom_color(selected_shapes, color_actions[selected_action])
+		elif selected_action == clear_color_action:
+			self._clear_shapes_custom_color(selected_shapes)
+		elif selected_action == extract_action:
 			self.extract_selected(selected_shapes)
 		elif selected_action == reset_deltas_action:
 			try:
@@ -6826,6 +6979,43 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				if self.blendshape_tracker is not None:
 					self.blendshape_tracker.start()
 			self._set_status(f"Reset deltas for {len(selected_shapes)} shape(s).")
+
+	def _set_shapes_custom_color(self, shape_names, color_hex: str) -> None:
+		if self.current_editor is None:
+			return
+		try:
+			for shape_name in shape_names:
+				self.current_editor.set_shape_custom_color(shape_name, color_hex)
+		except Exception as exc:
+			self._set_status(f"Error setting shape color: {exc}", error=True)
+			return
+		color = QColor(color_hex)
+		for shape_name in shape_names:
+			self._apply_shape_color_to_views(shape_name, color)
+		self._set_status(f"Set color for {len(shape_names)} shape(s).")
+
+	def _apply_shape_color_to_views(self, shape_name: str, color: Optional[QColor]) -> None:
+		"""Push a custom color to every view that renders shape names."""
+		self._shape_model.set_shape_color_local(shape_name, color)
+		shape_item = self._shape_tree_items.get(shape_name)
+		if shape_item is not None:
+			shape_item.setData(0, ShapeItemsModel.ColorRole, color)
+		primary_item = self._primary_tree_items.get(shape_name)
+		if primary_item is not None:
+			primary_item.setData(0, ShapeItemsModel.ColorRole, color)
+
+	def _clear_shapes_custom_color(self, shape_names) -> None:
+		if self.current_editor is None:
+			return
+		try:
+			for shape_name in shape_names:
+				self.current_editor.remove_shape_custom_color(shape_name)
+		except Exception as exc:
+			self._set_status(f"Error clearing shape color: {exc}", error=True)
+			return
+		for shape_name in shape_names:
+			self._apply_shape_color_to_views(shape_name, None)
+		self._set_status(f"Cleared color for {len(shape_names)} shape(s).")
 
 	def _on_shapes_item_expanded(self, item: QTreeWidgetItem) -> None:
 		if item is None or not bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
@@ -7156,6 +7346,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 					ShapeItemsModel.HeaderCollapsedRole,
 					ShapeItemsModel.UpstreamRelatedRole,
 					ShapeItemsModel.DownstreamRelatedRole,
+					ShapeItemsModel.ColorRole,
 				):
 					leaf.setData(0, role, self._shapes_proxy.data(proxy_index, role))
 				leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
@@ -8028,6 +8219,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
 			primaries_target_dirs = self.current_editor.get_primaries_target_dirs() or {}
 			dirs_by_name = {str(name): list(path or []) for name, path in primaries_target_dirs.items()}
+			custom_colors = self.current_editor.read_custom_shapes_colors() or {}
 
 			# Build stable grouped data: path is stored leaf->root from API, so reverse to root->leaf.
 			grouped = {}
@@ -8082,6 +8274,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 					leaf.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
 					leaf.setData(0, ShapeItemsModel.PrimariesRole, (shape_name,))
 					leaf.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, leaf_value)
+					custom_color = custom_colors.get(shape_name)
+					leaf.setData(0, ShapeItemsModel.ColorRole, _shape_custom_color_to_qcolor(custom_color))
 					leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
 					if parent_item is None:
 						self.primaries_view.addTopLevelItem(leaf)
@@ -8618,7 +8812,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._rebuild_primaries_tree()
 			self._rebuild_shapes_tree()
 			self._reload_split_settings_from_editor()
-			self._update_related_shape_highlights_from_selection()
 			self._update_delegate_name_columns()
 			self._update_info_labels()
 			self._update_work_shape_button_panel()
