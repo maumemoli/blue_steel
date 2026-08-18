@@ -3669,7 +3669,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		color_filter_row.setContentsMargins(0, 0, 0, 0)
 		color_filter_row.setSpacing(0)
 		# Non-interactive label styled like the swatch buttons.
-		filter_label = QPushButton("COLOR FILTER:")
+		filter_label = QPushButton("FILTER BY COLOR:")
 		filter_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 		filter_label.setFocusPolicy(Qt.NoFocus)
 		filter_label.setStyleSheet(
@@ -3677,7 +3677,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		)
 		# Pin the width to the text so the layout can never shrink it below the label.
 		filter_label.setFixedSize(
-			filter_label.fontMetrics().horizontalAdvance("COLOR FILTER:") + 16,
+			filter_label.fontMetrics().horizontalAdvance("FILTER BY COLOR:") + 16,
 			18,
 		)
 		color_filter_row.addWidget(filter_label, 0)
