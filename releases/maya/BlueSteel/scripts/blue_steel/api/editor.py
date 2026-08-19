@@ -59,7 +59,7 @@ class BlueSteelEditor(object):
     HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER = "heatMapBlendShape"
     SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
     SPLIT_GRP_ATTR_STRING_IDENTIFIER = "splitGroups"
-    SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
+    SPLIT_MAPS_TOKEN_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
     SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER = "splitMapEditMesh"
     SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER = "splitMapEditBlendshape"
     SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER = "splitMapEditCurrent"
@@ -3434,7 +3434,7 @@ class BlueSteelEditor(object):
             raise ValueError("Split attribute group does not exist")
         # check if the attribute already exists
         group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
-                                                    self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER,
+                                                    self.SPLIT_MAPS_TOKEN_ORDER_ATTR_STRING_IDENTIFIER,
                                                     "[]")
 
     def _add_split_group_attribute(self):
@@ -3470,9 +3470,9 @@ class BlueSteelEditor(object):
         """
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
-        if not cmds.attributeQuery(self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
+        if not cmds.attributeQuery(self.SPLIT_MAPS_TOKEN_ORDER_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
             raise ValueError("Split groups order attribute does not exist")
-        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER) or []
+        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_MAPS_TOKEN_ORDER_ATTR_STRING_IDENTIFIER) or []
 
     def get_edit_split_map_weights(self) -> list:
         """ get the weights of a split map in the edit_blendshape.
@@ -3486,25 +3486,25 @@ class BlueSteelEditor(object):
         split_map_edit_blendshape = Blendshape(self.split_map_edit_blendshape)
         return split_map_edit_blendshape.get_weights()
 
-    def get_edit_split_map_suffixes(self) -> list:
-        """ get the suffixes of a split map in the edit_blendshape.
+    def get_edit_split_map_tokens(self) -> list:
+        """ get the tokens of a split map in the edit_blendshape.
         Parameters:
             split_map_name (str): The name of the split map.
         Returns:
-            list: A list of suffixes for the split map.
+            list: A list of tokens for the split map.
         """
         edit_weights = self.get_edit_split_map_weights()
-        suffixes = [w.split("_")[-1] for w in edit_weights]
-        return suffixes
+        tokens = [w.split("_")[-1] for w in edit_weights]
+        return tokens
 
-    def get_split_map_suffixes(self, split_map_name: str) -> list:
-        """ get the suffixes of a split map in the split_blendshape.
+    def get_split_map_tokens(self, split_map_name: str) -> list:
+        """ get the tokens of a split map in the split_blendshape.
         Parameters:
             split_map_name (str): The name of the split map.
         Returns:
-            list: A list of suffixes for the split map.
+            list: A list of tokens for the split map.
         """
-        suffixes = []
+        tokens = []
         split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
         if not split_map_dir:
             raise ValueError(f"Split map {split_map_name} does not have a target directory")
@@ -3512,8 +3512,8 @@ class BlueSteelEditor(object):
             raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
         child_target_dirs = self.split_blendshape.get_target_dir_child_target_dirs(split_map_dir[0])
         for child_dir in child_target_dirs:
-            suffixes.append(child_dir.name)
-        return suffixes
+            tokens.append(child_dir.name)
+        return tokens
 
     def normalize_split_map_weights(self, split_map_name: str):
         """ normalize the weights of a split map in the split_blendshape.
@@ -3703,7 +3703,7 @@ class BlueSteelEditor(object):
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
         attrUtils.write_json_attr(self.split_attr_grp,
-                                  self.SPLIT_MAPS_ORDER_ATTR_STRING_IDENTIFIER,
+                                  self.SPLIT_MAPS_TOKEN_ORDER_ATTR_STRING_IDENTIFIER,
                                   split_maps_order)
 
     def write_split_groups_attributes(self, split_groups: dict):
@@ -3733,12 +3733,12 @@ class BlueSteelEditor(object):
                 result.append(d.name)
         return result
 
-    def create_split_map(self, split_map_name: str, suffixes: list = []):
+    def create_split_map(self, split_map_name: str, tokens: list = []):
         """
         Create a new split map in the split_blendshape.
         Parameters:
             split_map_name (str): The name of the split map to create.
-            suffixes (list): A list of suffixes to add to the split map. Default is [].
+            tokens (list): A list of tokens to add to the split map. Default is [].
         Returns:
             str: The name of the created split map.
         """
@@ -3746,15 +3746,15 @@ class BlueSteelEditor(object):
             raise ValueError(f"Split map {split_map_name} already exists")
         # we need to create a target directory for the split map
         existing_weights = self.split_blendshape.get_weights()
-        weight_names = [f"{split_map_name}_{suffix[0].upper() + suffix[1:]}" for suffix in suffixes]
+        weight_names = [f"{split_map_name}_{token[0].upper() + token[1:]}" for token in tokens]
         for weight in weight_names:
             if weight in existing_weights:
                 raise ValueError(f"Weight {weight} already exists in the split_blendshape")
         split_map_dir = self.split_blendshape.add_target_dir(name=split_map_name)
         parent_index = split_map_dir.index
         # we need to add the weights to the split map
-        for weight, suffix in zip(weight_names, suffixes):
-            weight_name_dir = self.split_blendshape.add_target_dir(name=suffix, parent_index=parent_index)
+        for weight, token in zip(weight_names, tokens):
+            weight_name_dir = self.split_blendshape.add_target_dir(name=token, parent_index=parent_index)
             self.split_blendshape.add_target(weight, parent_directory=weight_name_dir)
         # we need to update the split maps order attribute
         split_maps_order = self.read_split_maps_order_attribute()
@@ -3762,18 +3762,18 @@ class BlueSteelEditor(object):
         self.write_split_maps_order_attribute(split_maps_order)
         return split_map_dir.name
 
-    def add_weight_to_split_map_edit_blendshape(self, split_map_name: str, suffix: str)-> str:
+    def add_weight_to_split_map_edit_blendshape(self, split_map_name: str, token: str)-> str:
         """
         Add a weight to a split map in the split_blendshape edit blendshape.
         Parameters:
             split_map_name (str): The name of the split map to add the weights to.
-            suffix (str): The name of the weight to add to the split map.
+            token (str): The name of the weight to add to the split map.
         Returns:
             the newly created weight name in the edit blendshape.
         """
         if self.get_current_edit_split_map() != split_map_name:
             return
-        weight_name = f"{split_map_name}_{suffix}"
+        weight_name = f"{split_map_name}_{token}"
         edit_split_blend = Blendshape(self.split_map_edit_blendshape)
         existing_weights = edit_split_blend.get_weights()
         if weight_name not in existing_weights:
@@ -3784,20 +3784,20 @@ class BlueSteelEditor(object):
 
 
     @undoable
-    def add_weight_to_split_map(self, split_map_name: str, suffix: str)-> Weight:
+    def add_weight_to_split_map(self, split_map_name: str, token: str)-> Weight:
         """
         Add a weight to a split map in the split_blendshape.
         Parameters:
             split_map_name (str): The name of the split map to add the weights to.
-            suffix (str): The name of the weight to add to the split map.
+            token (str): The name of the weight to add to the split map.
         Returns:
             Weight: The newly added weight.
         """
-        if not re.match(r'^[a-zA-Z]+$', suffix):
-            raise ValueError(f"Suffix {suffix} contains invalid characters. "
+        if not re.match(r'^[a-zA-Z]+$', token):
+            raise ValueError(f"Token {token} contains invalid characters. "
                              "Only alphabetic characters are allowed.")
-        # we need to capitalize the first letter of the suffix
-        suffix = suffix.capitalize()[0] + suffix[1:]
+        # we need to capitalize the first letter of the token
+        token = token.capitalize()[0] + token[1:]
         split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
         if not split_map_dir:
             raise ValueError(f"Split map {split_map_name} does not have a target directory")
@@ -3805,11 +3805,11 @@ class BlueSteelEditor(object):
             raise ValueError(f"Split map has multiple target directories named {split_map_name}.")
         parent_index = split_map_dir[0].index
         existing_weights = self.split_blendshape.get_weights()
-        weight_name = f"{split_map_name}_{suffix}"
+        weight_name = f"{split_map_name}_{token}"
         if weight_name in existing_weights:
             raise Warning(f"Weight {weight_name} already exists in the split_blendshape")
         # we need to add the weight to the split map
-        weight_name_dir = self.split_blendshape.add_target_dir(name=suffix, parent_index=parent_index)
+        weight_name_dir = self.split_blendshape.add_target_dir(name=token, parent_index=parent_index)
         weight = self.split_blendshape.add_target(weight_name, parent_directory=weight_name_dir)
         return weight
     @undoable
@@ -3990,7 +3990,7 @@ class BlueSteelEditor(object):
             split_maps_group = cmds.group(name=split_maps_group, empty=True)
 
         for split_map in split_maps:
-            split_map_suffix_weights = list()
+            split_map_token_weights = list()
             blendshape_name = f"{split_map}_blendShape"
             split_mesh_name = f"{split_mesh_base_name}_{split_map}"
             split_mesh = self.duplicate_base_mesh_neutral_state(split_mesh_name)
@@ -3998,22 +3998,22 @@ class BlueSteelEditor(object):
             split_map_blendshape = cmds.blendShape(split_mesh, name=blendshape_name)
             split_map_blendshape = Blendshape(split_map_blendshape[0])
             self.split_map_blendshapes[split_map] = split_map_blendshape
-            split_map_suffixes = self.get_split_map_suffixes(split_map)
+            split_map_tokens = self.get_split_map_tokens(split_map)
             split_map_weights = self.get_split_map_weights(split_map)
-            for suffix, weight in zip(split_map_suffixes, split_map_weights):
-                suffix_weight = split_map_blendshape.add_target(suffix)
-                split_map_suffix_weights.append(suffix_weight)
+            for token, weight in zip(split_map_tokens, split_map_weights):
+                token_weight = split_map_blendshape.add_target(token)
+                split_map_token_weights.append(token_weight)
                 # we need to connect the weight maps to the split map blendshape
                 self.split_blendshape.transfer_weight_map(source_weight_id = weight.id,
                                                           target_blendshape=split_map_blendshape.name,
-                                                          target_weight_id=suffix_weight.id)
+                                                          target_weight_id=token_weight.id)
                 if mesh_to_connect is None:
                     self.split_blendshape_to_connect = split_map_blendshape.name
                     mesh_to_connect = split_mesh
                     continue
                 # we need to connect the ,esh_to connect to the target
-                split_map_blendshape.connect_mesh_to_target(suffix_weight.id, mesh_to_connect)
-            self.split_map_blendshapes_weights[split_map] = split_map_suffix_weights
+                split_map_blendshape.connect_mesh_to_target(token_weight.id, mesh_to_connect)
+            self.split_map_blendshapes_weights[split_map] = split_map_token_weights
             mesh_to_connect = split_mesh
         self.split_bake_mesh = split_mesh
         return split_maps_group
@@ -4086,7 +4086,7 @@ class BlueSteelEditor(object):
                 for split_map in self.get_split_maps()
             }
 
-        active_split_map_suffixes = {
+        active_split_map_tokens = {
                 split_map: "__UNINITIALIZED__"
                 for split_map in self.split_map_blendshapes
             }
@@ -4125,8 +4125,8 @@ class BlueSteelEditor(object):
                     split_blendshape=split_connect_blendshape,
                     split_weights=split_connect_weights,
                 )
-                for split_shape_pose_name, suffixes in split_shape_poses.items():
-                    self.set_split_pose_from_suffixes(suffixes,active_split_map_suffixes )
+                for split_shape_pose_name, tokens in split_shape_poses.items():
+                    self.set_split_pose_from_tokens(tokens, active_split_map_tokens)
                     committed_shape = destination_editor.commit_shape(split_shape_pose_name,
                                                                     destination_editor_base_mesh)
                     if committed_shape is None:
@@ -4244,90 +4244,90 @@ class BlueSteelEditor(object):
             primary: split_groups.get(primary_split_groups[primary], [])
             for primary in shape.primaries
         }
-        for combo_suffixes in split_possible_combos:
+        for combo_tokens in split_possible_combos:
             split_shape_pose_name = self.generate_name_for_split_shape_pose(
                 shape_name,
-                combo_suffixes,
+                combo_tokens,
                 shape=shape,
                 split_parent_maps=split_parent_maps,
             )
-            split_shape_poses[split_shape_pose_name] = combo_suffixes
+            split_shape_poses[split_shape_pose_name] = combo_tokens
         return split_shape_poses
 
     def generate_name_for_split_shape_pose(self,
                                            shape_name: str,
-                                           suffixes: list,
+                                           tokens: list,
                                            shape: Shape = None,
                                            split_parent_maps: dict = None) -> str:
         """
-        Generate a name for a split shape pose based on the shape name and suffixes.
+        Generate a name for a split shape pose based on the shape name and tokens.
         Parameters:
             shape_name (str): The name of the shape.
-            suffixes (list): A list of suffixes for the split shape pose.
+            tokens (list): A list of split map tokens for the split shape pose.
         Returns:
             str: The generated name for the split shape pose.
         """
         shape = shape if shape is not None else self.get_shape(shape_name)
-        tokens = list()
+        name_parts = list()
         split_parent_maps = split_parent_maps or {}
 
-        split_suffixes_by_map = {}
-        for suffix in suffixes:
-            split_map_name, split_map_suffix = suffix.rsplit("_", 1)
-            split_suffixes_by_map[split_map_name] = split_map_suffix
+        split_map_token_by_map = {}
+        for token in tokens:
+            split_map_name, split_map_token = token.rsplit("_", 1)
+            split_map_token_by_map[split_map_name] = split_map_token
 
         for primary, parent in zip(shape.primaries, shape.parents):
             split_token = primary
             parent_value = parent.str_values[0]
             split_maps = split_parent_maps.get(primary)
             if not split_maps:
-                tokens.append(parent)
+                name_parts.append(parent)
                 continue
 
             for split_map in split_maps:
-                split_map_suffix = split_suffixes_by_map.get(split_map)
-                if split_map_suffix is not None:
-                    split_token = f"{split_token}{split_map_suffix}"
+                split_map_token = split_map_token_by_map.get(split_map)
+                if split_map_token is not None:
+                    split_token = f"{split_token}{split_map_token}"
 
             if parent_value != "100":
                 split_token = f"{split_token}{parent_value}"
-            tokens.append(split_token)
-        return "_".join(tokens)
+            name_parts.append(split_token)
+        return "_".join(name_parts)
 
-    def set_split_pose_from_suffixes(self,
-                                     suffixes: list,
-                                     active_split_map_suffixes: dict):
+    def set_split_pose_from_tokens(self,
+                                   tokens: list,
+                                   active_split_map_tokens: dict):
         """
-        Set the split pose for a given shape based on the suffixes.
+        Set the split pose for a given shape based on the tokens.
         Parameters:
-            suffixes (list): A list of suffixes for the split pose.
-            active_split_map_suffixes (dict): The currently active suffix for each split map.
+            tokens (list): A list of split map tokens for the split pose.
+            active_split_map_tokens (dict): The currently active token for each split map.
 
         Returns:
             None
         """
-        desired_suffixes = {}
-        for suffix in suffixes:
-            split_map_name, split_map_suffix = suffix.rsplit("_", 1)
-            desired_suffixes[split_map_name] = split_map_suffix
+        desired_tokens = {}
+        for token in tokens:
+            split_map_name, split_map_token = token.rsplit("_", 1)
+            desired_tokens[split_map_name] = split_map_token
 
         for split_map_name, split_blendshape in self.split_map_blendshapes.items():
-            current_suffix = active_split_map_suffixes.get(split_map_name)
-            target_suffix = desired_suffixes.get(split_map_name)
-            if current_suffix == target_suffix:
+            current_token = active_split_map_tokens.get(split_map_name)
+            target_token = desired_tokens.get(split_map_name)
+            if current_token == target_token:
                 continue
 
             weights = self.split_map_blendshapes_weights[split_map_name]
-            if target_suffix is None:
+            if target_token is None:
                 for weight in weights:
                     split_blendshape.set_weight_value(weight, 1.0)
             else:
-                if not any(weight == target_suffix for weight in weights):
-                    raise ValueError(f"Suffix {target_suffix} is not valid for split map {split_map_name}")
+                if not any(weight == target_token for weight in weights):
+                    raise ValueError(f"Token {target_token} is not valid for split map {split_map_name}")
                 for weight in weights:
-                    split_blendshape.set_weight_value(weight, 1.0 if weight == target_suffix else 0.0)
+                    split_blendshape.set_weight_value(weight, 1.0 if weight == target_token else 0.0)
 
-            active_split_map_suffixes[split_map_name] = target_suffix
+            active_split_map_tokens[split_map_name] = target_token
 
     def export_split_data(self, export_path: str):
         """
@@ -4471,11 +4471,11 @@ class BlueSteelEditor(object):
             self.remove_weight_from_split_map(current_edit_split_map, weight)
         for edit_weight in edit_split_blend.get_weights():
             print(f"Syncing weight {edit_weight} to split map {current_edit_split_map}")
-            suffix = edit_weight.split(f"{current_edit_split_map}_")[-1]
-            self.add_weight_to_split_map(current_edit_split_map, suffix)
+            token = edit_weight.split(f"{current_edit_split_map}_")[-1]
+            self.add_weight_to_split_map(current_edit_split_map, token)
             split_weight = self.split_blendshape.get_weight_by_name(edit_weight)
             if split_weight is None:
-                raise ValueError(f"Weight {suffix} does not exist in split map edit blendshape")
+                raise ValueError(f"Weight {token} does not exist in split map edit blendshape")
             print(f"Transferring weight map from {edit_weight} to {split_weight}")
             edit_split_blend.transfer_weight_map(source_weight_id=edit_weight.id,
                                                  target_weight_id=split_weight.id,
@@ -4680,8 +4680,8 @@ class BlueSteelEditor(object):
             with open(import_file, "r") as f:
                 split_maps_weights = json.load(f)
             for split_map, split_map_data in split_maps_weights.items():
-                split_map_suffixes = [x.split("_")[-1] for x in split_map_data.keys()]
-                self.create_split_map(split_map, split_map_suffixes)
+                split_map_tokens = [x.split("_")[-1] for x in split_map_data.keys()]
+                self.create_split_map(split_map, split_map_tokens)
                 for weight, weight_map_values in split_map_data.items():
                     weight = self.split_blendshape.get_weight_by_name(weight)
                     if weight is None:

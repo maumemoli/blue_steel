@@ -1,0 +1,7 @@
+// Runs independently of Maya's userSetup.py chain (a broken userSetup.py
+// elsewhere on sys.path can abort that entire loop before ours ever runs).
+global proc blueSteelDeferredInit()
+{
+    python("from blue_steel.initialize import create_menu; create_menu()");
+}
+evalDeferred("blueSteelDeferredInit");
