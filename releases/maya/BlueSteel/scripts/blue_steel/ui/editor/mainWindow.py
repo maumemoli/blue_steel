@@ -5519,9 +5519,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			split_groups = self.current_editor.read_split_groups_attributes()
 		except Exception:
 			return
-		split_groups[group_name] = [
-			str(name) for name in split_groups.get(group_name, []) if str(name) != map_name
-		]
+		# split_groups[group_name] = [
+		# 	str(name) for name in split_groups.get(group_name, []) if str(name) != map_name
+		# ]
+		self.current_editor.remove_split_map_from_split_group(group_name, map_name)
 		self._on_split_group_maps_changed(split_groups)
 		self._refresh_split_groups()
 

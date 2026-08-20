@@ -70,11 +70,13 @@ class BlueSteelEditor(object):
     DGA_VISUALIZER_STRING_IDENTIFIER = "dgaVisualizer"
     DGA_DELTA_STRING_IDENTIFIER = "dgaDelta"
     DELTA_MAP_STRING_IDENTIFIER = "deltaMap"
+    SHAPE_NAME_STR = "<<SHAPE_NAME>>"
     # TARGET GROUP NAMES
     PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
     COMBO_SHAPES_GRP_NAME = "Combos_GRP"
     INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
     CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER = "customShapesColor"
+    
     def __init__(self, container, separator=SEPARATOR):
         if not cmds.objExists(container):
             raise ValueError(f"Container '{container}' does not exist.")
@@ -149,6 +151,7 @@ class BlueSteelEditor(object):
         # make sure the split map edit mesh is hidden when the editor is initialized
         self.switch_visibility_to_split_map_edit_mesh(False)
         self._get_skin_cluster()
+        self._ensure_split_shape_name_item_in_groups()
         self.zero_out()
 
     #-----------------------------
@@ -3450,6 +3453,16 @@ class BlueSteelEditor(object):
                                                     self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
                                                     "{}")
 
+    def _ensure_split_shape_name_item_in_groups(self):
+        """
+        Just a quick sanity check to ensure that the split shape name item is in the split groups.
+        """
+        fixed_attributes = self.read_split_groups_attributes()
+        for group, split_maps in fixed_attributes.items():
+            if self.SHAPE_NAME_STR not in split_maps:
+                split_maps.insert(0, self.SHAPE_NAME_STR)
+                fixed_attributes[group] = split_maps
+        self.write_split_groups_attributes(fixed_attributes)
 
     def read_split_groups_attributes(self) -> dict:
         """ read the split groups attribute and return a dictionary with the name of the group
@@ -3746,7 +3759,7 @@ class BlueSteelEditor(object):
             raise ValueError(f"Split map {split_map_name} already exists")
         # we need to create a target directory for the split map
         existing_weights = self.split_blendshape.get_weights()
-        weight_names = [f"{split_map_name}_{token[0].upper() + token[1:]}" for token in tokens]
+        weight_names = [f"{split_map_name}_{token}" for token in tokens]
         for weight in weight_names:
             if weight in existing_weights:
                 raise ValueError(f"Weight {weight} already exists in the split_blendshape")
@@ -3797,7 +3810,6 @@ class BlueSteelEditor(object):
             raise ValueError(f"Token {token} contains invalid characters. "
                              "Only alphabetic characters are allowed.")
         # we need to capitalize the first letter of the token
-        token = token.capitalize()[0] + token[1:]
         split_map_dir = self.split_blendshape.get_target_dirs_by_name(split_map_name)
         if not split_map_dir:
             raise ValueError(f"Split map {split_map_name} does not have a target directory")
@@ -3849,6 +3861,11 @@ class BlueSteelEditor(object):
         Returns:
             str: The name of the created split group.
         """
+        # we need to add shape name as a place holder to understand where the split tokens are going
+        # the assumption is that all the split maps are suffixes
+        if self.SHAPE_NAME_STR not in split_maps_list:
+            split_maps_list = [self.SHAPE_NAME_STR] + split_maps_list
+
         split_groups = self.read_split_groups_attributes()
         # we need to create a target directory for the split group
         split_groups[split_group_name] = split_maps_list
@@ -3890,6 +3907,9 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        # if the split_map_name is the shape name we need to return.
+        if split_map_name == self.SHAPE_NAME_STR:
+            return
         if split_map_name not in self.get_split_maps():
             raise ValueError(f"Split map {split_map_name} does not exist")
         split_groups = self.read_split_groups_attributes()
@@ -3900,10 +3920,6 @@ class BlueSteelEditor(object):
         if split_map_name not in existing_split_maps:
             raise ValueError(f"Split map {split_map_name} does not exist in split group {split_group_name}")
         existing_split_maps.remove(split_map_name)
-        if len(existing_split_maps) == 0:
-            self.remove_split_group(split_group_name)
-            return
-
         split_groups[split_group_name] = existing_split_maps
         self.write_split_groups_attributes(split_groups)
 
@@ -4225,12 +4241,17 @@ class BlueSteelEditor(object):
 
         shape_split_maps = []
         seen_split_maps = set()
+        split_maps_primary_positions = []
         for primary in shape.primaries:
             split_group = primary_split_groups[primary]
             if split_group == "NoSplit":
+                split_maps_primary_positions.append(None)
                 continue
             split_maps = split_groups.get(split_group, [])
-            for split_map in split_maps:
+            for i, split_map in enumerate(split_maps):
+                if split_map == self.SHAPE_NAME_STR:
+                    split_maps_primary_positions.append(i)
+                    continue
                 if split_map not in seen_split_maps:
                     shape_split_maps.append(split_map)
                     seen_split_maps.add(split_map)
@@ -4250,6 +4271,7 @@ class BlueSteelEditor(object):
                 combo_tokens,
                 shape=shape,
                 split_parent_maps=split_parent_maps,
+                primary_positions=split_maps_primary_positions,
             )
             split_shape_poses[split_shape_pose_name] = combo_tokens
         return split_shape_poses
@@ -4258,12 +4280,16 @@ class BlueSteelEditor(object):
                                            shape_name: str,
                                            tokens: list,
                                            shape: Shape = None,
-                                           split_parent_maps: dict = None) -> str:
+                                           split_parent_maps: dict = None,
+                                           primary_positions: list = []) -> str:
         """
         Generate a name for a split shape pose based on the shape name and tokens.
         Parameters:
             shape_name (str): The name of the shape.
             tokens (list): A list of split map tokens for the split shape pose.
+            shape (Shape, optional): The shape object. Defaults to None.
+            split_parent_maps (dict, optional): A dictionary mapping primary shapes to their split parent maps. Defaults to None.
+            primary_positions (list, optional): A list of primary positions for the split shape pose. Defaults to [].
         Returns:
             str: The generated name for the split shape pose.
         """
@@ -4276,22 +4302,25 @@ class BlueSteelEditor(object):
             split_map_name, split_map_token = token.rsplit("_", 1)
             split_map_token_by_map[split_map_name] = split_map_token
 
-        for primary, parent in zip(shape.primaries, shape.parents):
-            split_token = primary
+        for primary, parent, primary_position in zip(shape.primaries, shape.parents, primary_positions):
+            split_primary = primary if primary_position == 0 else primary[0].upper() + primary[1:]
             parent_value = parent.str_values[0]
             split_maps = split_parent_maps.get(primary)
             if not split_maps:
+                # this is a no split parent
                 name_parts.append(parent)
                 continue
-
+            primary_split_tokens = []
             for split_map in split_maps:
                 split_map_token = split_map_token_by_map.get(split_map)
                 if split_map_token is not None:
-                    split_token = f"{split_token}{split_map_token}"
-
+                    primary_split_tokens.append(split_map_token)
+            # now we need to insert the primary split tokens into the primary name at the correct position
+            primary_split_tokens.insert(primary_position, split_primary)
+            split_primary = "".join(primary_split_tokens)
             if parent_value != "100":
-                split_token = f"{split_token}{parent_value}"
-            name_parts.append(split_token)
+                split_primary = f"{split_primary}{parent_value}"
+            name_parts.append(split_primary)
         return "_".join(name_parts)
 
     def set_split_pose_from_tokens(self,
@@ -4354,6 +4383,7 @@ class BlueSteelEditor(object):
             self.import_split_maps_weights(import_path)
         if import_settings:
             self.import_split_settings(import_path)
+            self._ensure_split_shape_name_item_in_groups()
 
     def get_primaries_split_groups_association(self):
         """
