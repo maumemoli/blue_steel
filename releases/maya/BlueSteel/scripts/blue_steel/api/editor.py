@@ -91,6 +91,10 @@ class BlueSteelEditor(object):
             self._delete_heat_map_blendshape()
             print("DGA nodes are not supported in this Maya version. Heat map visualization will be disabled.")
 
+
+        # we need to check if inverShape plugin is loaded
+        if cmds.pluginInfo("invertShape", query=True, loaded=True) is False:
+            cmds.loadPlugin("invertShape")
         self.skin_cluster = None
 
         self.separator = separator
