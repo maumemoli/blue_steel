@@ -2495,12 +2495,11 @@ class SliderItemDelegate(QStyledItemDelegate):
 				return True
 
 		if event.type() == QEvent.MouseButtonDblClick:
-			if value_rect.contains(event.pos()):
-				parent = self.parent()
-				if isinstance(parent, QAbstractItemView):
-					parent.edit(index)
-					return True
-			# Prevent default item-edit behavior on non-slider double-clicks.
+			# Open the inline value editor only on the slider area; always consume so
+			# Qt does not start its own name-edit on editable rows.
+			parent = self.parent()
+			if value_rect.contains(event.pos()) and isinstance(parent, QAbstractItemView):
+				parent.edit(index)
 			return True
 
 		return super().editorEvent(event, model, option, index)
@@ -3165,7 +3164,8 @@ class ShapeTreeWidget(QTreeWidget):
 
 
 class PrimaryTreeWidget(QTreeWidget):
-	"""Primary tree with left-button slider and item drags in separate row areas."""
+	"""Primary tree that mirrors the shapes tree: the delegate owns slider value
+	drags and Qt owns name drags, so clicks and double-clicks reach the view."""
 
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
 	pageNavigationPoseRequested = Signal(str)
@@ -3173,9 +3173,6 @@ class PrimaryTreeWidget(QTreeWidget):
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
 		self._toggle_icon_click_active = False
-		self._left_item_drag_start_pos = None
-		self._left_item_drag_pressed_item = None
-		self._left_item_drag_shape_names: List[str] = []
 
 	def _resolve_toggle_icon_click(self, event_pos) -> Optional[tuple]:
 		index = self.indexAt(event_pos)
@@ -3234,7 +3231,8 @@ class PrimaryTreeWidget(QTreeWidget):
 		self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
 		return True
 
-	def _start_primary_drag(self, shape_names: Sequence[str]) -> None:
+	def startDrag(self, supportedActions):  # noqa: N802
+		shape_names = self._selected_draggable_shape_names()
 		if not shape_names:
 			return
 		mime_data = QMimeData()
@@ -3243,10 +3241,11 @@ class PrimaryTreeWidget(QTreeWidget):
 		mime_data.setText("\n".join(shape_names))
 		drag = QDrag(self)
 		drag.setMimeData(mime_data)
+		drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
 		if hasattr(drag, "exec"):
-			drag.exec(Qt.CopyAction)
+			drag.exec(drop_action)
 		else:
-			drag.exec_(Qt.CopyAction)
+			drag.exec_(drop_action)
 
 	def keyPressEvent(self, event):  # noqa: N802
 		if event.modifiers() == Qt.NoModifier:
@@ -3272,9 +3271,6 @@ class PrimaryTreeWidget(QTreeWidget):
 
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
-			self._left_item_drag_start_pos = None
-			self._left_item_drag_pressed_item = None
-			self._left_item_drag_shape_names = []
 			toggle_payload = self._resolve_toggle_icon_click(event.pos())
 			if toggle_payload is not None:
 				toggle_signal, shape_name, next_state = toggle_payload
@@ -3282,38 +3278,6 @@ class PrimaryTreeWidget(QTreeWidget):
 				self._toggle_icon_click_active = True
 				event.accept()
 				return
-			index = self.indexAt(event.pos())
-			delegate = self.itemDelegateForColumn(0)
-			if (
-				index.isValid()
-				and isinstance(delegate, SliderItemDelegate)
-				and bool(index.data(ShapeItemsModel.EditableRole))
-				and delegate.external_drag_start(self.model(), index, event.pos(), self.visualRect(index))
-			):
-				event.accept()
-				return
-			item = self.itemAt(event.pos())
-			preserved_selection = []
-			if (
-				item is not None
-				and item.isSelected()
-				and event.modifiers() == Qt.NoModifier
-			):
-				preserved_selection = self.selectedItems()
-				self._left_item_drag_shape_names = self._selected_draggable_shape_names()
-			super().mousePressEvent(event)
-			for selected_item in preserved_selection:
-				selected_item.setSelected(True)
-			if (
-				item is not None
-				and item.isSelected()
-				and not bool(item.data(0, ShapeItemsModel.IsHeaderRole))
-			):
-				self._left_item_drag_start_pos = event.pos()
-				self._left_item_drag_pressed_item = item
-				if not self._left_item_drag_shape_names:
-					self._left_item_drag_shape_names = self._selected_draggable_shape_names()
-			return
 		super().mousePressEvent(event)
 
 	def mouseDoubleClickEvent(self, event):  # noqa: N802
@@ -3329,18 +3293,6 @@ class PrimaryTreeWidget(QTreeWidget):
 			if delegate.external_drag_move(event.pos().x()):
 				event.accept()
 				return
-		if self._left_item_drag_start_pos is not None and event.buttons() & Qt.LeftButton:
-			delta = event.pos() - self._left_item_drag_start_pos
-			if delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
-				shape_names = list(self._left_item_drag_shape_names)
-				self._left_item_drag_start_pos = None
-				self._left_item_drag_pressed_item = None
-				self._left_item_drag_shape_names = []
-				self._start_primary_drag(shape_names)
-				event.accept()
-				return
-			event.accept()
-			return
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
@@ -3349,23 +3301,12 @@ class PrimaryTreeWidget(QTreeWidget):
 			event.accept()
 			return
 
-		pressed_item = None
-		if event.button() == Qt.LeftButton:
-			if self._left_item_drag_start_pos is not None:
-				pressed_item = self._left_item_drag_pressed_item
-			self._left_item_drag_start_pos = None
-			self._left_item_drag_pressed_item = None
-			self._left_item_drag_shape_names = []
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and event.button() == Qt.LeftButton and delegate.is_drag_active():
 			if delegate.external_drag_end(event.pos().x()):
 				event.accept()
 				return
 		super().mouseReleaseEvent(event)
-		if pressed_item is not None and event.modifiers() == Qt.NoModifier:
-			self.clearSelection()
-			pressed_item.setSelected(True)
-			self.setCurrentItem(pressed_item)
 
 
 class PrimaryTreeItem(QTreeWidgetItem):
@@ -3752,7 +3693,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.primaries_view.setRootIsDecorated(False)
 		self._apply_primaries_branch_icons()
 		self.primaries_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-		self.primaries_view.setDragEnabled(False)
+		self.primaries_view.setDragEnabled(True)
+		self.primaries_view.setDragDropMode(QAbstractItemView.DragOnly)
 		self.primaries_view.setToolTip("Drag the value area to adjust; click names to select; drag selected names to drag and drop them")
 		self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self._primaries_delegate = SliderItemDelegate(self.primaries_view)
