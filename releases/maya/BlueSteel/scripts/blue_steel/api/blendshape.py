@@ -72,6 +72,11 @@ class Blendshape(object):
             raise ValueError(f"Blendshape node '{self.name}' has no base mesh connected.")
         else:
             self.base = self.base[0]
+        # caching containers for the weights of the blendshape node
+        self._weights_cache = set()
+        self._weight_id_by_name = {}
+        self._weights_signature = -1
+        self._weights_cache_dirty = True
         # sourcing the artAttrBlendShapeToolScript.mel to make sure set_target_weight_paint_mode will work without errors
         mel.eval('source "artAttrBlendShapeToolScript.mel"')
         mel.eval('source "artAttrBlendShapeCallback.mel"')
@@ -1046,20 +1051,21 @@ class Blendshape(object):
     # Weights methods
     # ------------------------------------------------------------------
 
-    def get_weights(self):
+    def _weights_structure_signature(self) -> int:
+        """Cheap signature that changes when targets are added or removed externally."""
+        return cmds.getAttr(f"{self.name}.weight", size=True) or 0
+
+    def invalidate_weights_cache(self) -> None:
+        """Marks the cached weights as stale so the next read rebuilds them.
+
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> blendshape.invalidate_weights_cache()
         """
-        Returns a list of weights in the blendShape node.
-        Each weight is represented as a Weight object with a name and an ID.
-        :Returns: A list of Weight objects.
-        :Example:
-            >>> blendshape = Blendshape.("myBlendshape")
-            >>> weights = blendshape.get_weights()
-            >>> for weight in weights:
-            ...     print(f"Weight Name: {weight.name}, Weight ID: {weight.id}")
-            Weight Name: Smile, Weight ID: 0
-            Weight Name: Frown, Weight ID: 1
-            Weight Name: Blink, Weight ID: 2
-        """
+        self._weights_cache_dirty = True
+
+    def _build_weights_cache(self) -> None:
+        """Rebuild the cached Weight set and the name-to-id index from the node."""
         sel = om2.MSelectionList()
         sel.add(self.name)
 
@@ -1070,6 +1076,7 @@ class Blendshape(object):
         input_target_plug = fn.findPlug("inputTarget", False)
         target_plug = input_target_plug.elementByLogicalIndex(0)
         weights = set()
+        self._weight_id_by_name = {}
         for i in range(weight_plug.numElements()):
             element = weight_plug.elementByPhysicalIndex(i)
             idx = element.logicalIndex()
@@ -1085,8 +1092,35 @@ class Blendshape(object):
                             target_items=target_items,
                             blend_shape=self.name)
             weights.add(weight)
-        #aliases = dict(fn.getAliasList())
-        return weights
+            self._weight_id_by_name[str(alias)] = idx
+        self._weights_cache = weights
+        self._weights_signature = self._weights_structure_signature()
+        self._weights_cache_dirty = False
+
+    def _ensure_weights_cache(self) -> None:
+        """Rebuild the cached weights when stale or when the node changed externally."""
+        if self._weights_cache_dirty or self._weights_signature != self._weights_structure_signature():
+            self._build_weights_cache()
+
+    def get_weights(self):
+        """
+        Returns a list of weights in the blendShape node.
+        Each weight is represented as a Weight object with a name and an ID.
+        The result is served from a cache that is invalidated whenever a
+        target is added, removed or renamed through this class.
+        :Returns: A list of Weight objects.
+        :Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> weights = blendshape.get_weights()
+            >>> for weight in weights:
+            ...     print(f"Weight Name: {weight.name}, Weight ID: {weight.id}")
+            Weight Name: Smile, Weight ID: 0
+            Weight Name: Frown, Weight ID: 1
+            Weight Name: Blink, Weight ID: 2
+        """
+        self._ensure_weights_cache()
+        # return a copy so callers cannot mutate the cached set
+        return set(self._weights_cache)
 
     def get_highest_weight_id(self) -> int:
         """
@@ -1145,19 +1179,8 @@ class Blendshape(object):
             >>> print(weight)
             Weight: (name: 'Smile' id: 0)
         """
-        # Resolve just the requested alias instead of traversing all targets.
-        aliases = cmds.aliasAttr(self.name, q=True) or []
-        if not aliases:
-            return None
-
-        weight_id = None
-        for i in range(0, len(aliases), 2):
-            if aliases[i] != name:
-                continue
-            plug_name = aliases[i + 1]
-            weight_id = int(plug_name.rsplit('[', 1)[-1][:-1])
-            break
-
+        self._ensure_weights_cache()
+        weight_id = self._weight_id_by_name.get(str(name))
         if weight_id is None:
             return None
 
@@ -1170,6 +1193,26 @@ class Blendshape(object):
                       id=weight_id,
                       target_items=target_items,
                       blend_shape=self.name)
+
+    def get_weight_value_by_name(self, name: str):
+        """
+        Returns the current value of the weight with the given name.
+        Uses the cached name-to-id index to avoid scanning all aliases.
+        Parameters:
+            name (str): The name of the weight.
+        Returns:
+            float: The current value of the weight, or None if not found.
+        Example:
+            >>> blendshape = Blendshape("myBlendshape")
+            >>> value = blendshape.get_weight_value_by_name("Smile")
+            >>> print(value)
+            0.5
+        """
+        self._ensure_weights_cache()
+        weight_id = self._weight_id_by_name.get(str(name))
+        if weight_id is None:
+            return None
+        return cmds.getAttr(f"{self.name}.w[{weight_id}]")
 
     def rename_weight(self , old_name: str , new_name: str):
         """
@@ -1187,6 +1230,7 @@ class Blendshape(object):
         weight = self.get_weight_by_name(old_name)
         if weight is not None:
             cmds.aliasAttr(new_name, "{0}.w[{1}]".format(self.name, weight.id))
+            self.invalidate_weights_cache()
 
 
     def get_weight_driver(self, weight: Weight)-> str or None: # type: ignore
@@ -1393,6 +1437,7 @@ class Blendshape(object):
                 self.set_weight_parent_directory(w, parent_directory)
         if reset_target:
             self.reset_target(w)
+        self.invalidate_weights_cache()
         return w
 
     def add_inbetween_target(self,
@@ -1464,6 +1509,7 @@ class Blendshape(object):
         inbetween_name_plug = self.get_inbetween_target_name_plug(target_id, target_item_index)
         if inbetween_name_plug is not None:
             cmds.setAttr(inbetween_name_plug.name(), target_name, type="string")
+        self.invalidate_weights_cache()
         return self.get_weight_by_id(target_id)
     
     def update_target(self,
@@ -1612,6 +1658,7 @@ class Blendshape(object):
                     raise ValueError(f"Target value {target_value} does not exist for weight '{weight}'.")
                 inbetween_attr = "{0}[{1}]".format(input_target_item_attr, target_value)
                 cmds.removeMultiInstance(inbetween_attr, b=True)
+        self.invalidate_weights_cache()
         return False
 
     def get_target_components(self, input_target_index: int, target_value: int = 6000):

@@ -811,6 +811,8 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        if self.face_ctrl is None:
+            raise ValueError("Face control not found in the editor.")
         for shape in self.network.get_primary_shapes():
             #self.set_primary_shape_value(shape, 0.0)
             cmds.setAttr(f"{self.face_ctrl}.{shape}", 0.0)

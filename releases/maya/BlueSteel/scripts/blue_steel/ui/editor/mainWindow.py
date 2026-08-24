@@ -1654,14 +1654,12 @@ class WorkShapeItemsModel(QAbstractListModel):
 		if self._editor is None or self._editor.work_blendshape is None:
 			return []
 
-		weights = self._editor.work_blendshape.get_weights() or set()
-		weight_by_name = {str(weight): weight for weight in weights}
+		work_blendshape = self._editor.work_blendshape
 		changed: List[tuple] = []
 
 		for row_index, row in enumerate(self._rows):
-			weight = weight_by_name.get(str(row.get("name", "")))
-			new_value = self._editor.work_blendshape.get_weight_value(weight) if weight is not None else 0.0
-			clamped_value = max(0.0, min(1.0, float(new_value)))
+			new_value = work_blendshape.get_weight_value_by_name(str(row.get("name", "")))
+			clamped_value = max(0.0, min(1.0, float(new_value or 0.0)))
 			if abs(float(row.get("value", 0.0)) - clamped_value) <= 1e-6:
 				continue
 			row["value"] = clamped_value
@@ -3015,6 +3013,7 @@ class ShapeTreeWidget(QTreeWidget):
 
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
 	toggleUpstreamFilterRequested = Signal()
+	pageNavigationPoseRequested = Signal(str)
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
@@ -3102,6 +3101,18 @@ class ShapeTreeWidget(QTreeWidget):
 			if event.key() == Qt.Key_Up and self._move_to_next_selectable_item(-1):
 				event.accept()
 				return
+			if event.key() == Qt.Key_PageDown and self._move_to_next_selectable_item(1):
+				shape_name = str(self.currentItem().data(0, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					self.pageNavigationPoseRequested.emit(shape_name)
+				event.accept()
+				return
+			if event.key() == Qt.Key_PageUp and self._move_to_next_selectable_item(-1):
+				shape_name = str(self.currentItem().data(0, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					self.pageNavigationPoseRequested.emit(shape_name)
+				event.accept()
+				return
 		if event.key() == Qt.Key_F and event.modifiers() == Qt.NoModifier:
 			target_item = self.currentItem()
 			if target_item is None:
@@ -3157,12 +3168,41 @@ class PrimaryTreeWidget(QTreeWidget):
 	"""Primary tree with left-button slider and item drags in separate row areas."""
 
 	DRAG_MIME_TYPE = "application/x-blue-steel-shape-names"
+	pageNavigationPoseRequested = Signal(str)
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
+		self._toggle_icon_click_active = False
 		self._left_item_drag_start_pos = None
 		self._left_item_drag_pressed_item = None
 		self._left_item_drag_shape_names: List[str] = []
+
+	def _resolve_toggle_icon_click(self, event_pos) -> Optional[tuple]:
+		index = self.indexAt(event_pos)
+		delegate = self.itemDelegateForColumn(0)
+		if not index.isValid() or not isinstance(delegate, SliderItemDelegate):
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		mute_rect = delegate._mute_icon_rect(option, index)
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+		if mute_rect.contains(event_pos):
+			current_muted = bool(index.data(ShapeItemsModel.MutedRole))
+			return delegate.muteToggleRequested, shape_name, (not current_muted)
+
+		lock_rect = delegate._lock_icon_rect(option, index)
+		if not lock_rect.isNull() and lock_rect.contains(event_pos):
+			current_locked = bool(index.data(ShapeItemsModel.LockedRole))
+			return delegate.lockToggleRequested, shape_name, (not current_locked)
+		return None
 
 	def _selected_draggable_shape_names(self) -> List[str]:
 		shape_names: List[str] = []
@@ -3173,6 +3213,26 @@ class PrimaryTreeWidget(QTreeWidget):
 			if shape_name:
 				shape_names.append(shape_name)
 		return shape_names
+
+	def _next_selectable_item(self, start_item: Optional[QTreeWidgetItem], direction: int) -> Optional[QTreeWidgetItem]:
+		if start_item is None:
+			return None
+		candidate = self.itemBelow(start_item) if direction > 0 else self.itemAbove(start_item)
+		while candidate is not None:
+			if not bool(candidate.data(0, ShapeItemsModel.IsHeaderRole)):
+				return candidate
+			candidate = self.itemBelow(candidate) if direction > 0 else self.itemAbove(candidate)
+		return None
+
+	def _move_to_next_selectable_item(self, direction: int) -> bool:
+		target_item = self._next_selectable_item(self.currentItem(), direction)
+		if target_item is None:
+			return False
+		self.clearSelection()
+		self.setCurrentItem(target_item)
+		target_item.setSelected(True)
+		self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
+		return True
 
 	def _start_primary_drag(self, shape_names: Sequence[str]) -> None:
 		if not shape_names:
@@ -3188,11 +3248,40 @@ class PrimaryTreeWidget(QTreeWidget):
 		else:
 			drag.exec_(Qt.CopyAction)
 
+	def keyPressEvent(self, event):  # noqa: N802
+		if event.modifiers() == Qt.NoModifier:
+			if event.key() == Qt.Key_Down and self._move_to_next_selectable_item(1):
+				event.accept()
+				return
+			if event.key() == Qt.Key_Up and self._move_to_next_selectable_item(-1):
+				event.accept()
+				return
+			if event.key() == Qt.Key_PageDown and self._move_to_next_selectable_item(1):
+				shape_name = str(self.currentItem().data(0, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					self.pageNavigationPoseRequested.emit(shape_name)
+				event.accept()
+				return
+			if event.key() == Qt.Key_PageUp and self._move_to_next_selectable_item(-1):
+				shape_name = str(self.currentItem().data(0, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					self.pageNavigationPoseRequested.emit(shape_name)
+				event.accept()
+				return
+		super().keyPressEvent(event)
+
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
 			self._left_item_drag_start_pos = None
 			self._left_item_drag_pressed_item = None
 			self._left_item_drag_shape_names = []
+			toggle_payload = self._resolve_toggle_icon_click(event.pos())
+			if toggle_payload is not None:
+				toggle_signal, shape_name, next_state = toggle_payload
+				toggle_signal.emit(shape_name, next_state)
+				self._toggle_icon_click_active = True
+				event.accept()
+				return
 			index = self.indexAt(event.pos())
 			delegate = self.itemDelegateForColumn(0)
 			if (
@@ -3227,6 +3316,13 @@ class PrimaryTreeWidget(QTreeWidget):
 			return
 		super().mousePressEvent(event)
 
+	def mouseDoubleClickEvent(self, event):  # noqa: N802
+		if event.button() == Qt.LeftButton and self._resolve_toggle_icon_click(event.pos()) is not None:
+			self._toggle_icon_click_active = True
+			event.accept()
+			return
+		super().mouseDoubleClickEvent(event)
+
 	def mouseMoveEvent(self, event):  # noqa: N802
 		delegate = self.itemDelegateForColumn(0)
 		if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
@@ -3248,6 +3344,11 @@ class PrimaryTreeWidget(QTreeWidget):
 		super().mouseMoveEvent(event)
 
 	def mouseReleaseEvent(self, event):  # noqa: N802
+		if self._toggle_icon_click_active and event.button() == Qt.LeftButton:
+			self._toggle_icon_click_active = False
+			event.accept()
+			return
+
 		pressed_item = None
 		if event.button() == Qt.LeftButton:
 			if self._left_item_drag_start_pos is not None:
@@ -4620,6 +4721,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
 		self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
 		self.shapes_view.toggleUpstreamFilterRequested.connect(self._on_shapes_toggle_upstream_filter_requested)
+		self.shapes_view.pageNavigationPoseRequested.connect(self._set_shape_pose_by_name)
 		self.shapes_view.itemDoubleClicked.connect(self._on_shapes_double_clicked)
 		self.shapes_view.itemExpanded.connect(self._on_shapes_item_expanded)
 		self.shapes_view.itemCollapsed.connect(self._on_shapes_item_collapsed)
@@ -4671,6 +4773,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.primaries_view.itemExpanded.connect(self._on_primaries_item_expanded)
 		self.primaries_view.itemCollapsed.connect(self._on_primaries_item_collapsed)
 		self.primaries_view.itemClicked.connect(self._on_primaries_item_clicked)
+		self.primaries_view.pageNavigationPoseRequested.connect(self._set_shape_pose_by_name)
 		self.primaries_view.itemDoubleClicked.connect(self._on_primaries_item_double_clicked)
 		self.primaries_view.customContextMenuRequested.connect(self._show_primaries_context_menu)
 		if self.split_primary_search is not None:
@@ -8637,6 +8740,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _on_shape_structure_changed(self, *_args) -> None:
 		self._clear_related_shapes_cache()
+		if self.current_editor is not None:
+			self.current_editor.blendshape.invalidate_weights_cache()
 		self._reload_shapes_from_editor()
 
 	def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
@@ -8655,6 +8760,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _on_work_shape_structure_changed(self, *_args) -> None:
 		print("Work shape structure changed, reloading work shapes from editor...")
+		if self.current_editor is not None and self.current_editor.work_blendshape is not None:
+			self.current_editor.work_blendshape.invalidate_weights_cache()
 		self._reload_work_shapes_from_editor()
 
 	def _on_work_sculpt_target_changed(self, target_id: int, _shape_name: str) -> None:
@@ -8825,6 +8932,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 	def _on_shape_renamed(self, *_args) -> None:
 		self._clear_related_shapes_cache()
+		if self.current_editor is not None:
+			self.current_editor.blendshape.invalidate_weights_cache()
 		self._reload_shapes_from_editor()
 
 	def _on_blendshape_deleted(self, blendshape_name: str) -> None:
