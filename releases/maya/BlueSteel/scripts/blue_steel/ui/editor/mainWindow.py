@@ -60,6 +60,7 @@ from ..common.icons import (
 	HUD_ICON,
 	NORMALIZE_ICON,
 	MASK_ICON,
+	EDIT_ICON,
 	EDIT_SPLIT_MAP_ICON,
 	COPY_WEIGHTS_ICON,
 	PASTE_WEIGHTS_ICON,
@@ -1007,11 +1008,17 @@ class ShapeItemsModel(QAbstractListModel):
 			if abs(float(row.get("value", 0.0)) - clamped_value) <= 1e-6:
 				continue
 			row["value"] = clamped_value
-			model_index = self.index(row_index, 0)
-			self.dataChanged.emit(model_index, model_index, [self.ValueRole, Qt.DisplayRole])
-			changed.append((str(row.get("name", "")), clamped_value, bool(row.get("editable", False))))
+			changed.append((row_index, str(row.get("name", "")), clamped_value, bool(row.get("editable", False))))
 
-		return changed
+		if changed:
+			# One range emit so handlers process the whole batch once.
+			self.dataChanged.emit(
+				self.index(changed[0][0], 0),
+				self.index(changed[-1][0], 0),
+				[self.ValueRole, Qt.DisplayRole],
+			)
+
+		return [(name, value, is_primary) for _row, name, value, is_primary in changed]
 
 
 class PrimaryShapesProxyModel(QSortFilterProxyModel):
@@ -1901,6 +1908,7 @@ class SliderItemDelegate(QStyledItemDelegate):
 	muteToggleRequested = Signal(str, bool)
 	lockToggleRequested = Signal(str, bool)
 	connectedMeshRequested = Signal(str)
+	workEditModeToggleRequested = Signal(str, bool)
 
 	VALUE_COLUMN_WIDTH = 86
 	VALUE_TEXT_PADDING = 8
@@ -1993,7 +2001,8 @@ class SliderItemDelegate(QStyledItemDelegate):
 
 		icon_left = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
 		text_left = icon_left + (self.ICON_SIZE * icon_slots) + (self.ICON_GAP * icon_slots)
-		text_width = max(self.MIN_TEXT_WIDTH, rect.right() - text_left - self.RIGHT_MARGIN)
+		right_margin = self.RIGHT_MARGIN + (self.ICON_SIZE + self.ICON_GAP if is_work_shape else 0)
+		text_width = max(self.MIN_TEXT_WIDTH, rect.right() - text_left - right_margin)
 		text_rect = QRect(text_left, rect.top(), text_width, rect.height())
 		return value_rect, text_rect
 
@@ -2036,11 +2045,16 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return 2
 		return 1
 
+	def _is_work_edit_mode_icon_visible(self, index) -> bool:
+		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+		return shape_type == "WorkShape"
+
 	def _reserved_icon_slots(self, index) -> int:
 		shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
 		is_work_shape = shape_type == "WorkShape"
 		reserved_slots = self._panel_reserved_icon_slots()
-		actual_slots = (1 if self._shows_mute_icon(index) else 0) + (1 if self._is_lock_icon_visible(index) else 0) + (1 if is_work_shape else 0)
+		work_shape_slots = 1 if is_work_shape else 0
+		actual_slots = (1 if self._shows_mute_icon(index) else 0) + (1 if self._is_lock_icon_visible(index) else 0) + work_shape_slots
 		return max(reserved_slots, actual_slots)
 
 	def _mute_icon_rect(self, option, index) -> QRect:
@@ -2051,6 +2065,13 @@ class SliderItemDelegate(QStyledItemDelegate):
 			return QRect(connected_rect.right() + 1 + self.ICON_GAP, connected_rect.top(), connected_rect.width(), connected_rect.height())
 		value_rect, _ = self._area_rects(option, index)
 		x = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
+		y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
+		return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
+
+	def _edit_mode_icon_rect(self, option, index) -> QRect:
+		if not self._is_work_edit_mode_icon_visible(index):
+			return QRect()
+		x = option.rect.right() - self.RIGHT_MARGIN - self.ICON_SIZE + 1
 		y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
 		return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
 
@@ -2214,6 +2235,18 @@ class SliderItemDelegate(QStyledItemDelegate):
 			connected_icon = CONNECTED_MESH_ENABLED_ICON if is_connected_work_shape else CONNECTED_MESH_DISABLED_ICON
 			if not connected_icon.isNull():
 				self._draw_icon_pixmap(painter, connected_icon_rect, connected_icon)
+
+		edit_mode_rect = self._edit_mode_icon_rect(option, index)
+		if not edit_mode_rect.isNull():
+			button_color = QColor(198, 65, 65) if in_edit_mode else QColor(82, 82, 82)
+			painter.save()
+			painter.setRenderHint(QPainter.Antialiasing, True)
+			painter.setPen(QColor(35, 35, 35))
+			painter.setBrush(button_color)
+			painter.drawRoundedRect(edit_mode_rect.adjusted(1, 1, -1, -1), 3, 3)
+			painter.restore()
+			if not EDIT_ICON.isNull():
+				self._draw_icon_pixmap(painter, edit_mode_rect.adjusted(3, 3, -3, -3), EDIT_ICON)
 
 		lock_rect = self._lock_icon_rect(option, index)
 		if not lock_rect.isNull():
@@ -2423,6 +2456,13 @@ class SliderItemDelegate(QStyledItemDelegate):
 				if shape_name:
 					current_muted = bool(model.data(index, ShapeItemsModel.MutedRole))
 					self.muteToggleRequested.emit(shape_name, not current_muted)
+				return True
+			edit_mode_rect = self._edit_mode_icon_rect(option, index)
+			if not edit_mode_rect.isNull() and edit_mode_rect.contains(event.pos()):
+				shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
+				if shape_name:
+					in_edit_mode = bool(model.data(index, WorkShapeItemsModel.InEditModeRole))
+					self.workEditModeToggleRequested.emit(shape_name, not in_edit_mode)
 				return True
 			lock_rect = self._lock_icon_rect(option, index)
 			if not lock_rect.isNull() and lock_rect.contains(event.pos()):
@@ -2719,6 +2759,34 @@ class SliderListView(QListView):
 		current_locked = bool(index.data(ShapeItemsModel.LockedRole))
 		return shape_name, (not current_locked)
 
+	def _resolve_work_edit_mode_icon_click(self, event_pos) -> Optional[tuple]:
+		"""Return (shape_name, next_state) if event is on the edit-mode icon."""
+		delegate = self.itemDelegate()
+		if not isinstance(delegate, SliderItemDelegate):
+			return None
+
+		index = self.indexAt(event_pos)
+		if not index.isValid():
+			return None
+		if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+			return None
+
+		class _OptionRect:
+			pass
+
+		option = _OptionRect()
+		option.rect = self.visualRect(index)
+		icon_rect = delegate._edit_mode_icon_rect(option, index)
+		if icon_rect.isNull() or not icon_rect.contains(event_pos):
+			return None
+
+		shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+		if not shape_name:
+			return None
+
+		in_edit_mode = bool(index.data(WorkShapeItemsModel.InEditModeRole))
+		return shape_name, (not in_edit_mode)
+
 	def mousePressEvent(self, event):  # noqa: N802
 		if event.button() == Qt.LeftButton:
 			connected_shape_name = self._resolve_connected_mesh_icon_click(event.pos())
@@ -2744,6 +2812,15 @@ class SliderListView(QListView):
 				if isinstance(delegate, SliderItemDelegate):
 					shape_name, next_state = lock_payload
 					delegate.lockToggleRequested.emit(shape_name, next_state)
+					self._icon_click_active = True
+					event.accept()
+					return
+			edit_mode_payload = self._resolve_work_edit_mode_icon_click(event.pos())
+			if edit_mode_payload is not None:
+				delegate = self.itemDelegate()
+				if isinstance(delegate, SliderItemDelegate):
+					shape_name, next_state = edit_mode_payload
+					delegate.workEditModeToggleRequested.emit(shape_name, next_state)
 					self._icon_click_active = True
 					event.accept()
 					return
@@ -2776,6 +2853,7 @@ class SliderListView(QListView):
 			or
 			self._resolve_mute_icon_click(event.pos()) is not None
 			or self._resolve_lock_icon_click(event.pos()) is not None
+			or self._resolve_work_edit_mode_icon_click(event.pos()) is not None
 		):
 			event.accept()
 			return
@@ -3382,6 +3460,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		button.setStyleSheet("padding: 0px;")
 		button.setFixedHeight(height)
 
+	def _create_work_tool_button(self, label: str, icon: QIcon) -> QPushButton:
+		button = QPushButton()
+		button.setIcon(icon)
+		button.setToolTip(label)
+		button.setFixedSize(26, 26)
+		button.setIconSize(self._tools_panel_expanded_icon_size)
+		return button
+
 	def _set_dock_button_state(self, docked: bool) -> None:
 		pixmap = QPixmap(14, 14)
 		pixmap.fill(Qt.transparent)
@@ -3772,29 +3858,18 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		work_toolbar = QHBoxLayout()
 		self._compact_layout(work_toolbar)
 		#work_toolbar.addWidget(QLabel("Tools"))
-		self.work_add_button = QPushButton("Add")
+		self.work_add_button = self._create_work_tool_button("Add", ADD_ICON)
 		self.work_add_button.setToolTip("Add a new work blendshape target")
 		work_toolbar.addWidget(self.work_add_button)
-		self.work_remove_button = QPushButton("Remove")
+		self.work_remove_button = self._create_work_tool_button("Remove", DELETE_ICON)
 		self.work_remove_button.setToolTip("Remove selected work blendshape targets")
 		work_toolbar.addWidget(self.work_remove_button)
-		self.work_paint_button = QPushButton("Paint Weights")
+		self.work_paint_button = self._create_work_tool_button("Paint Weights", MASK_ICON)
 		self.work_paint_button.setToolTip("Paint selected work blendshape target")
 		work_toolbar.addWidget(self.work_paint_button)
-		self.work_edit_mode_button = QPushButton("Edit Selected")
-		self.work_edit_mode_button.setToolTip("Toggle edit mode on selected work blendshape target")
-		work_toolbar.addWidget(self.work_edit_mode_button)
-		self.apply_work_shapes_button = QPushButton("Apply All")
+		self.apply_work_shapes_button = self._create_work_tool_button("Apply All", COMMIT_ICON)
 		self.apply_work_shapes_button.setToolTip("Apply changes to all linked work blendshape targets")
 		work_toolbar.addWidget(self.apply_work_shapes_button)
-		for button in (
-			self.work_add_button,
-			self.work_remove_button,
-			self.work_paint_button,
-			self.work_edit_mode_button,
-			self.apply_work_shapes_button,
-		):
-			self._prepare_toolbar_button(button)
 		work_toolbar.addStretch(1)
 		work_shapes_layout.addLayout(work_toolbar)
 		self.work_shapes_view = WorkShapesListView(
@@ -3834,6 +3909,12 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._active_shapes_delegate = SliderItemDelegate(self.active_shapes_view)
 		self.active_shapes_view.setItemDelegate(self._active_shapes_delegate)
 		active_shapes_layout.addWidget(self.active_shapes_view, 1)
+		active_shapes_footer_layout = QVBoxLayout()
+		active_shapes_footer_layout.setContentsMargins(0, 0, 0, 0)
+		active_shapes_footer_layout.setSpacing(0)
+		self.active_shapes_info = QLabel("Items: 0")
+		active_shapes_footer_layout.addWidget(self.active_shapes_info)
+		active_shapes_layout.addLayout(active_shapes_footer_layout)
 
 		third_column_splitter.addWidget(primary_drop_section)
 		third_column_splitter.addWidget(work_shapes_section)
@@ -4272,6 +4353,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		menu.addSeparator()
 		add_inbetween_action = menu.addAction("Add Inbetween")
 		split_selected_action = menu.addAction("Split selected shapes")
+		menu.addSeparator()
+		delete_action = menu.addAction("Delete")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(self.primaries_view.viewport().mapToGlobal(pos))
 		else:
@@ -4283,6 +4366,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._on_add_inbetween_requested(primary_name)
 		elif selected_action == split_selected_action:
 			self._split_selected_shapes(self._selected_primary_tree_names())
+		elif selected_action == delete_action:
+			self.remove_selected_primaries()
 
 	def _on_add_inbetween_requested(self, primary_name: str) -> None:
 		if self.current_editor is None:
@@ -4446,13 +4531,13 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.add_selected_at_current_pose_button = self._create_tool_button("Add/Commit At Current Pose", ADD_AT_POSE_ICON)
 		self.add_selected_at_current_pose_button.setToolTip("Add the selected mesh at the current pose extrapolating the name from the active values in the controller.\nFor example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen\nIf no mesh is selected an empty shape will be added.")
 		self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON)
-		self.remove_shapes_button = self._create_tool_button("Remove Shapes", DELETE_ICON)
-		self.remove_shapes_button.setFocusPolicy(Qt.NoFocus)
-		self.remove_shapes_button.setToolTip("Remove the selection from the focused Primaries or Shapes list")
+		self.delete_shapes_button = self._create_tool_button("Delete Shapes", DELETE_ICON)
+		self.delete_shapes_button.setFocusPolicy(Qt.NoFocus)
+		self.delete_shapes_button.setToolTip("Delete the selected shapes from the focused Primaries or Shapes list")
 		edit_shapes_frame_layout.addWidget(self.commit_shapes_button)
 		edit_shapes_frame_layout.addWidget(self.add_primary_button)
 		edit_shapes_frame_layout.addWidget(self.add_selected_at_current_pose_button)
-		edit_shapes_frame_layout.addWidget(self.remove_shapes_button)
+		edit_shapes_frame_layout.addWidget(self.delete_shapes_button)
 
 
 		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
@@ -4524,6 +4609,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._primary_drop_delegate.lockToggleRequested.connect(self._on_primary_drop_lock_toggle_requested)
 		self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
 		self._work_shapes_delegate.connectedMeshRequested.connect(self._on_work_shape_connected_mesh_requested)
+		self._work_shapes_delegate.workEditModeToggleRequested.connect(self._on_work_shape_edit_mode_toggle_requested)
 		self.primaries_search.searchChanged.connect(self._on_primaries_search_changed)
 		self.shapes_search.searchChanged.connect(self._on_shapes_search_changed)
 		self.active_shapes_search.searchChanged.connect(self._on_active_shapes_search_changed)
@@ -4554,7 +4640,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.add_primary_button.clicked.connect(self._on_add_primary_clicked)
 		self.commit_shapes_button.clicked.connect(self.commit_selected)
 		self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
-		self.remove_shapes_button.clicked.connect(self.remove_shapes_from_focused_view)
+		self.delete_shapes_button.clicked.connect(self.remove_shapes_from_focused_view)
 		self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
 		self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
 		self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
@@ -4576,7 +4662,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.work_add_button.clicked.connect(self._on_add_work_shape_clicked)
 		self.work_remove_button.clicked.connect(self._on_remove_work_shapes_clicked)
 		self.work_paint_button.clicked.connect(self._on_paint_work_shape_clicked)
-		self.work_edit_mode_button.clicked.connect(self._on_toggle_work_shape_edit_mode)
 		self.apply_work_shapes_button.clicked.connect(self._on_apply_work_shapes_clicked)
 		if self.work_shapes_view.selectionModel() is not None:
 			self.work_shapes_view.selectionModel().selectionChanged.connect(self._on_work_shapes_selection_changed)
@@ -5519,9 +5604,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			split_groups = self.current_editor.read_split_groups_attributes()
 		except Exception:
 			return
-		# split_groups[group_name] = [
-		# 	str(name) for name in split_groups.get(group_name, []) if str(name) != map_name
-		# ]
+
 		self.current_editor.remove_split_map_from_split_group(group_name, map_name)
 		self._on_split_group_maps_changed(split_groups)
 		self._refresh_split_groups()
@@ -5921,12 +6004,12 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self.primaries_view.scrollToItem(added_item)
 		self._set_status(f"Added primary shape '{shape_name}'.")
 
-	def remove_selected_shapes(self) -> None:
+	def remove_selected_shapes(self, shape_names: Optional[Sequence[str]] = None) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
 
-		shape_names = self._selected_shape_names_from_shapes_view()
+		shape_names = list(shape_names) if shape_names else self._selected_shape_names_from_shapes_view()
 		if not shape_names:
 			self._set_status("No shapes selected.", warning=True)
 			return
@@ -6894,6 +6977,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			role in (ShapeItemsModel.ValueRole, Qt.DisplayRole, ShapeItemsModel.MutedRole, ShapeItemsModel.LockedRole)
 			for role in roles
 		):
+			# Value changes can move shapes in or out of the Active Shapes list.
+			self._update_info_labels()
 			return
 		self._update_info_labels()
 		self._update_delegate_name_columns()
@@ -6958,11 +7043,15 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			color_actions[color_action] = color_hex
 		set_color_menu.addSeparator()
 		clear_color_action = set_color_menu.addAction("Clear")
+		menu.addSeparator()
+		delete_action = menu.addAction("Delete")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(sender.mapToGlobal(pos))
 		else:
 			selected_action = menu.exec_(sender.mapToGlobal(pos))
-		if selected_action in color_actions:
+		if selected_action == delete_action:
+			self.remove_selected_shapes(selected_shapes)
+		elif selected_action in color_actions:
 			self._set_shapes_custom_color(selected_shapes, color_actions[selected_action])
 		elif selected_action == clear_color_action:
 			self._clear_shapes_custom_color(selected_shapes)
@@ -7070,6 +7159,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._update_info_labels()
 
 	def _on_active_shapes_selection_changed(self, *_args) -> None:
+		self._update_info_labels()
 		self._update_heat_map_target_from_active_shapes_selection()
 
 	def _on_active_shapes_double_clicked(self, proxy_index: QModelIndex) -> None:
@@ -7593,12 +7683,9 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		has_editor = self.current_editor is not None and self.current_editor.work_blendshape is not None
 		selected_shape_name = self._first_selected_work_shape_name()
 		has_selection = bool(selected_shape_name)
-		selected_has_connection = bool(selected_shape_name and self._work_shape_model.is_shape_connected(selected_shape_name))
-		has_active_edit = bool(self._work_shape_model.edit_shape_name())
 		self.work_add_button.setEnabled(has_editor)
 		self.work_remove_button.setEnabled(has_editor and has_selection)
 		self.work_paint_button.setEnabled(has_editor and has_selection)
-		self.work_edit_mode_button.setEnabled(has_editor and ((has_selection and not selected_has_connection) or has_active_edit))
 		self.apply_work_shapes_button.setEnabled(has_editor and bool(self._work_shape_model.has_connected_driver_shapes()))
 
 	def _stop_active_blendshape_trackers(self) -> None:
@@ -7680,17 +7767,19 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
+		paint_weight = bool(QGuiApplication.keyboardModifiers() & Qt.AltModifier)
 		shape_name = self._first_selected_work_shape_name()
 		if not shape_name:
 			self._set_status("Select one work shape first.", warning=True)
 			return
 		try:
-			target_id = self.current_editor.paint_work_blendshape_target(shape_name)
+			if paint_weight:
+				target_id = self.current_editor.set_work_target_weight_paint_mode(shape_name)
+			else:
+				target_id = self.current_editor.set_work_target_mask_paint_mode(shape_name)
 		except Exception as exc:
 			self._set_status(f"Error entering paint mode: {exc}", error=True)
 			return
-		# self._work_shape_model.set_edit_shape(shape_name)
-		# self._update_work_shape_button_panel()
 		self._set_status(f"Paint mode on '{shape_name}' (target id {target_id}).")
 
 	def _on_apply_work_shapes_clicked(self) -> None:
@@ -7708,7 +7797,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._reload_work_shapes_from_editor()
 		self._set_status(f"Committed {len(applied_work_shapes)} linked shape(s). Check the Script Editor for the list.")
 
-	def _on_toggle_work_shape_edit_mode(self) -> None:
+	def _on_work_shape_edit_mode_toggle_requested(self, shape_name: str, _state: bool) -> None:
+		self._on_toggle_work_shape_edit_mode(shape_name)
+
+	def _on_toggle_work_shape_edit_mode(self, shape_name: Optional[str] = None) -> None:
 		if self.current_editor is None:
 			self._set_status("No system selected.", warning=True)
 			return
@@ -7716,7 +7808,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._set_status("Work blendshape not found.", warning=True)
 			return
 
-		shape_name = self._first_selected_work_shape_name()
+		shape_name = shape_name or self._first_selected_work_shape_name()
 		active_shape_name = self._work_shape_model.edit_shape_name()
 		if not shape_name:
 			if active_shape_name:
@@ -8834,6 +8926,17 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		)
 		total_shapes = len(self._shape_tree_items)
 		self.shapes_info.setText(f"Items: {selected_shapes}/{total_shapes}")
+		total_active_shapes = sum(
+			1
+			for row in range(self._active_shapes_proxy.rowCount())
+			if not bool(self._active_shapes_proxy.data(self._active_shapes_proxy.index(row, 0), ShapeItemsModel.IsHeaderRole))
+		)
+		selected_active_shapes = sum(
+			1
+			for index in self.active_shapes_view.selectedIndexes()
+			if not bool(self._active_shapes_proxy.data(index, ShapeItemsModel.IsHeaderRole))
+		)
+		self.active_shapes_info.setText(f"Items: {selected_active_shapes}/{total_active_shapes}")
 
 	def _update_window_title(self) -> None:
 		editor_name = self.current_editor.name if self.current_editor is not None else ""

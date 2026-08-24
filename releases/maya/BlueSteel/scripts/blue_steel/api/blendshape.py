@@ -712,7 +712,8 @@ class Blendshape(object):
             base_mesh = cmds.ls(base_mesh, long=True)[0]
             if mesh_shape != base_mesh:
                 cmds.select(base_mesh, r=True)
-
+        else:
+            cmds.select(base_mesh, r=True)
     
         mel.eval(f'artSetToolAndSelectAttr("artAttrCtx", "blendShape.{self.name}.baseWeights")')
         mel.eval(f'artAttrInitPaintableAttr')

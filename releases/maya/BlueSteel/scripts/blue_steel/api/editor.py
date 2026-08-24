@@ -1818,14 +1818,26 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_target_delta(duplicated_weight.id, deltas)
         return duplicated_weight
 
-    def paint_work_blendshape_target(self, weight_name: str) -> int:
+    def set_work_target_weight_paint_mode(self, weight_name: str) -> int:
         """Enter paint mode for one work blendshape target and return its target id."""
+        print(f"Setting work target weight paint mode for '{weight_name}'...")
         if self.work_blendshape is None:
             raise ValueError("Work blendshape not found.")
         sculpt_weight = self.work_blendshape.get_weight_by_name(weight_name)
         if sculpt_weight is None:
             raise ValueError(f"Work shape '{weight_name}' not found in work blendshape.")
         self.work_blendshape.set_target_weight_paint_mode(sculpt_weight)
+        return int(sculpt_weight.id)
+
+    def set_work_target_mask_paint_mode(self, weight_name: str) -> int:
+        """Enter paint mode for one work blendshape target and return its target id."""
+        print(f"Setting work target mask paint mode for weight: {weight_name}")
+        if self.work_blendshape is None:
+            raise ValueError("Work blendshape not found.")
+        sculpt_weight = self.work_blendshape.get_weight_by_name(weight_name)
+        if sculpt_weight is None:
+            raise ValueError(f"Work shape '{weight_name}' not found in work blendshape.")
+        self.work_blendshape.set_target_mask_paint_mode(sculpt_weight.id)
         return int(sculpt_weight.id)
 
     def get_work_shape_muted_state(self, shape_name: str)->bool:
@@ -1846,25 +1858,6 @@ class BlueSteelEditor(object):
         parent_dir = self.work_blendshape.get_weight_parent_directory(weight)
         parent_dir_value = self.work_blendshape.get_target_dir_weight_value(parent_dir)
         return bool(parent_dir_value == 0)
-
-    # def create_extraction_mesh(self):
-    #     """
-    #     Create an extraction mesh by duplicating the base mesh. and connecting it to self.blendshape.
-    #     This will allow to extract pure shape deltas without any influence from other deformers.
-    #     """
-    #     base_mesh = self.base_mesh
-    #     if base_mesh is None:
-    #         raise ValueError("Base mesh not found.")
-    #     extraction_mesh_name = f"{self.editor_base_name}_extractionMesh"
-    #     extraction_group_name = f"{self.editor_base_name}_extractedShapes_GRP"
-    #     if not cmds.objExists(extraction_group_name):
-    #         cmds.createNode("transform", name=extraction_group_name)
-        
-    #     extraction_mesh = cmds.duplicate(base_mesh, name=extraction_mesh_name)[0]
-    #     extraction_mesh = cmds.parent(extraction_mesh, extraction_group_name)[0] #making sure name does not change
-    #     # we need to connect the extraction mesh to the blendshape
-    #     cmds.connectAttr(f"{self.blendshape.name}.outputGeometry[0]", f"{extraction_mesh}.inMesh", force=True)
-    #     return extraction_mesh
 
     def disable_all_deformers(self):
         """
