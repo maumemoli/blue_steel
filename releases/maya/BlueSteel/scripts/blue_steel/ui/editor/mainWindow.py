@@ -5378,9 +5378,21 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		menu = QMenu(self.split_primaries_tree)
 		split_selected_action = menu.addAction("Split selected shapes")
+		menu.addSeparator()
+		assign_menu = menu.addMenu("Assign to:")
+		try:
+			split_groups = self.current_editor.read_split_groups_attributes()
+		except Exception:
+			split_groups = {}
+		assign_actions = {}
+		for group_name in ["NoSplit"] + sorted(str(name) for name in split_groups.keys()):
+			assign_actions[assign_menu.addAction(group_name)] = group_name
+
 		selected_action = menu.exec(self.split_primaries_tree.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_primaries_tree.viewport().mapToGlobal(pos))
 		if selected_action == split_selected_action:
 			self._split_selected_shapes(self._selected_split_primary_names())
+		elif selected_action in assign_actions:
+			self._on_primary_split_group_changed(assign_actions[selected_action], self._selected_split_primary_names())
 
 	def _split_selected_shapes(self, primary_names: Sequence[str]) -> None:
 		if self.current_editor is None:
