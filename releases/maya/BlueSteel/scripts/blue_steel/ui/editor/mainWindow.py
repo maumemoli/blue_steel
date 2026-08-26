@@ -30,7 +30,7 @@ from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from .controllerLayoutWindow import ControllerLayoutWindow
 from .splitSettings import SplitPrimaryAssignmentsView
-from ..common import frameLayout
+from ..common.frameLayout import FrameLayout
 from ...api.mayaUtils import undoable
 from ..common.icons import (
 	ADD_ICON,
@@ -327,7 +327,7 @@ class TokenSearchBar(QWidget):
 
 
 class SplitMapsTree(QTreeWidget):
-	"""Draggable split maps shown with normalization state and tokens."""
+	"""Draggable split maps shown with normalization state and areas."""
 
 	MIME_TYPE = "application/x-blue-steel-split-map"
 	MAP_NAME_ROLE = Qt.UserRole + 1
@@ -342,7 +342,7 @@ class SplitMapsTree(QTreeWidget):
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
 		self.setColumnCount(3)
-		self.setHeaderLabels(["", "Split Map", "tokens"])
+		self.setHeaderLabels(["", "Split Map", "Areas"])
 		self.setRootIsDecorated(False)
 		self.setIndentation(0)
 		self.setUniformRowHeights(True)
@@ -368,16 +368,16 @@ class SplitMapsTree(QTreeWidget):
 			self.clear()
 			selected_item = None
 			for map_name in sorted(map_weights):
-				tokens = []
+				areas = []
 				for raw_weight_name in map_weights[map_name]:
-					token = str(raw_weight_name)
+					area = str(raw_weight_name)
 					prefix = f"{map_name}_"
-					if token.startswith(prefix):
-						token = token[len(prefix):]
-					tokens.append(token)
+					if area.startswith(prefix):
+						area = area[len(prefix):]
+					areas.append(area)
 				is_editing = map_name == editing_map
-				token_text = "[--EDIT MODE--]" if is_editing else f"[{', '.join(tokens)}]"
-				map_item = QTreeWidgetItem(["", map_name, token_text])
+				area_text = "[--EDIT MODE--]" if is_editing else f"[{', '.join(areas)}]"
+				map_item = QTreeWidgetItem(["", map_name, area_text])
 				map_item.setData(0, self.MAP_NAME_ROLE, map_name)
 				map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
 				self.addTopLevelItem(map_item)
@@ -396,7 +396,7 @@ class SplitMapsTree(QTreeWidget):
 				map_item.setData(0, self.STATUS_COLOR_ROLE, status_color)
 				map_item.setToolTip(0, status_text)
 				map_item.setToolTip(1, status_text)
-				map_item.setToolTip(2, token_text)
+				map_item.setToolTip(2, area_text)
 				if map_name == selected_map:
 					selected_item = map_item
 			if selected_item is None and self.topLevelItemCount():
@@ -473,6 +473,7 @@ class SplitGroupsTree(QTreeWidget):
 	mapSelected = Signal(str)
 	mapsChanged = Signal(dict)
 	mapDraggedOut = Signal(str, str)
+	groupSelected = Signal(str)
 
 	def __init__(self, parent=None) -> None:
 		super().__init__(parent)
@@ -552,6 +553,7 @@ class SplitGroupsTree(QTreeWidget):
 		}
 
 	def _on_current_item_changed(self, current, _previous) -> None:
+		self.groupSelected.emit(self._group_name(current))
 		if current is not None and current.parent() is not None:
 			self.mapSelected.emit(str(current.data(0, self.MAP_NAME_ROLE) or ""))
 
@@ -3428,8 +3430,8 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self._tools_group: Optional[QGroupBox] = None
 		self._tools_panel_buttons: List[QPushButton] = []
 		self._tools_panel_button_labels: Dict[QPushButton, str] = {}
-		self._tools_panel_sections: List[frameLayout.FrameLayout] = []
-		self._tools_panel_section_labels: Dict[frameLayout.FrameLayout, str] = {}
+		self._tools_panel_sections: List[FrameLayout] = []
+		self._tools_panel_section_labels: Dict[FrameLayout, str] = {}
 		self._shapes_header_buttons: List[QPushButton] = []
 		self._shapes_header_button_labels: Dict[QPushButton, str] = {}
 		self._shapes_header_full_width = 0
@@ -3454,6 +3456,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.split_primaries_tree: Optional[SplitPrimaryAssignmentsView] = None
 		self._split_primary_slider_delegate: Optional[SliderItemDelegate] = None
 		self.split_groups_tree: Optional[SplitGroupsTree] = None
+		self.split_group_preview_label: Optional[QLabel] = None
 		self.split_maps_list: Optional[SplitMapsTree] = None
 		self.split_map_weights_list: Optional[SplitMapWeightsList] = None
 		self.split_map_weight_stats_label: Optional[QLabel] = None
@@ -4093,12 +4096,23 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_group_controls.addStretch(1)
 		split_groups_splitter.addWidget(split_group_controls_widget)
 
+		split_groups_tree_widget = QWidget()
+		self._allow_horizontal_collapse(split_groups_tree_widget)
+		split_groups_tree_layout = QVBoxLayout(split_groups_tree_widget)
+		self._compact_layout(split_groups_tree_layout)
 		self.split_groups_tree = SplitGroupsTree()
 		self._allow_horizontal_collapse(self.split_groups_tree)
 		self.split_groups_tree.setToolTip(
 			"Select a group or map; drop maps onto groups, drag to reorder, or drag out to remove"
 		)
-		split_groups_splitter.addWidget(self.split_groups_tree)
+		split_groups_tree_layout.addWidget(self.split_groups_tree, 1)
+		self.split_groups_frame_layout = FrameLayout("Split Group Preview")
+		split_groups_tree_layout.addWidget(self.split_groups_frame_layout)
+		self.split_group_preview_label = QLabel()
+		self.split_group_preview_label.setWordWrap(True)
+		self.split_group_preview_label.setMinimumWidth(0)
+		self.split_groups_frame_layout.addWidget(self.split_group_preview_label)
+		split_groups_splitter.addWidget(split_groups_tree_widget)
 
 		split_maps_browser_group = QGroupBox("Split Maps")
 		self._allow_horizontal_collapse(split_maps_browser_group)
@@ -4551,7 +4565,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, track_enabled=False)
 		main_tools_layout.addWidget(self.mmtools_button)
 
-		editor_frame_layout = frameLayout.FrameLayout("Editor")
+		editor_frame_layout = FrameLayout("Editor")
 		self._tools_panel_sections.append(editor_frame_layout)
 		self._tools_panel_section_labels[editor_frame_layout] = "Editor"
 		self.select_editor_button = self._create_tool_button("Select Controller", SELECT_ICON)
@@ -4566,7 +4580,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		editor_frame_layout.addWidget(self.rename_button)
 		editor_frame_layout.addWidget(self.duplicate_button)
 
-		edit_shapes_frame_layout = frameLayout.FrameLayout("Shapes Edit")
+		edit_shapes_frame_layout = FrameLayout("Shapes Edit")
 		self._tools_panel_sections.append(edit_shapes_frame_layout)
 		self._tools_panel_section_labels[edit_shapes_frame_layout] = "Shapes Edit"
 		self.add_primary_button = self._create_tool_button("Add/Commit New Primary", ADD_ICON)
@@ -4583,7 +4597,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		edit_shapes_frame_layout.addWidget(self.delete_shapes_button)
 
 
-		preview_shapes_frame_layout = frameLayout.FrameLayout("Shapes Preview")
+		preview_shapes_frame_layout = FrameLayout("Shapes Preview")
 		self._tools_panel_sections.append(preview_shapes_frame_layout)
 		self._tools_panel_section_labels[preview_shapes_frame_layout] = "Shapes Preview"
 		self.unmute_all_shapes_button = self._create_tool_button("Unmute All Shapes", MUTE_OFF_ICON)
@@ -4593,7 +4607,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		self.toggle_hud_button = self._create_tool_button("Toggle HUD", HUD_ICON)
 		preview_shapes_frame_layout.addWidget(self.toggle_hud_button)
 
-		debug_shapes_frame_layout = frameLayout.FrameLayout("Debug")
+		debug_shapes_frame_layout = FrameLayout("Debug")
 		self._tools_panel_sections.append(debug_shapes_frame_layout)
 		self._tools_panel_section_labels[debug_shapes_frame_layout] = "Debug"
 		self.compare_shapes_button = self._create_tool_button("Compare Shapes", COMPARE_MESH_ICON)
@@ -4729,6 +4743,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self.split_groups_tree.mapSelected.connect(self._on_split_group_map_selected)
 			self.split_groups_tree.mapsChanged.connect(self._on_split_group_maps_changed)
 			self.split_groups_tree.mapDraggedOut.connect(self._on_split_group_map_dragged_out)
+			self.split_groups_tree.groupSelected.connect(self._on_split_group_selection_changed)
 		if self.split_maps_list is not None:
 			self.split_maps_list.currentMapChanged.connect(self._on_split_map_selection_changed)
 			self.split_maps_list.customContextMenuRequested.connect(self._show_split_maps_context_menu)
@@ -5159,7 +5174,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		map_weights = {}
 		for split_map_name in sorted(self.current_editor.get_split_maps()):
 			try:
-				map_weights[split_map_name] = self.current_editor.get_split_map_tokens(split_map_name)
+				map_weights[split_map_name] = self.current_editor.get_split_map_areas(split_map_name)
 			except Exception:
 				map_weights[split_map_name] = []
 		normalized_maps = {
@@ -5201,22 +5216,22 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 				self.split_map_weight_stats_label.setText("Press Check Normalization to check split maps.")
 			return
 		try:
-			tokens = self.current_editor.get_edit_split_map_tokens()
+			areas = self.current_editor.get_edit_split_map_areas()
 			weight_values = self.current_editor.get_current_edit_split_map_weight_values()
 		except Exception as exc:
 			self._set_status(f"Error reading split map weights: {exc}", error=True)
 			return
-		for raw_token in tokens:
+		for raw_area in areas:
 			prefix = f"{split_map_name}_"
-			weight_name = str(raw_token)
+			weight_name = str(raw_area)
 			if not weight_name.startswith(prefix):
 				weight_name = f"{prefix}{weight_name}"
-			display_token = weight_name
-			if display_token.startswith(prefix):
-				display_token = display_token[len(prefix):]
-			item = QListWidgetItem(display_token)
+			display_area = weight_name
+			if display_area.startswith(prefix):
+				display_area = display_area[len(prefix):]
+			item = QListWidgetItem(display_area)
 			item.setData(Qt.UserRole, weight_name)
-			item.setData(ShapeItemsModel.NameRole, display_token)
+			item.setData(ShapeItemsModel.NameRole, display_area)
 			item.setData(ShapeItemsModel.TypeRole, "SplitMapWeight")
 			item.setData(ShapeItemsModel.ValueRole, float(weight_values.get(weight_name, 0.0)))
 			item.setData(ShapeItemsModel.MutedRole, False)
@@ -5285,13 +5300,13 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 			self._set_status(f"Error reading current split-map edit mode: {exc}", error=True)
 			return None
 
-	def _selected_split_map_weight_token(self) -> Optional[str]:
+	def _selected_split_map_weight_area(self) -> Optional[str]:
 		if self.split_map_weights_list is None or self.split_map_weights_list.currentItem() is None:
 			return None
 		item = self.split_map_weights_list.currentItem()
-		raw_token = item.data(Qt.UserRole)
-		if raw_token:
-			return str(raw_token)
+		raw_area = item.data(Qt.UserRole)
+		if raw_area:
+			return str(raw_area)
 		return item.text().strip()
 
 	def _on_split_map_weight_selection_changed(self, current_item, _previous_item) -> None:
@@ -5301,11 +5316,11 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_map_name = self._current_edit_split_map_name()
 		if not split_map_name:
 			return
-		weight_token = str(current_item.data(Qt.UserRole) or current_item.text()).strip()
-		if not weight_token:
+		weight_area = str(current_item.data(Qt.UserRole) or current_item.text()).strip()
+		if not weight_area:
 			return
 		prefix = f"{split_map_name}_"
-		weight_name = weight_token if weight_token.startswith(prefix) else f"{prefix}{weight_token}"
+		weight_name = weight_area if weight_area.startswith(prefix) else f"{prefix}{weight_area}"
 		try:
 			edit_mesh = self.current_editor.split_map_edit_mesh
 			edit_mesh_shape = cmds.listRelatives(edit_mesh, shapes=True, fullPath=True) or []
@@ -5419,6 +5434,24 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		matching = self.split_maps_list.find_map(split_map_name)
 		if matching is not None:
 			self.split_maps_list.setCurrentItem(matching)
+
+	def _on_split_group_selection_changed(self, group_name: str) -> None:
+		if self.split_group_preview_label is None:
+			return
+		if self.current_editor is None or not group_name:
+			self.split_group_preview_label.setText("")
+			return
+		try:
+			primary_name, split_names = self.current_editor.preview_split_primary_name(group_name)
+		except Exception:
+			self.split_group_preview_label.setText(
+				f"<i>'{group_name}' has no split maps</i>"
+			)
+			return
+		split_lines = "<br>".join(f"{name}" for name in split_names)
+		self.split_group_preview_label.setText(
+			f"<b>{primary_name}:</b><br>{split_lines}"
+		)
 
 	def _on_split_map_selection_changed(self, split_map_name: str) -> None:
 		self._refresh_split_map_weights()
@@ -5546,11 +5579,11 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if not split_map_name:
 			return
 		if not weight_name:
-			weight_token = self._selected_split_map_weight_token()
-			if not weight_token:
+			weight_area = self._selected_split_map_weight_area()
+			if not weight_area:
 				return
 			prefix = f"{split_map_name}_"
-			weight_name = weight_token if weight_token.startswith(prefix) else f"{split_map_name}_{weight_token}"
+			weight_name = weight_area if weight_area.startswith(prefix) else f"{split_map_name}_{weight_area}"
 		try:
 			getattr(self.current_editor, method_name)(weight_name)
 		except Exception as exc:
@@ -5675,17 +5708,17 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_map_name = (split_map_name or "").strip()
 		if not split_map_name:
 			return
-		tokens_text, ok = QInputDialog.getText(
+		areas_text, ok = QInputDialog.getText(
 			self,
 			"Add Split Map Weights",
-			"Weight tokens (comma-separated, optional):",
+			"Weight areas (comma-separated, optional):",
 			text="L,R",
 		)
 		if not ok:
 			return
-		tokens = [token.strip() for token in str(tokens_text).split(",") if token.strip()]
+		areas = [area.strip() for area in str(areas_text).split(",") if area.strip()]
 		try:
-			self.current_editor.create_split_map(split_map_name, tokens)
+			self.current_editor.create_split_map(split_map_name, areas)
 		except Exception as exc:
 			self._set_status(f"Error adding split map: {exc}", error=True)
 			return
@@ -5806,60 +5839,60 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if not split_map_name:
 			self._set_status("Enter split-map edit mode first.", warning=True)
 			return
-		token_name, ok = QInputDialog.getText(self, "Add Split Map Weight", "Weight token name:")
+		area_name, ok = QInputDialog.getText(self, "Add Split Map Weight", "Weight area name:")
 		if not ok:
 			return
-		token_name = (token_name or "").strip()
-		if not token_name:
+		area_name = (area_name or "").strip()
+		if not area_name:
 			return
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.add_weight_to_split_map_edit_blendshape(split_map_name, token_name)
+			self.current_editor.add_weight_to_split_map_edit_blendshape(split_map_name, area_name)
 		except Exception as exc:
 			self._set_status(f"Error adding split-map weight: {exc}", error=True)
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
 		self._refresh_split_map_weights(split_map_name)
-		self._set_status(f"Added weight '{split_map_name}_{token_name}'.")
+		self._set_status(f"Added weight '{split_map_name}_{area_name}'.")
 
 	def _on_rename_split_map_weight_clicked(self) -> None:
 		if self.current_editor is None:
 			return
 		split_map_name = self._current_edit_split_map_name()
-		old_token = self._selected_split_map_weight_token()
-		if not split_map_name or not old_token:
+		old_area = self._selected_split_map_weight_area()
+		if not split_map_name or not old_area:
 			return
 		prefix = f"{split_map_name}_"
-		base_old_token = old_token[len(prefix):] if old_token.startswith(prefix) else old_token
-		new_token, ok = QInputDialog.getText(self, "Rename Split Map Weight", "New weight token:", text=base_old_token)
+		base_old_area = old_area[len(prefix):] if old_area.startswith(prefix) else old_area
+		new_area, ok = QInputDialog.getText(self, "Rename Split Map Weight", "New weight area:", text=base_old_area)
 		if not ok:
 			return
-		new_token = (new_token or "").strip()
-		if not new_token or new_token == base_old_token:
+		new_area = (new_area or "").strip()
+		if not new_area or new_area == base_old_area:
 			return
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.rename_edit_split_map_edit_blendshape_weight(split_map_name, base_old_token, new_token)
+			self.current_editor.rename_edit_split_map_edit_blendshape_weight(split_map_name, base_old_area, new_area)
 		except Exception as exc:
 			self._set_status(f"Error renaming split-map weight: {exc}", error=True)
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
 		self._reload_split_settings_from_editor()
-		self._set_status(f"Renamed weight '{split_map_name}_{base_old_token}' to '{split_map_name}_{new_token}'.")
+		self._set_status(f"Renamed weight '{split_map_name}_{base_old_area}' to '{split_map_name}_{new_area}'.")
 
 	def _on_paint_split_map_weight_mask_clicked(self) -> None:
 		if self.current_editor is None:
 			return
 		split_map_name = self._current_edit_split_map_name()
-		weight_token = self._selected_split_map_weight_token()
-		if not split_map_name or not weight_token:
+		weight_area = self._selected_split_map_weight_area()
+		if not split_map_name or not weight_area:
 			return
 		prefix = f"{split_map_name}_"
-		weight_name = weight_token if weight_token.startswith(prefix) else f"{split_map_name}_{weight_token}"
+		weight_name = weight_area if weight_area.startswith(prefix) else f"{split_map_name}_{weight_area}"
 		paint_weight = bool(QGuiApplication.keyboardModifiers() & Qt.AltModifier)
 		paint_method = (
 			self.current_editor.set_current_edit_split_map_weight_paint_weight
@@ -5878,20 +5911,20 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		if self.current_editor is None:
 			return
 		split_map_name = self._current_edit_split_map_name()
-		token_name = self._selected_split_map_weight_token()
-		if not split_map_name or not token_name:
+		area_name = self._selected_split_map_weight_area()
+		if not split_map_name or not area_name:
 			return
 		if self.split_map_edit_blendshape_tracker is not None:
 			self.split_map_edit_blendshape_tracker.stop()
 		try:
-			self.current_editor.remove_weight_from_split_map_edit_blendshape(split_map_name, token_name)
+			self.current_editor.remove_weight_from_split_map_edit_blendshape(split_map_name, area_name)
 		except Exception as exc:
 			self._set_status(f"Error removing split-map weight: {exc}", error=True)
 			return
 		finally:
 			self._setup_split_map_edit_blendshape_tracker()
 		self._refresh_split_map_weights(split_map_name)
-		self._set_status(f"Removed weight '{token_name}'.")
+		self._set_status(f"Removed weight '{area_name}'.")
 
 	def _show_controller_layout_window(self) -> None:
 		if self._controller_layout_window is None:
