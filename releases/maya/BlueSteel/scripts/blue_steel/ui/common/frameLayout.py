@@ -24,13 +24,12 @@ class FrameLayout (QtWidgets.QWidget):
         self.layout.setSpacing (0)
         self.layout.setContentsMargins(3, 3, 3, 3)
         # adding widgets
-        self.init_widget ()
+        self._init_widget ()
 
         # colors
         self.colorR = 100
         self.colorG = 100
         self.colorB = 100
-        self.title.clicked.connect (self.collapse)
 
         # set the content layout
         self.content_layout = QtWidgets.QVBoxLayout ()
@@ -38,10 +37,8 @@ class FrameLayout (QtWidgets.QWidget):
         self.content_layout.setSpacing (4)
         self.content_layout.setContentsMargins (0 , 4 , 0 , 4)
         self.title.setChecked (True)
-        # initial collapse
-        #self.collapse ()
 
-    def init_widget(self):
+    def _init_widget(self):
         self._create_frame ()
         self._create_title ()
 
@@ -69,24 +66,25 @@ class FrameLayout (QtWidgets.QWidget):
         self.title.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         
         # Connect to toggled instead of clicked for better checkable button behavior
-        self.title.toggled.connect(self.collapse)
+        self.title.toggled.connect(self.toggle_expand)
 
-    def collapse(self, checked=None):
-        # If called from toggled signal, use the parameter, otherwise check button state
-        if checked is None:
-            is_expanded = self.title.isChecked()
+    def toggle_expand(self):
+        status = not self.title.isChecked()
+        if status:
+            self.collapse()
         else:
-            is_expanded = checked
-            
-        if is_expanded:
-            content_height = self.content_layout.sizeHint().height()
-            self.frame.setMaximumHeight(167777)
-            self.frame.setMinimumHeight(content_height)
-            self.title.setArrowType(QtCore.Qt.ArrowType.DownArrow)
-        else:
-            self.frame.setMinimumHeight(0)
-            self.frame.setMaximumHeight(0)
-            self.title.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+            self.expand()
+
+    def expand(self):
+        content_height = self.content_layout.sizeHint().height()
+        self.frame.setMaximumHeight(167777)
+        self.frame.setMinimumHeight(content_height)
+        self.title.setArrowType(QtCore.Qt.ArrowType.DownArrow)
+
+    def collapse(self):
+        self.frame.setMinimumHeight(0)
+        self.frame.setMaximumHeight(0)
+        self.title.setArrowType(QtCore.Qt.ArrowType.RightArrow)
 
     def setColor(self , r , g , b):
         self.r = r

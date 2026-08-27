@@ -70,7 +70,7 @@ from ..common.icons import (
 	PASTE_MULTIPLY_WEIGHTS_ICON,
 	SOFT_MOD_ICON,
 	FILTER_ACTIVE_VALUES_ICON,
-
+	SPLIT_ICON,
 
 )
 from ...mmtools import ui
@@ -4108,11 +4108,12 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_groups_tree_layout.addWidget(self.split_groups_tree, 1)
 		self.split_groups_frame_layout = FrameLayout("Split Group Preview")
 		split_groups_tree_layout.addWidget(self.split_groups_frame_layout)
-		self.split_group_preview_label = QLabel()
+		self.split_group_preview_label = QLabel("<i>Select a split group to preview its maps.</i>")
 		self.split_group_preview_label.setWordWrap(True)
 		self.split_group_preview_label.setMinimumWidth(0)
 		self.split_groups_frame_layout.addWidget(self.split_group_preview_label)
 		split_groups_splitter.addWidget(split_groups_tree_widget)
+		self.split_groups_frame_layout.collapse()
 
 		split_maps_browser_group = QGroupBox("Split Maps")
 		self._allow_horizontal_collapse(split_maps_browser_group)
@@ -4319,6 +4320,11 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		split_map_labels_layout.addWidget(self.split_map_weights_label)
 		split_maps_layout.addLayout(split_map_labels_layout)
 		right_layout.addWidget(split_maps_group, 1)
+
+		self.split_primaries_button = QPushButton("Create Split Editor")
+		self.split_primaries_button.setIcon(SPLIT_ICON)
+		self.split_primaries_button.setToolTip("Create a new split editor")
+		split_maps_layout.addWidget(self.split_primaries_button)
 
 		split_settings_splitter.addWidget(right_column)
 		split_settings_splitter.setStretchFactor(0, 1)
@@ -6368,6 +6374,10 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		import_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
 		import_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._import_shapes_from_blendshape_node(absolute_delta=True))
 		import_blendshape_node_menu.addAction(import_absolute_blendshape_node_action)
+		import_split_data_action = QAction("Import Split Data", self)
+		import_split_data_action.triggered.connect(self._import_split_data)
+		import_menu.addAction(import_split_data_action)
+
 
 		export_menu = file_menu.addMenu("Export")
 		export_objs_action = QAction("Export Objs", self)
@@ -6380,12 +6390,18 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		export_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
 		export_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._export_shapes_as_blendshape_node(absolute_delta=True))
 		export_blendshape_node_menu.addAction(export_absolute_blendshape_node_action)
+		export_split_data_action = QAction("Export Split Data", self)
+		export_split_data_action.triggered.connect(self._export_split_data)
+		export_menu.addAction(export_split_data_action)
+
 		self.blendshape_node_io_actions = [
 			import_blendshape_node_action,
 			import_absolute_blendshape_node_action,
 			export_blendshape_node_action,
 			export_absolute_blendshape_node_action,
 		]
+
+
 
 		utilities_menu = menu_bar.addMenu("Utilities")
 		self.rename_editor_action = QAction("Rename Editor", self)
@@ -6398,21 +6414,6 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		recover_editor_action.setToolTip("Not available yet in the Model/View editor.")
 		recover_editor_action.setEnabled(False)
 		utilities_menu.addAction(recover_editor_action)
-
-		split_shapes_menu = menu_bar.addMenu("Split Shapes")
-		split_shapes_menu.setToolTip("Split shapes into multiple shapes based on the current split settings.")
-
-		import_split_data_action = QAction("Import Split Data", self)
-		import_split_data_action.triggered.connect(self._import_split_data)
-		split_shapes_menu.addAction(import_split_data_action)
-
-		export_split_data_action = QAction("Export Split Data", self)
-		export_split_data_action.triggered.connect(self._export_split_data)
-		split_shapes_menu.addAction(export_split_data_action)
-
-		create_split_shapes_editor_action = QAction("Create Split Shapes Editor", self)
-		create_split_shapes_editor_action.triggered.connect(self._on_create_split_shapes_editor_requested)
-		split_shapes_menu.addAction(create_split_shapes_editor_action)
 
 		collapsed = True
 		if cmds.nodeEditor("nodeEditorPanel1NodeEditorEd", exists=True):

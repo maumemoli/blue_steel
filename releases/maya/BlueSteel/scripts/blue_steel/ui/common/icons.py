@@ -71,4 +71,5 @@ paste_inverted_weights_icon_path = join_icons_path("paste_inverted_weights_icon.
 PASTE_INVERTED_WEIGHTS_ICON = QIcon(paste_inverted_weights_icon_path)
 filter_active_values_icon_path = join_icons_path("filter_active_values_icon.svg")
 FILTER_ACTIVE_VALUES_ICON = QIcon(filter_active_values_icon_path)
-SOFT_MOD_ICON = QIcon(":/softMod.png")
+SOFT_MOD_ICON = colorize_icon(QIcon(":/softMod.png"))
+SPLIT_ICON = colorize_icon(QIcon(":/split.png"))
