@@ -4958,11 +4958,14 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 	def _on_main_tab_changed(self, index: int) -> None:
 		if self.main_tabs is None:
 			return
-		tab_name = self.main_tabs.tabText(index)
-		is_split_tab = tab_name == "Split Settings"
+		# tab_name = self.main_tabs.tabText(index)
+		is_split_tab = self._is_split_tab_active()
 		self._sync_split_map_edit_mesh_visibility(is_split_tab)
-		if is_split_tab and self._split_settings_refresh_pending:
-			self._reload_split_settings_from_editor()
+		if is_split_tab:
+			# we need to update the split primaries values
+			self._refresh_split_primary_assignments()
+			if self._split_settings_refresh_pending:
+				self._reload_split_settings_from_editor()
 
 	def _is_split_tab_active(self) -> bool:
 		return bool(self.main_tabs is not None and self.main_tabs.currentIndex() == 1)
