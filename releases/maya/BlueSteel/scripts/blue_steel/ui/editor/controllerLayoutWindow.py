@@ -17,7 +17,6 @@ if env.MAYA_VERSION > 2024:
         QFileDialog,
         QFormLayout,
         QFrame,
-        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,

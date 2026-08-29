@@ -1863,11 +1863,9 @@ class BlueSteelEditor(object):
             bool: The muted state of the work shape
         """
         if self.work_blendshape is None:
-            return False
             raise ValueError("Work blendshape not found.")
         weight = self.work_blendshape.get_weight_by_name(shape_name)
         if weight is None:
-            return False
             raise ValueError(f"Work shape '{shape_name}' not found in work blendshape.")
         parent_dir = self.work_blendshape.get_weight_parent_directory(weight)
         parent_dir_value = self.work_blendshape.get_target_dir_weight_value(parent_dir)

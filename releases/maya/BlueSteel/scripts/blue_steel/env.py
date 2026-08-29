@@ -1,7 +1,6 @@
 import os
 import sys
 from maya import cmds
-import importlib
 """
 Here go all the evnvironment variables that are used in the project.
 """

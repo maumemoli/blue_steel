@@ -21,7 +21,6 @@ try:
     from mh_character_assembler.importer import CharacterImporter
     from mh_character_assembler.config import Config
     from mh_assemble_lib.model.dnalib import DNAReader, Layer
-    from mh_character_assembler.core.util import MayaUtil
 
 except ImportError:
     import traceback

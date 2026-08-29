@@ -197,8 +197,6 @@ class ShapeEditor(object):
             for child in root_children:
                 print(child)
         return root_idxs
-        idx = cmds.getAttr("shapeEditorManager.blendShapeDirectory[0].childIndices", multiIndices=True) or []
-        return idx
 
     def add_items_to_root_group(items: list, group_id: int):
         """

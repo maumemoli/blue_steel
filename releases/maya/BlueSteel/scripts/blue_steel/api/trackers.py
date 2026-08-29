@@ -1,7 +1,7 @@
 from .. import env
 from . import logger
 import logging
-from enum import auto, Enum
+from enum import Enum
 from typing import List
 import traceback
 import maya.api.OpenMaya as om2
@@ -427,7 +427,7 @@ class BlendShapeNodeTracker(QObject):
             self.kill()
         
     ### ------------------------------------------------------------------
-    def _on_dirty_plug(self, node: om2.MObject, dirtyPlug: om2.MPlug, clientData):
+    def _on_dirty_plug(self, node: om2.MObject, dirtyPlug: om2.MPlug):
         # This callback is called when a plug is dirtied
         # We can use it to monitor changes to the weight and targetVisibility plugs
         if dirtyPlug != self._weight_plug or not dirtyPlug.isElement:
@@ -442,7 +442,7 @@ class BlendShapeNodeTracker(QObject):
             self.plugIsDirty.emit(logical_index, shape_name)
 
     ### ------------------------------------------------------------------ 
-    def _on_attribute_changed(self, message, plugChanged: om2.MPlug, otherPlugChanged, clentData):
+    def _on_attribute_changed(self, message, plugChanged: om2.MPlug):
 
 
         if message & om2.MNodeMessage.kConnectionMade:
@@ -756,7 +756,7 @@ class ControllerTracker(QObject):
     # Callback handlers
     # ------------------------------------------------------------------
 
-    def _on_attribute_changed(self, message, plug: om2.MPlug, other_plug: om2.MPlug, client_data):
+    def _on_attribute_changed(self, message, plug: om2.MPlug):
         """Handles attribute change messages from MNodeMessage."""
         if plug.isNull:
             return
