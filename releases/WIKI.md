@@ -1,6 +1,6 @@
 # Blue Steel Wiki
 
-Current documented version: **v1.6.0-beta.7**
+Current documented version: **v1.6.0**
 
 ## Overview
 
@@ -104,7 +104,8 @@ areas:
 - **Primary Split Group Assignment**: assigns each primary shape to a Split
   Group.
 - **Split Groups**: organizes one or more reusable Split Maps for assignment to
-  primaries.
+  primaries. Split Groups can now use the `<<SHAPE_NAME>>` placeholder to
+  control where the primary name is placed relative to the split regions.
 - **Split Maps**: manages the available maps and their regions.
 - **Split Map Editor**: creates and edits the normalized regions of a selected
   map.
@@ -124,10 +125,10 @@ A **Split Group** is an ordered collection of Split Maps. Primaries are assigned
 to Split Groups, rather than defining all of their split regions independently.
 This makes the maps reusable across many primaries and combinations.
 
-### Map Order and Suffixes
+### Map Order and Name Placement
 
 The order of the Split Maps in a Split Group determines the order of the
-suffixes in the generated shape names.
+regions/suffixes in the generated shape names.
 
 For example, combining an `UpperLower` map with a `LeftRight` map produces four
 regions:
@@ -140,6 +141,18 @@ regions:
 When `UpperLower` comes before `LeftRight`, the generated suffix order is `UL`,
 `UR`, `DL`, `DR`. Changing the map order changes how the suffixes are composed,
 so Split Group order should be chosen deliberately and kept consistent.
+
+#### Using <<SHAPE_NAME>>
+
+You can use the `<<SHAPE_NAME>>` placeholder within a Split Group to control where the primary shape name is inserted relative to the split regions. This allows you to determine which components act as prefixes and which act as suffixes.
+
+- **Maps as Suffixes**: Place `<<SHAPE_NAME>>` at the beginning of the list.
+  - Example: `[<<SHAPE_NAME>>, LeftRight]` -> `browUpL`
+- **Maps as Prefixes**: Place `<<SHAPE_NAME>>` at the end of the list.
+  - Example: `[LeftRight, <<SHAPE_NAME>>]` -> `LBrowUp`
+- **Mixed (Prefixes & Suffixes)**: Place `<<SHAPE_NAME>>` in the middle of the list. Maps before it become prefixes, and maps after it become suffixes.
+  - Example: `[LeftRight, <<SHAPE_NAME>>, UpDown]` `browUp`-> `LBrowUpU`
+  - *(Note: When a map acts as a prefix, the primary name is typically capitalized to maintain readability, e.g., `browUp` will be named: `LBrowUpU`).*
 
 ## How Combo Splits Avoid Duplication
 
