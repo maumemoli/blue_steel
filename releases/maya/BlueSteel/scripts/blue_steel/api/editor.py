@@ -219,6 +219,8 @@ class BlueSteelEditor(object):
         self.split_maps_mesh = None
         self.deformers_node_states = {}
 
+        self._stored_pose = {}
+
         # these are used to store information when the creatte_split_maps function is called.
         self.split_blendshape_to_connect = None
         self.split_bake_mesh = None
@@ -270,7 +272,6 @@ class BlueSteelEditor(object):
         self.switch_visibility_to_split_map_edit_mesh(False)
         self._get_skin_cluster()
         self._ensure_split_shape_name_item_in_groups()
-        self.zero_out()
 
     #-----------------------------
     # SkinCluster Setup
@@ -749,23 +750,6 @@ class BlueSteelEditor(object):
 
         # we need to check if the indices of the mid layer blendshapes are in the available indices
 
-
-    # def get_base_mesh_shape(self):
-    #     base_meshes = self.blendshape.get_base()
-    #     if len(base_meshes) == 1:
-    #         return base_meshes[0]
-    #     else:
-    #         for mesh in base_meshes:
-    #             if cmds.nodeType(mesh) == "mesh":
-    #                 return mesh
-    
-
-    # def get_base_mesh(self):
-    #     shape = self.get_base_mesh_shape()
-    #     if shape:
-    #         return cmds.listRelatives(shape, parent=True, fullPath=True)[0]
-    #     return None
-    
     
     #############################################################################################
     def build_network(self):
@@ -817,6 +801,30 @@ class BlueSteelEditor(object):
         for shape in self.network.get_primary_shapes():
             #self.set_primary_shape_value(shape, 0.0)
             cmds.setAttr(f"{self.face_ctrl}.{shape}", 0.0)
+
+    def _store_current_pose(self):
+        """
+        Store the current pose of the Blue Steel rig.
+        This will store the current values of all the primary shapes in the rig.
+        """
+        if self.face_ctrl is None:
+            raise ValueError("Face control not found in the editor.")
+        for shape in self.network.get_primary_shapes():
+            value = cmds.getAttr(f"{self.face_ctrl}.{shape}")
+            self._stored_pose[shape] = value
+
+    def _restore_stored_pose(self):
+        """
+        Restore the stored pose of the Blue Steel rig.
+        This will set the values of all the primary shapes in the rig to the stored values.
+        """
+        if self.face_ctrl is None:
+            raise ValueError("Face control not found in the editor.")
+        for shape, value in self._stored_pose.items():
+            try:
+                cmds.setAttr(f"{self.face_ctrl}.{shape}", value)
+            except Exception as e:
+                print(f"Warning: Could not restore shape '{shape}' to value {value}. Error: {e}")
 
     def set_primary_shape_value(self, shape: Shape, value: float):
         """
@@ -1344,7 +1352,10 @@ class BlueSteelEditor(object):
         for parent, value in zip(shape.parents, shape.values):
             # print(f"    Setting {parent} to {value}")
             primary = parent.primaries[0]
-            cmds.setAttr(f"{self.face_ctrl}.{primary}", value)
+            try:
+                cmds.setAttr(f"{self.face_ctrl}.{primary}", value)
+            except Exception as e:
+                print(f"Failed to set attribute {self.face_ctrl}.{primary} to {value}: {e}")
 
     @undoable
     def remove_shapes(self, shape_names: list):
@@ -2184,10 +2195,15 @@ class BlueSteelEditor(object):
             import_path (str): The path to the mb or ma file to import
             absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
         """
+        # let's store the current pose
+        self._store_current_pose()
         blendshape_node = self.import_blendshape_node(import_path)
         self.ingest_shapes_from_blendshape_node(blendshape_node, absolute_delta=absolute_delta)
         # we can delete the imported blendshape node now
         cmds.delete(blendshape_node)
+        # restore the previous pose
+        self.zero_out()
+        self._restore_stored_pose()
 
     def export_shapes_as_blendshape_node(self, export_path: str, absolute_delta: bool = False):
         """
@@ -2196,6 +2212,7 @@ class BlueSteelEditor(object):
             export_path (str): The path to export the mb or ma file to
             absolute_delta (bool): Whether to export the blendshape node as an absolute delta
         """
+        self._store_current_pose()
         if self.blendshape is None:
             raise ValueError("Main blendshape not found.")
 
@@ -2208,6 +2225,8 @@ class BlueSteelEditor(object):
         else:
             blendshape_name = self.blendshape.name
             self.export_blendshape_node(blendshape_name, export_path)
+        self.zero_out()
+        self._restore_stored_pose()
 
 
 

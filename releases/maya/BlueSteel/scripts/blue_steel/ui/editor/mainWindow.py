@@ -7129,7 +7129,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 
 		menu = QMenu(sender)
 		extract_action = menu.addAction("Extract Selected")
-		reset_deltas_action = menu.addAction("Reset Deltas")
+		
 		set_color_menu = menu.addMenu("Set Color")
 		color_actions = {}
 		for color_name, color_hex in SHAPE_CUSTOM_COLORS.items():
@@ -7138,6 +7138,7 @@ class MainWindow(MayaQWidgetDockableMixin, QMainWindow):
 		set_color_menu.addSeparator()
 		clear_color_action = set_color_menu.addAction("Clear")
 		menu.addSeparator()
+		reset_deltas_action = menu.addAction("Reset Deltas")
 		delete_action = menu.addAction("Delete")
 		if hasattr(menu, "exec"):
 			selected_action = menu.exec(sender.mapToGlobal(pos))
