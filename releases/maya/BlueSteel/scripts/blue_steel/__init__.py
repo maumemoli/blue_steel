@@ -64,5 +64,5 @@ def show():
         >>> import blue_steel
         >>> win = blue_steel.show()
     """
-    from blue_steel.ui.editor.mainWindow import show as _show
+    from blue_steel.ui.editor.main_window import show as _show
     return _show()

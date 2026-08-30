@@ -1,11 +1,11 @@
 """Blue Steel editor UI package.
 
 The main window is exposed through :mod:`blue_steel.ui.editor.main_window`.
-A legacy ``mainWindow`` facade module is kept for backward compatibility.
+To open the editor, use the top-level ``blue_steel.show()`` entry point.
 
 Example:
-    >>> from blue_steel.ui.editor import mainWindow
-    >>> win = mainWindow.show()
+    >>> import blue_steel
+    >>> win = blue_steel.show()
 """
 
 from blue_steel.ui.editor.main_window import MainWindow, show, get_maya_main_window

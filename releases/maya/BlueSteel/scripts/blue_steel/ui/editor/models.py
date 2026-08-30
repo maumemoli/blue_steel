@@ -2,7 +2,7 @@
 
 This module holds the shared shape source model, the work-shape model, and the
 proxy models that present filtered views of the source model. It is extracted
-from the monolithic ``mainWindow`` module so model logic stays UI-independent.
+from the monolithic editor window module so model logic stays UI-independent.
 
 Example:
     >>> from blue_steel.ui.editor import models

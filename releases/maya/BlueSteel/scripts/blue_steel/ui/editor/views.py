@@ -1,6 +1,6 @@
 """List and tree views used by the editor panels.
 
-Extracted from the monolithic ``mainWindow`` module. These views own drag and
+Extracted from the monolithic editor window module. These views own drag and
 drop, keyboard navigation, and icon hit-testing; the visual painting lives in
 :mod:`blue_steel.ui.editor.delegates`.
 

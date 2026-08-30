@@ -1,6 +1,6 @@
 """Item delegates that paint and edit slider-style value rows.
 
-Extracted from the monolithic ``mainWindow`` module. The delegates own custom
+Extracted from the monolithic editor window module. The delegates own custom
 painting, value-drag interaction, and icon hit-testing used by the primaries,
 shapes, active-shapes, work-shapes, and split-weight lists.
 
