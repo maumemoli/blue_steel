@@ -686,7 +686,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status(f"Error creating editor: {exc}", error=True)
             return
 
-        if isinstance(self.scene_editor_tracker, BlueSteelEditorsTracker):
+        if hasattr(self.scene_editor_tracker, "register_scene_editor_nodes"):
             self.scene_editor_tracker.register_scene_editor_nodes()
         self.set_current_editor(new_editor)
         self._set_status(f"Created new system with root: {selection[0]}")
