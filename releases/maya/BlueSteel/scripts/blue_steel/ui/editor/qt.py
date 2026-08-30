@@ -79,6 +79,7 @@ if env.MAYA_VERSION > 2024:
         QPushButton,
         QSizePolicy,
         QSplitter,
+        QSplitterHandle,
         QStatusBar,
         QStyle,
         QStyledItemDelegate,
@@ -107,8 +108,6 @@ else:
         Signal,
     )
     from PySide2.QtGui import (
-        QAction,
-        QActionGroup,
         QColor,
         QCursor,
         QDoubleValidator,
@@ -122,6 +121,8 @@ else:
     )
     from PySide2.QtWidgets import (
         QAbstractItemView,
+        QAction,
+        QActionGroup,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -145,6 +146,7 @@ else:
         QPushButton,
         QSizePolicy,
         QSplitter,
+        QSplitterHandle,
         QStatusBar,
         QStyle,
         QStyledItemDelegate,
@@ -285,3 +287,32 @@ def shape_custom_color_to_qcolor(value) -> Optional[QColor]:
     else:
         return None
     return color if color.isValid() else None
+
+
+class SplitterHandle(QSplitterHandle):
+    """Splitter handle that always restores the default cursor on leave.
+
+    Qt sets the resize cursor once on the handle and relies on its normal
+    enter/leave delivery to swap the pointer shape back to the arrow. When the
+    editor is docked (Maya workspace control) that leave delivery is sometimes
+    missed, leaving the resize cursor stuck. Overriding the cursor here makes
+    the restore explicit.
+    """
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if self.orientation() == Qt.Horizontal:
+            self.setCursor(Qt.SplitHCursor)
+        else:
+            self.setCursor(Qt.SplitVCursor)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self.unsetCursor()
+        super().leaveEvent(event)
+
+
+class Splitter(QSplitter):
+    """QSplitter that uses :class:`SplitterHandle` for its resize handles."""
+
+    def createHandle(self):  # noqa: N802
+        return SplitterHandle(self.orientation(), self)

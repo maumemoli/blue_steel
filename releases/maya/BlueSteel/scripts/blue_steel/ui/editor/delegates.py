@@ -64,7 +64,9 @@ class _DragEventFilter(QObject):
     def eventFilter(self, watched, event):  # noqa: N802
         if event.type() == QEvent.MouseMove and self._delegate.is_drag_active():
             self._delegate.external_drag_move(self._delegate.viewport_x_from_global(QCursor.pos()))
-            return True
+            # Pass the event through so Qt keeps updating hover/enter/leave state
+            # and the pointer cursor (e.g. reverting a splitter resize cursor).
+            return False
         if event.type() == QEvent.MouseButtonRelease and self._delegate.is_drag_active():
             if event.button() == Qt.LeftButton:
                 self._delegate.external_drag_end(self._delegate.viewport_x_from_global(QCursor.pos()))
@@ -127,6 +129,7 @@ class SliderItemDelegate(QStyledItemDelegate):
         self._drag_target_indexes: List[QPersistentModelIndex] = []
         self._drag_target_start_values: Dict[QPersistentModelIndex, float] = {}
         self._drag_event_filter = _DragEventFilter(self)
+        self._drag_cursor_overridden = False
 
     def _open_drag_undo_chunk(self) -> None:
         if self._undo_chunk_open:
@@ -555,6 +558,8 @@ class SliderItemDelegate(QStyledItemDelegate):
             self._drag_target_indexes = [self._drag_index]
             self._drag_target_start_values[self._drag_index] = self._drag_start_value
         self._install_drag_event_filter()
+        QApplication.setOverrideCursor(Qt.ArrowCursor)
+        self._drag_cursor_overridden = True
         self._open_drag_undo_chunk()
         self.valueDragStarted.emit()
         self._set_drag_value_from_pos(model, event_pos.x())
@@ -571,6 +576,9 @@ class SliderItemDelegate(QStyledItemDelegate):
         self._drag_target_indexes = []
         self._drag_target_start_values = {}
         self._remove_drag_event_filter()
+        if self._drag_cursor_overridden:
+            QApplication.restoreOverrideCursor()
+            self._drag_cursor_overridden = False
         self.valueDragEnded.emit()
         self._close_drag_undo_chunk()
 

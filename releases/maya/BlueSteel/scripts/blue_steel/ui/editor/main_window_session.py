@@ -346,7 +346,7 @@ class EditorSessionMixin(MainWindowMixin):
     def _reload_editor_menu(self) -> None:
         current_name = self.current_editor.name if self.current_editor else self.EMPTY_SYSTEM_LABEL
         names = []
-        if isinstance(self.scene_editor_tracker, BlueSteelEditorsTracker):
+        if hasattr(self.scene_editor_tracker, "get_editor_names"):
             names = sorted(self.scene_editor_tracker.get_editor_names())
 
         self.editor_combo.blockSignals(True)

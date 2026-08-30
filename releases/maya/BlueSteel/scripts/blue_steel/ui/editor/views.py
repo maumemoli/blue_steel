@@ -21,7 +21,6 @@ from .constants import (
     PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_NAMES_MIME_TYPE,
 )
-from .delegates import SliderItemDelegate
 from .models import ShapeItemsModel, WorkShapeItemsModel
 from .qt import (
     QAbstractItemView,
@@ -75,6 +74,16 @@ PRIMARY_DATA_ROLES = (
 )
 
 
+def _is_slider_delegate(delegate) -> bool:
+    """Return True when ``delegate`` exposes the slider drag API.
+
+    Uses duck typing instead of ``isinstance`` so that reloading the package
+    (which recreates class objects) does not break the checks in the view mouse
+    handlers.
+    """
+    return hasattr(delegate, "external_drag_start") and hasattr(delegate, "is_drag_active")
+
+
 class SliderDragViewMixin:
     """Shared mouse handling for slider-style item views.
 
@@ -109,7 +118,7 @@ class SliderDragViewMixin:
             delegate = self._slider_delegate()
             index = self.indexAt(event.pos())
             if (
-                isinstance(delegate, SliderItemDelegate)
+                _is_slider_delegate(delegate)
                 and index.isValid()
                 and not bool(index.data(ShapeItemsModel.IsHeaderRole))
                 and bool(index.data(ShapeItemsModel.EditableRole))
@@ -123,7 +132,7 @@ class SliderDragViewMixin:
 
     def mouseMoveEvent(self, event):  # noqa: N802
         delegate = self._slider_delegate()
-        if isinstance(delegate, SliderItemDelegate) and delegate.is_drag_active():
+        if _is_slider_delegate(delegate) and delegate.is_drag_active():
             if delegate.external_drag_move(event.pos().x()):
                 event.accept()
                 return
@@ -137,7 +146,7 @@ class SliderDragViewMixin:
 
         delegate = self._slider_delegate()
         if (
-            isinstance(delegate, SliderItemDelegate)
+            _is_slider_delegate(delegate)
             and event.button() == Qt.LeftButton
             and delegate.is_drag_active()
         ):
@@ -227,7 +236,7 @@ class PrimaryDropListView(SliderDragViewMixin, QListView):
 
     def _resolve_mute_icon_click(self, event_pos) -> Optional[tuple]:
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -252,7 +261,7 @@ class PrimaryDropListView(SliderDragViewMixin, QListView):
 
     def _resolve_lock_icon_click(self, event_pos) -> Optional[tuple]:
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -361,7 +370,7 @@ class SliderListView(SliderDragViewMixin, QListView):
     def _resolve_mute_icon_click(self, event_pos) -> Optional[tuple]:
         """Return (shape_name, next_state) if event is on mute icon, else None."""
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -387,7 +396,7 @@ class SliderListView(SliderDragViewMixin, QListView):
     def _resolve_connected_mesh_icon_click(self, event_pos) -> Optional[str]:
         """Return shape name if event is on enabled connected-mesh icon, else None."""
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -414,7 +423,7 @@ class SliderListView(SliderDragViewMixin, QListView):
     def _resolve_lock_icon_click(self, event_pos) -> Optional[tuple]:
         """Return (shape_name, next_state) if event is on lock icon, else None."""
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -440,7 +449,7 @@ class SliderListView(SliderDragViewMixin, QListView):
     def _resolve_work_edit_mode_icon_click(self, event_pos) -> Optional[tuple]:
         """Return (shape_name, next_state) if event is on the edit-mode icon."""
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         index = self.indexAt(event_pos)
@@ -465,7 +474,7 @@ class SliderListView(SliderDragViewMixin, QListView):
 
     def _resolve_icon_click(self, event_pos):
         delegate = self.itemDelegate()
-        if not isinstance(delegate, SliderItemDelegate):
+        if not _is_slider_delegate(delegate):
             return None
 
         connected_shape_name = self._resolve_connected_mesh_icon_click(event_pos)
@@ -655,7 +664,7 @@ class ShapeTreeWidget(SliderDragViewMixin, QTreeWidget):
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
         delegate = self.itemDelegateForColumn(0)
-        if not index.isValid() or not isinstance(delegate, SliderItemDelegate):
+        if not index.isValid() or not _is_slider_delegate(delegate):
             return None
         if bool(index.data(ShapeItemsModel.IsHeaderRole)):
             return None
@@ -773,7 +782,7 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
         delegate = self.itemDelegateForColumn(0)
-        if not index.isValid() or not isinstance(delegate, SliderItemDelegate):
+        if not index.isValid() or not _is_slider_delegate(delegate):
             return None
         if bool(index.data(ShapeItemsModel.IsHeaderRole)):
             return None

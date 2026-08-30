@@ -131,6 +131,7 @@ from .qt import (
     QSizePolicy,
     QSortFilterProxyModel,
     QSplitter,
+    Splitter,
     QStatusBar,
     QStyle,
     QStyledItemDelegate,
@@ -300,7 +301,7 @@ class EditorUiMixin(MainWindowMixin):
         controls_layout.addWidget(self.heat_map_switch)
         root_layout.addLayout(controls_layout)
 
-        workspace_splitter = QSplitter(Qt.Horizontal)
+        workspace_splitter = Splitter(Qt.Horizontal)
         workspace_splitter.setChildrenCollapsible(True)
         workspace_splitter.setHandleWidth(2)
         self._allow_horizontal_collapse(workspace_splitter)
@@ -325,7 +326,7 @@ class EditorUiMixin(MainWindowMixin):
         self._build_split_settings_tab(split_settings_tab)
         self.main_tabs.addTab(split_settings_tab, "Split Settings")
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = Splitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(True)
         splitter.setHandleWidth(2)
         self._allow_horizontal_collapse(splitter)
@@ -554,7 +555,7 @@ class EditorUiMixin(MainWindowMixin):
         third_column_layout = QVBoxLayout(third_column_panel)
         third_column_layout.setContentsMargins(0, 0, 0, 0)
         third_column_layout.setSpacing(self.COMPACT_SPACING)
-        third_column_splitter = QSplitter(Qt.Vertical)
+        third_column_splitter = Splitter(Qt.Vertical)
         third_column_splitter.setChildrenCollapsible(True)
         third_column_splitter.setHandleWidth(2)
         third_column_layout.addWidget(third_column_splitter, 1)
