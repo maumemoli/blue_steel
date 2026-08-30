@@ -15,5 +15,5 @@ def create_menu():
 
     cmds.menuItem(
         label="Open Blue Steel",
-        command="from blue_steel.ui.editor import mainWindow; mainWindow.show()"
+        command="import blue_steel; blue_steel.show()"
     )

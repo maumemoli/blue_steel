@@ -1,6 +1,6 @@
 """Standalone editor widgets: search bar, split-map trees, inline rename editor.
 
-Extracted from the monolithic ``mainWindow`` module.
+Extracted from the monolithic editor window module.
 
 Example:
     >>> from blue_steel.ui.editor import widgets

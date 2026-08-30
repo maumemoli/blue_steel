@@ -65,7 +65,7 @@ global proc shelf_BlueSteel () {
         -style "iconOnly" 
         -marginWidth 0
         -marginHeight 1
-        -command "from blue_steel.ui.editor import mainWindow\nimport blue_steel.api.mayaUtils as mau\n\n\n\nw =mainWindow.show()" 
+        -command "import blue_steel\n\nw = blue_steel.show()" 
         -sourceType "python" 
         -commandRepeatable 1
         -flat 1
