@@ -1,3 +1,4 @@
 + blue_steel_maya 1.0.0 <BLUE_STEEL_MOD_PATH>
 scripts: scripts
 icons: icons
+
