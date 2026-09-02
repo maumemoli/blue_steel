@@ -4,7 +4,7 @@ These are small decorators and utilities that remove the repetitive guard and
 tracker-pause patterns used across the many ``MainWindow`` action handlers.
 
 Example:
-    >>> from blue_steel.ui.editor import main_window_helpers as helpers
+    >>> from blue_steel.ui.editor import mainWindowMixin as helpers
     >>> names = helpers.target_shape_names("jawOpen", ["jawOpen", "lipCorner"])
 """
 
