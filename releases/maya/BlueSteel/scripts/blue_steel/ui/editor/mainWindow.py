@@ -5,8 +5,8 @@ entry point. Models, delegates, views, and standalone widgets have been moved
 to the sibling modules in this package.
 
 Example:
-    >>> from blue_steel.ui.editor import main_window
-    >>> win = main_window.show()
+    >>> from blue_steel.ui.editor import mainWindow
+    >>> win = mainWindow.show()
     >>> win.set_current_editor("characterA_blueSteel_container")
 """
 
@@ -74,7 +74,7 @@ from .constants import (
     TYPE_GROUP_ORDER,
     shape_type_group_name,
 )
-from .main_window_helpers import target_shape_names
+from .mainWindowMixin import target_shape_names
 from .controllerLayoutWindow import ControllerLayoutWindow
 from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate
 from .models import (
@@ -166,12 +166,12 @@ from .widgets import (
 
 
 
-from .main_window_ops import EditorOpsMixin
-from .main_window_session import EditorSessionMixin
-from .main_window_shapes import ShapesFeatureMixin
-from .main_window_split_ui import SplitSettingsUiMixin
-from .main_window_ui import EditorUiMixin
-from .main_window_work import WorkShapesFeatureMixin
+from .editorOpsMixin import EditorOpsMixin
+from .editorSessionMixin import EditorSessionMixin
+from .shapesFeatureMixin import ShapesFeatureMixin
+from .splitSettingsUiMixin import SplitSettingsUiMixin
+from .editorUiMixin import EditorUiMixin
+from .workShapesFeatureMixin import WorkShapesFeatureMixin
 
 WINDOW = None
 SHOW_UPDATE_CHECK = True
