@@ -108,12 +108,21 @@ def onMayaDroppedPythonFile(*args):
     if not ensure_numpy_installed():
         return
 
-    mod_dir = os.path.dirname(__file__)
+    mod_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
+    env_path = os.path.join(mod_dir, "scripts", "blue_steel", "env.py")
+    if not os.path.exists(env_path):
+        raise RuntimeError(f"Blue Steel env.py not found at {env_path}. Please ensure the installation is complete.")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("env", env_path)
+    env = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(env)
+    version = env.VERSION
     template_mod_file = os.path.join(mod_dir, "blue_steel_template.mod")
     shelf_file = os.path.join(mod_dir, "shelves", "shelf_BlueSteel.mel")
     with open(template_mod_file, "r") as fp:
         mod_template = fp.read()
-    mod_content = mod_template.replace("<BLUE_STEEL_MOD_PATH>", mod_dir)
+    mod_content = mod_template.replace("<VERSION>", version)
+    mod_content = mod_content.replace("<BLUE_STEEL_MOD_PATH>", mod_dir.replace(os.sep, '/'))
     # module_name = mod_template.splitlines()[0].split(" ")[1]
     scripts_dir = os.path.join(mod_dir, "scripts")
     if not scripts_dir in sys.path:

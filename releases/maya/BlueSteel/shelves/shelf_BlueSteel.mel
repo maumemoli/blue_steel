@@ -25,6 +25,7 @@ global proc shelf_BlueSteel () {
         -flipX 0
         -flipY 0
         -useAlpha 1
+        -font "plainLabelFont" 
         -overlayLabelColor 0.8 0.8 0.8 
         -overlayLabelBackColor 0 0 0 0.5 
         -image "refresh.png" 
@@ -32,8 +33,8 @@ global proc shelf_BlueSteel () {
         -style "iconOnly" 
         -marginWidth 0
         -marginHeight 1
-        -command "from maya import cmds\nimport os\nimport sys\nfrom importlib import reload\n\n\npackage_name = \"blue_steel\"\n\ndef reload_package(package_name):\n    \"\"\"\n    Reloads a package and all its submodules.n\n    \"\"\"\n    modules_to_reload = [\n        name for name in sys.modules\n        if name == package_name or name.startswith(package_name + \".\")\n    ]\n    \n\n    for name in sorted(modules_to_reload, key=len, reverse=True):\n        print(\"Reloading {0}\".format(name))\n        reload(sys.modules[name])\nreload_package(package_name)\n\n" 
-        -sourceType "python" 
+        -command "import sys\nimport importlib\n\npackage_name = \"blue_steel\"\n\ndef force_reload_package(package_name):\n    \"\"\"\n    Completely removes the package and all submodules from sys.modules\n    and then re-imports it. This is more robust than reload() when\n    modules have been renamed or removed.\n    \"\"\"\n    # 1. Identify all modules to remove\n    # We must collect the names first to avoid \"dictionary changed size during iteration\"\n    modules_to_remove = [\n        name for name in sys.modules\n        if name == package_name or name.startswith(package_name + \".\")\n    ]\n\n    if not modules_to_remove:\n        print(f\"No modules found for package: {package_name}\")\n        return\n\n    # 2. Remove them from sys.modules\n    # We sort them in some order? Actually, order doesn't matter for deletion.\n    for name in modules_to_remove:\n        print(f\"Unloading {name}\")\n        del sys.modules[name]\n\n    # 3. Re-import the package\n    print(f\"Re-importing {package_name}\")\n    try:\n        importlib.import_module(package_name)\n    except Exception as e:\n        print(f\"Error re-importing {package_name}: {e}\")\n\nforce_reload_package(package_name)" 
+        -sourceType "python"
         -commandRepeatable 1
         -flat 1
     ;
@@ -65,10 +66,9 @@ global proc shelf_BlueSteel () {
         -style "iconOnly" 
         -marginWidth 0
         -marginHeight 1
-        -command "from blue_steel.ui.editor import mainWindow\nimport blue_steel.api.mayaUtils as mau\n\n\n\nw =mainWindow.show()" 
+        -command "import blue_steel\nblue_steel.show()" 
         -sourceType "python" 
         -commandRepeatable 1
         -flat 1
     ;
-
 } 
