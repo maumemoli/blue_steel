@@ -147,7 +147,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -801,7 +801,7 @@ class ShapesFeatureMixin(MainWindowMixin):
         primaries_width = self._compute_tree_max_name_width(self.primaries_view)
         shapes_width = self._compute_tree_max_name_width(self.shapes_view)
         active_shapes_width = self._compute_filtered_max_name_width(self.active_shapes_view, self._active_shapes_proxy)
-        primary_drop_width = self._compute_filtered_max_name_width(self.primary_drop_view, self._primary_subset_proxy)
+        primary_drop_width = self._compute_tree_max_name_width(self.primary_drop_view)
         work_shapes_width = self._compute_filtered_max_name_width(self.work_shapes_view, self._work_shape_model)
         self._primaries_delegate.set_name_column_width(primaries_width)
         self._shapes_delegate.set_name_column_width(shapes_width)
@@ -1027,7 +1027,7 @@ class ShapesFeatureMixin(MainWindowMixin):
         if not names:
             return
         self._primary_subset_proxy.add_selected_names(names)
-        self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
+        self._apply_primary_drop_tree_filter()
         self._update_delegate_name_columns()
         self._update_info_labels()
 
@@ -1037,7 +1037,7 @@ class ShapesFeatureMixin(MainWindowMixin):
         if removed <= 0:
             self._set_status("No slider entries selected in Sliders Drop Box.", warning=True)
             return
-        self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
+        self._apply_primary_drop_tree_filter()
         self._update_delegate_name_columns()
         self._update_info_labels()
         self._set_status(f"Removed {removed} slider(s) from Sliders Drop Box.")
@@ -1056,7 +1056,7 @@ class ShapesFeatureMixin(MainWindowMixin):
                 active_primaries.append(str(shape))
         self._primary_subset_proxy.clear_selected_names()
         self._primary_subset_proxy.add_selected_names(active_primaries)
-        self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
+        self._apply_primary_drop_tree_filter()
         self._update_delegate_name_columns()
         self._update_info_labels()
         self._set_status(f"Loaded {len(active_primaries)} active primaries.")
@@ -1080,7 +1080,12 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _selected_primary_drop_shape_names(self) -> List[str]:
-        return self._selected_names_from_list_view(self.primary_drop_view, self._primary_subset_proxy)
+        names: List[str] = []
+        for item in self.primary_drop_view.selectedItems():
+            shape_name = item.data(0, PRIMARY_TREE_NAME_ROLE)
+            if shape_name:
+                names.append(str(shape_name))
+        return names
 
 
     def _on_display_heat_map_toggled(self, checked: bool) -> None:
@@ -1265,23 +1270,68 @@ class ShapesFeatureMixin(MainWindowMixin):
     def _sync_primary_tree_slider(self, shape_name: str, value: float) -> None:
         """Sync one primaries tree leaf value from tracker/model updates."""
         item = self._primary_tree_items.get(shape_name)
+        if item is not None:
+            target = max(0.0, min(1.0, float(value)))
+            current = float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)
+            if abs(current - target) > 1e-6:
+                self._syncing_primaries_tree = True
+                try:
+                    item.setData(0, ShapeItemsModel.ValueRole, target)
+                    item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, target)
+                    model = self.primaries_view.model()
+                    if model is not None:
+                        idx = self.primaries_view.indexFromItem(item, 0)
+                        if idx.isValid():
+                            model.dataChanged.emit(idx, idx, [ShapeItemsModel.ValueRole, Qt.DisplayRole])
+                finally:
+                    self._syncing_primaries_tree = False
+        self._sync_primary_drop_tree_slider(shape_name, value)
+
+
+    def _sync_primary_drop_tree_slider(self, shape_name: str, value: float) -> None:
+        """Sync one flat drop-box leaf value from tracker/model updates."""
+        item = self._primary_drop_tree_items.get(shape_name)
         if item is None:
             return
         target = max(0.0, min(1.0, float(value)))
         current = float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)
         if abs(current - target) <= 1e-6:
             return
-        self._syncing_primaries_tree = True
+        self._syncing_primary_drop_tree = True
         try:
             item.setData(0, ShapeItemsModel.ValueRole, target)
             item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, target)
-            model = self.primaries_view.model()
+            model = self.primary_drop_view.model()
             if model is not None:
-                idx = self.primaries_view.indexFromItem(item, 0)
+                idx = self.primary_drop_view.indexFromItem(item, 0)
                 if idx.isValid():
                     model.dataChanged.emit(idx, idx, [ShapeItemsModel.ValueRole, Qt.DisplayRole])
         finally:
-            self._syncing_primaries_tree = False
+            self._syncing_primary_drop_tree = False
+
+
+    def _on_primary_drop_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+        """Commit value changes coming from flat drop-box tree sliders."""
+        if self._syncing_primary_drop_tree:
+            return
+        if self.current_editor is None:
+            return
+        if roles and ShapeItemsModel.ValueRole not in roles:
+            return
+        for row in range(top_left.row(), bottom_right.row() + 1):
+            index = top_left.sibling(row, 0)
+            if not index.isValid() or bool(index.data(ShapeItemsModel.IsHeaderRole)):
+                continue
+            if not bool(index.data(ShapeItemsModel.EditableRole)):
+                continue
+            shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+            if not shape_name:
+                continue
+            value = max(0.0, min(1.0, float(index.data(ShapeItemsModel.ValueRole) or 0.0)))
+            item = self.primary_drop_view.itemFromIndex(index)
+            if item is not None:
+                item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, value)
+            self._on_primary_tree_slider_changed(shape_name, value)
 
 
     def _rebuild_primaries_tree(self) -> None:
@@ -1376,6 +1426,73 @@ class ShapesFeatureMixin(MainWindowMixin):
             self._sort_primaries_tree()
         finally:
             self._syncing_primaries_tree = False
+
+
+    def _rebuild_primary_drop_tree(self) -> None:
+        """Build the flat Sliders Drop Box tree from all primary shapes.
+
+        The tree mirrors the primaries-tree leaves (same roles and flags) but
+        only ever contains top-level leaves. Visibility is then driven by the
+        :class:`PrimarySubsetProxyModel` drop set.
+        """
+        selected_names = {
+            str(item.data(0, PRIMARY_TREE_NAME_ROLE) or "")
+            for item in self.primary_drop_view.selectedItems()
+        }
+        selected_names.discard("")
+        self.primary_drop_view.clear()
+        self._primary_drop_tree_items.clear()
+
+        if self.current_editor is None:
+            return
+
+        self._syncing_primary_drop_tree = True
+        try:
+            primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
+            custom_colors = self.current_editor.read_custom_shapes_colors() or {}
+            visible_names = set(self._primary_subset_proxy.selected_names())
+            for shape in primary_shapes:
+                shape_name = str(shape)
+                value = self._get_primary_tree_value(shape_name)
+                leaf_value = 0.0 if value is None else float(value)
+
+                item = PrimaryTreeItem([shape_name])
+                item.setData(0, PRIMARY_TREE_NAME_ROLE, shape_name)
+                item.setData(0, ShapeItemsModel.NameRole, shape_name)
+                item.setData(0, ShapeItemsModel.TypeRole, "PrimaryShape")
+                item.setData(0, ShapeItemsModel.ValueRole, leaf_value)
+                item.setData(0, ShapeItemsModel.EditableRole, True)
+                item.setData(0, ShapeItemsModel.IsHeaderRole, False)
+                item.setData(0, ShapeItemsModel.MutedRole, False)
+                item.setData(0, ShapeItemsModel.LockedRole, False)
+                item.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+                item.setData(0, ShapeItemsModel.PrimariesRole, (shape_name,))
+                item.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, leaf_value)
+                custom_color = custom_colors.get(shape_name)
+                item.setData(0, ShapeItemsModel.ColorRole, shape_custom_color_to_qcolor(custom_color))
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+
+                self.primary_drop_view.addTopLevelItem(item)
+                self._primary_drop_tree_items[shape_name] = item
+                if shape_name in selected_names and shape_name in visible_names:
+                    item.setSelected(True)
+
+            self.primary_drop_view.sortItems(0, Qt.AscendingOrder)
+            self._apply_primary_drop_tree_filter()
+        finally:
+            self._syncing_primary_drop_tree = False
+
+
+    def _apply_primary_drop_tree_filter(self) -> None:
+        """Show only the primary leaves currently present in the drop set."""
+        visible_names = set(self._primary_subset_proxy.selected_names())
+        for i in range(self.primary_drop_view.topLevelItemCount()):
+            item = self.primary_drop_view.topLevelItem(i)
+            shape_name = str(item.data(0, PRIMARY_TREE_NAME_ROLE) or "")
+            hidden = shape_name not in visible_names
+            item.setHidden(hidden)
+            if hidden and item.isSelected():
+                item.setSelected(False)
 
 
     def _apply_primaries_tree_filter(self, terms) -> None:

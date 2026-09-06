@@ -29,6 +29,9 @@ SHAPE_NAMES_MIME_TYPE = "application/x-blue-steel-shape-names"
 PRIMARY_TREE_MIME_TYPE = "application/x-qabstractitemmodeldatalist"
 SPLIT_MAP_MIME_TYPE = "application/x-blue-steel-split-map"
 
+# UI sizing constants.
+SPLITTER_HANDLE_WIDTH = 5
+
 # Qt user-role ids used by the primaries tree (MainWindow + PrimaryTreeItem).
 PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200
 PRIMARY_TREE_FOLDER_ROLE = Qt.UserRole + 201

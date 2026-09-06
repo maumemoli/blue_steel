@@ -875,6 +875,110 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
 
 
 
+class PrimaryDropTreeWidget(PrimaryTreeWidget):
+    """Flat, drop-enabled primaries tree used by the Sliders Drop Box.
+
+    Mirrors the primaries tree (so slider drags, selection, and keyboard
+    navigation behave identically) but only ever shows top-level primary
+    leaves. The owning window filters item visibility based on the current
+    drop set, so this widget itself only owns the drop plumbing.
+    """
+
+    PRIMARY_TREE_MIME_TYPE = PRIMARY_TREE_MIME_TYPE
+    _flat_mode = True
+
+    def __init__(
+        self,
+        drop_callback: Callable[[Sequence[str]], None],
+        remove_callback: Optional[Callable[[Sequence[str]], None]] = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._drop_callback = drop_callback
+        self._remove_callback = remove_callback
+        self._icon_click_active = False
+
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setIndentation(0)
+        self.setRootIsDecorated(False)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setDragEnabled(False)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DropOnly)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _selected_shape_names(self) -> List[str]:
+        shape_names: List[str] = []
+        for item in self.selectedItems():
+            shape_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
+            if shape_name:
+                shape_names.append(shape_name)
+        return shape_names
+
+    def _shape_names_from_mime(self, mime_data: QMimeData) -> List[str]:
+        if mime_data is None:
+            return []
+        raw_names: List[str] = []
+        if mime_data.hasFormat(self.DRAG_MIME_TYPE):
+            raw_payload = bytes(mime_data.data(self.DRAG_MIME_TYPE)).decode("utf-8", errors="ignore")
+            raw_names.extend(raw_payload.splitlines())
+        elif mime_data.hasText():
+            raw_names.extend(str(mime_data.text() or "").splitlines())
+        return [name.strip() for name in raw_names if name and name.strip()]
+
+    def _can_accept_drop(self, mime_data: QMimeData) -> bool:
+        if mime_data is None:
+            return False
+        if self._shape_names_from_mime(mime_data):
+            return True
+        return mime_data.hasFormat(self.PRIMARY_TREE_MIME_TYPE)
+
+    def _show_context_menu(self, pos) -> None:
+        item = self.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.clearSelection()
+            item.setSelected(True)
+            self.setCurrentItem(item)
+
+        selected_names = self._selected_shape_names()
+        if not selected_names:
+            return
+
+        menu = QMenu(self)
+        remove_action = menu.addAction("Remove Selected from Sliders Drop Box")
+        if hasattr(menu, "exec"):
+            selected_action = menu.exec(self.viewport().mapToGlobal(pos))
+        else:
+            selected_action = menu.exec_(self.viewport().mapToGlobal(pos))
+
+        if selected_action == remove_action and self._remove_callback is not None:
+            self._remove_callback(selected_names)
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if self._can_accept_drop(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if self._can_accept_drop(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):  # noqa: N802
+        if not self._can_accept_drop(event.mimeData()):
+            event.ignore()
+            return
+        shape_names = self._shape_names_from_mime(event.mimeData())
+        self._drop_callback(shape_names)
+        event.acceptProposedAction()
+
+
+
 class PrimaryTreeItem(QTreeWidgetItem):
     """Tree item with name/value-aware sorting controlled by tree mode."""
 

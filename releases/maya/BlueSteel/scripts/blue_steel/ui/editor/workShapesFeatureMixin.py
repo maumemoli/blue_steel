@@ -147,7 +147,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -664,7 +664,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
     def _capture_linked_drag_state(self) -> None:
         self._linked_primary_start_values = {}
         self._linked_work_start_values = {}
-        for shape_name in self._selected_names_from_list_view(self.primary_drop_view, self._primary_subset_proxy):
+        for shape_name in self._selected_primary_drop_shape_names():
             value = self._shape_model.get_shape_value(shape_name)
             if value is None:
                 continue

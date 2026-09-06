@@ -147,7 +147,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,

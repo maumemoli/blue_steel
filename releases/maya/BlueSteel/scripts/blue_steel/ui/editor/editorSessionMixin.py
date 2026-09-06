@@ -147,7 +147,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -432,6 +432,7 @@ class EditorSessionMixin(MainWindowMixin):
             self._primary_subset_proxy.clear_selected_names()
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
+            self._rebuild_primary_drop_tree()
             self._reload_split_settings_from_editor()
             self._update_delegate_name_columns()
             self._update_info_labels()
@@ -441,9 +442,9 @@ class EditorSessionMixin(MainWindowMixin):
             self.current_editor.sync_network()
             self._shape_model.rebuild_from_editor(self.current_editor)
             self._work_shape_model.rebuild_from_editor(self.current_editor)
-            self._primary_subset_proxy.sort(0, Qt.AscendingOrder)
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
+            self._rebuild_primary_drop_tree()
             self._reload_split_settings_from_editor()
             self._update_delegate_name_columns()
             self._update_info_labels()
@@ -480,6 +481,7 @@ class EditorSessionMixin(MainWindowMixin):
             self._shape_model.rebuild_from_editor(None)
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
+            self._rebuild_primary_drop_tree()
             self._reload_split_settings_from_editor()
             self._update_delegate_name_columns()
             self._update_tools_button_panel()
@@ -519,6 +521,7 @@ class EditorSessionMixin(MainWindowMixin):
             self._shape_model.rebuild_from_editor(None)
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
+            self._rebuild_primary_drop_tree()
             self._reload_split_settings_from_editor()
             self._update_delegate_name_columns()
             self._update_tools_button_panel()

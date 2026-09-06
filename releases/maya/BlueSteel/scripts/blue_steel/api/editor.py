@@ -1088,6 +1088,18 @@ class BlueSteelEditor(object):
         print(f"Applied active work shapes to their linked primary shapes:\n      {formatted_committed_shapes}")
         print(f"================================================================")
         return committed_connected_shapes
+
+    def _get_work_shape_driver_nodes(self, work_shape_name: str) -> list:
+        """
+        This method is to get the driver nodes if an empty list is returned the weight is not connected
+        if the list has one element it means that there is only one shape driving the work shape.
+        if the list has two elements it means there is more than one shape driving the work shape and driven
+        key node will be returned as first element and an average node as the second element.
+        Returns:
+            list: A list of driver nodes for the given work shape.
+        """
+        pass
+
     @undoable
     def connect_work_blendshape_weight_to_blendshape_weight(self,work_shape_name: str, shape_name: str):
         """
@@ -1096,7 +1108,6 @@ class BlueSteelEditor(object):
             work_shape_name (str): The name of the work shape to connect
             shape_name (str): The name of the primary shape to connect to
         """
-        #print(f"Connecting work shape '{work_shape_name}' to primary shape '{shape_name}' for direct manipulation.")
         work_shape_weight = self.work_blendshape.get_weight_by_name(work_shape_name)
         if work_shape_weight is None:
             raise ValueError(f"Work shape '{work_shape_name}' not found in blendshape.")
@@ -1105,11 +1116,10 @@ class BlueSteelEditor(object):
             raise ValueError(f"Shape '{shape_name}' not found in blendshape.")
         # let's check if there is a driven key already. If there is we need to remove it before creating a new one
         driver = self.work_blendshape.get_weight_driver(work_shape_weight)
-        #print(f"Existing driver for work shape '{work_shape_name}': {driver}")
+
         if driver and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
             cmds.delete(driver)
-            # else:
-            #     print(f"No existing driven key found for work shape '{work_shape_name}'. Creating new driven key connection.")
+
         # if the drive still exists that means that some manual connections were made
         # and we need to disconnect them before creating the driven key connection
         input_connection = cmds.listConnections(f"{self.work_blendshape.name}.{work_shape_name}", source=True, destination=False, plugs=True) or []

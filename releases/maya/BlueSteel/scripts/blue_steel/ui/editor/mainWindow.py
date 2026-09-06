@@ -147,7 +147,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -231,8 +231,10 @@ class MainWindow(
         self._linked_drag_can_propagate = False
         self._linked_drag_ctrl_pressed = False
         self._primary_tree_items: Dict[str, QTreeWidgetItem] = {}
+        self._primary_drop_tree_items: Dict[str, QTreeWidgetItem] = {}
         self._shape_tree_items: Dict[str, QTreeWidgetItem] = {}
         self._syncing_primaries_tree = False
+        self._syncing_primary_drop_tree = False
         self._syncing_shapes_tree = False
         self._upstream_shapes_cache: Dict[str, Set[str]] = {}
         self._downstream_shapes_cache: Dict[str, Set[str]] = {}

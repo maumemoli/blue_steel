@@ -71,6 +71,7 @@ from .constants import (
     PRIMARY_TREE_NAME_ROLE,
     PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_CUSTOM_COLORS,
+    SPLITTER_HANDLE_WIDTH,
     TYPE_GROUP_ORDER,
     shape_type_group_name,
 )
@@ -148,7 +149,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -174,7 +175,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._compact_layout(layout, margin=self.COMPACT_MARGIN)
         split_settings_splitter = Splitter(Qt.Horizontal)
         split_settings_splitter.setChildrenCollapsible(False)
-        split_settings_splitter.setHandleWidth(2)
+        split_settings_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         layout.addWidget(split_settings_splitter, 1)
 
         primaries_group = QGroupBox("Primary Split Group Assignments")
@@ -205,7 +206,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
         split_groups_maps_splitter = Splitter(Qt.Horizontal)
         split_groups_maps_splitter.setChildrenCollapsible(False)
-        split_groups_maps_splitter.setHandleWidth(2)
+        split_groups_maps_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         right_layout.addWidget(split_groups_maps_splitter, 1)
 
         split_groups_group = QGroupBox("Split Groups")
@@ -214,7 +215,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._compact_layout(split_groups_layout, margin=self.COMPACT_MARGIN)
         split_groups_splitter = Splitter(Qt.Horizontal)
         split_groups_splitter.setChildrenCollapsible(False)
-        split_groups_splitter.setHandleWidth(2)
+        split_groups_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         split_groups_layout.addWidget(split_groups_splitter, 1)
         split_groups_maps_splitter.addWidget(split_groups_group)
 
@@ -272,7 +273,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._compact_layout(split_maps_group_layout, margin=self.COMPACT_MARGIN)
         split_maps_lists_splitter = Splitter(Qt.Horizontal)
         split_maps_lists_splitter.setChildrenCollapsible(False)
-        split_maps_lists_splitter.setHandleWidth(2)
+        split_maps_lists_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         split_maps_group_layout.addWidget(split_maps_lists_splitter, 1)
         split_groups_maps_splitter.addWidget(split_maps_browser_group)
 
@@ -366,7 +367,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
         split_map_weights_splitter = Splitter(Qt.Horizontal)
         split_map_weights_splitter.setChildrenCollapsible(False)
-        split_map_weights_splitter.setHandleWidth(2)
+        split_map_weights_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         split_map_weight_controls_widget = QWidget()
         self._allow_horizontal_collapse(split_map_weight_controls_widget)
         split_map_weight_controls = QVBoxLayout(split_map_weight_controls_widget)

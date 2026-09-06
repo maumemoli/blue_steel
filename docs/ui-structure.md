@@ -7,6 +7,24 @@ every source file.
 Scope: the `blue_steel/ui/editor` package. The supporting `blue_steel/api`
 layer is referenced by name only (see the dependency note in §1).
 
+## Summary
+
+- [§1 Architecture at a glance](#1-architecture-at-a-glance)
+- [§2 Package map](#2-package-map)
+- [§3 Module reference](#3-module-reference)
+- [§4 Cross-cutting patterns](#4-cross-cutting-patterns)
+- [§5 Quick "where to look" index](#5-quick-where-to-look-index)
+- [§6 View inheritance and layout map](#6-view-inheritance-and-layout-map)
+
+Key source files:
+
+- [`views.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/views.py) — views, drag & drop, keyboard nav
+- [`delegates.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/delegates.py) — row painting + slider drags
+- [`models.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/models.py) — Qt models/proxies
+- [`editorUiMixin.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/editorUiMixin.py) — window layout + signal wiring
+- [`shapesFeatureMixin.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/shapesFeatureMixin.py) — primaries/shapes/drop-box behavior
+- [`mainWindow.py`](../releases/maya/BlueSteel/scripts/blue_steel/ui/editor/mainWindow.py) — `MainWindow` entry point
+
 ---
 
 ## 1. Architecture at a glance
@@ -37,6 +55,12 @@ MainWindow
   window for designing custom controller layouts.
 - **Mixins** (`mainWindow.py` + `*Mixin.py`) are the controller layer: they
   translate UI events into calls on the `blue_steel.api` domain layer.
+
+The **Sliders Drop Box** is a flat, drop-enabled `PrimaryTreeWidget` variant
+(`PrimaryDropTreeWidget`). It reuses the primaries-tree slider interaction
+(`SliderDragViewMixin` + `SliderItemDelegate`) and keeps
+`PrimarySubsetProxyModel` only as the backing selected-name set that controls
+which flat rows are visible.
 
 ### Data flow
 
@@ -79,7 +103,7 @@ All files live in `blue_steel/ui/editor/`.
 | `__init__.py` | Public entry: re-exports `MainWindow`, `show`, `get_maya_main_window`. |
 | `constants.py` | Colors, MIME types, Qt role ids, type-group ordering. |
 | `qt.py` | PySide2/PySide6 shim + small Qt helpers + cursor-safe `Splitter`. |
-| `models.py` | Qt item models and filter/sort proxy models. |
+| `models.py` | Qt item models and filter/sort proxy models; `PrimarySubsetProxyModel` is the drop-box name set. |
 | `delegates.py` | Row painting + slider drag handling (`SliderItemDelegate`). |
 | `views.py` | List/tree views, drag & drop, keyboard nav, icon hit-testing. |
 | `widgets.py` | Reusable widgets (search bar, split trees, inline rename). |
@@ -206,7 +230,7 @@ Qt models. Roles used throughout are `Qt.UserRole + N` constants (see
   - `data(index, role)` — overrides header/group rendering.
   - `lessThan(left, right)` — sort comparator.
 
-- `PrimarySubsetProxyModel(QSortFilterProxyModel)` — view restricted to an explicit set of selected primary names.
+- `PrimarySubsetProxyModel(QSortFilterProxyModel)` — backing selected-name set for the flat Sliders Drop Box tree. No longer set as a view model; `PrimaryDropTreeWidget` queries `selected_names()` and shows/hides flat rows accordingly.
   - `__init__(parent=None)`
   - `clear_selected_names()` / `add_selected_names(names)` / `remove_selected_names(names)`
   - `selected_names()`
@@ -281,18 +305,19 @@ Views and drag/keyboard behavior.
   - `_emit_icon_click(payload)` — emit the resolved icon action.
   - `mousePressEvent(event)` / `mouseMoveEvent(event)` / `mouseReleaseEvent(event)` / `mouseDoubleClickEvent(event)` — icon clicks + delegate drag forwarding.
 
-- `PrimaryDropListView(SliderDragViewMixin, QListView)` — drop target list for primaries.
+- `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`.
   - `__init__(drop_callback, remove_callback=None, parent=None)`
   - `_selected_shape_names()`
   - `_show_context_menu(pos)`
   - `_shape_names_from_mime(mime_data)`
   - `_can_accept_drop(mime_data)`
-  - `_resolve_mute_icon_click(event_pos)` / `_resolve_lock_icon_click(event_pos)` / `_resolve_icon_click(event_pos)`
   - `dragEnterEvent(event)` / `dragMoveEvent(event)` / `dropEvent(event)`
+
+- *(Legacy)* `PrimaryDropListView(SliderDragViewMixin, QListView)` — superseded by `PrimaryDropTreeWidget`; remains in `views.py` but is no longer referenced by the UI.
 
 - `SplitMapWeightsList(SliderDragViewMixin, QListWidget)` — weight list for split maps (delegate-driven drag only).
 
-- `SliderListView(SliderDragViewMixin, QListView)` — main shapes list (primary shapes panel).
+- `SliderListView(SliderDragViewMixin, QListView)` — generic slider-style list view; used directly by Active Shapes and as the base of `WorkShapesListView`.
   - `__init__(parent=None)`
   - `_selected_draggable_shape_names()`
   - `startDrag(supportedActions)` — begin a name drag.
@@ -477,7 +502,7 @@ Shared base and utilities for all feature mixins.
 - `_set_dock_button_state(docked)` — update the dock/undock button.
 - `_dock_to_maya_panel()` — dock the window into a Maya panel.
 - `_toggle_docking()` — toggle docked state.
-- `_build_ui()` — build the entire window (tabs, panels, toolbars, splitters).
+- `_build_ui()` — build the entire window (tabs, panels, toolbars, splitters). Creates `PrimaryDropTreeWidget` for the Sliders Drop Box and installs `SliderItemDelegate` via `setItemDelegateForColumn(0, ...)`.
 - `showEvent(event)` — first-show hook.
 - `_schedule_initial_splitter_layout()` / `_apply_initial_splitter_layout()` — set initial splitter sizes.
 - `_apply_primaries_branch_icons()` — apply folder/branch icons.
@@ -488,7 +513,7 @@ Shared base and utilities for all feature mixins.
 - `_begin_inline_primary_rename(item)` / `_cancel_inline_primary_rename()` / `_commit_inline_primary_rename()`
 - `_build_tools_panel(parent_layout)`
 - `_create_tool_button(label, icon=None, *, track_enabled=True)`
-- `_connect_ui_signals()` — wire all widget signals to handlers.
+- `_connect_ui_signals()` — wire all widget signals to handlers. Connects `primary_drop_view.model().dataChanged` to `_on_primary_drop_tree_data_changed`.
 - `_on_main_splitter_moved(...)` / `_on_editor_splitter_moved(...)` / `resizeEvent(event)`
 - `_update_shapes_header_compact_mode()` / `_set_splitter_first_pane_size(splitter, target_width)`
 - `_on_split_groups_splitter_moved(...)` / `_set_split_group_buttons_compact_mode(compact)`
@@ -552,11 +577,12 @@ Shared base and utilities for all feature mixins.
 - `_compute_tree_max_name_width(tree)` / `_compute_filtered_max_name_width(view, model)` / `_update_delegate_name_columns()`
 - `_rebuild_shapes_tree()` / `_sync_shapes_tree_items_from_source_rows(...)`
 - `_selected_primary_tree_names()` / `_selected_split_primary_names()`
+- `_rebuild_primary_drop_tree()` / `_apply_primary_drop_tree_filter()` — build/filter the flat Sliders Drop Box tree.
 - `_on_primary_drop_list_dropped(names)` / `_on_primary_drop_remove_requested(names)` / `_fill_primary_drop_list_from_active()`
 - `_selected_names_from_list_view(view, model)` / `_selected_active_shape_names()` / `_selected_primary_drop_shape_names()`
 - `_on_display_heat_map_toggled(checked)` / `_is_heat_map_switch_active()` / `_set_heat_map_target_for_editor(...)` / `_clear_heat_map_target_for_editor()` / `_update_heat_map_target_from_shapes_selection()` / `_update_heat_map_target_from_active_shapes_selection()` / `_update_heat_map_target_from_work_shapes_selection()`
 - `_refresh_primary_folder_sort_values()` / `_sort_primaries_tree()` / `_iter_primary_tree_leaves()` / `_get_primary_tree_value(shape_name)`
-- `_on_primary_tree_slider_changed(shape_name, value)` / `_on_primaries_tree_data_changed(...)` / `_sync_primary_tree_slider(shape_name, value)` / `_rebuild_primaries_tree()` / `_apply_primaries_tree_filter(terms)`
+- `_on_primary_tree_slider_changed(shape_name, value)` / `_on_primaries_tree_data_changed(...)` / `_sync_primary_tree_slider(shape_name, value)` / `_sync_primary_drop_tree_slider(shape_name, value)` / `_on_primary_drop_tree_data_changed(...)` / `_rebuild_primaries_tree()` / `_apply_primaries_tree_filter(terms)`
 - `_on_primaries_selection_changed(...)` / `_on_exclusive_filter_toggled(checked)` / `_apply_primary_selection_shapes_filter(selected_names)`
 - `_on_primary_value_committed(shape_name, value)` / `_on_shape_value_changed(shape_id, shape_name, value)` / `_on_shape_structure_changed(...)`
 - `_on_shapes_mute_toggle_requested(shape_name, state)` / `_on_active_shapes_mute_toggle_requested(...)` / `_on_primary_drop_mute_toggle_requested(...)` / `_apply_shape_mute_toggle(...)`
@@ -710,8 +736,108 @@ Python linters — they carry `# noqa: N802`. `OptionRect` (in `qt.py`) is a che
 | Icon clicks (mute/lock/connected/edit) | `delegates.py` icon-rect helpers + signals, `views.py::_resolve_icon_click` |
 | Search / filter / color / active-only | `widgets.py::TokenSearchBar`, `models.py::ShapesFilterProxyModel`, `shapesFeatureMixin.py` |
 | Primaries tree | `views.py::PrimaryTreeWidget`, `shapesFeatureMixin.py::_rebuild_primaries_tree` |
+| Sliders Drop Box | `views.py::PrimaryDropTreeWidget`, `shapesFeatureMixin.py::_rebuild_primary_drop_tree` / `_apply_primary_drop_tree_filter` |
 | Work shapes | `models.py::WorkShapeItemsModel`, `workShapesFeatureMixin.py` |
 | Split maps/groups/weights | `splitSettingsUiMixin.py`, `widgets.py::SplitMapsTree/SplitGroupsTree` |
 | Controller layout designer | `controllerLayoutWindow.py` |
 | Scene/editor lifecycle & trackers | `editorSessionMixin.py`, `api/trackers.py` |
 | Status bar / window title | `mainWindow.py::_set_status`, `editorSessionMixin.py::_update_window_title` |
+
+---
+
+## 6. View inheritance and layout map
+
+### 6.1 Slider/tree view inheritance
+
+```
+SliderDragViewMixin  (views.py)
+├── SliderListView(SliderDragViewMixin, QListView)
+│   └── WorkShapesListView(SliderListView)
+├── ShapeTreeWidget(SliderDragViewMixin, QTreeWidget)
+├── PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget)
+│   └── PrimaryDropTreeWidget(PrimaryTreeWidget)   # flat, drop-enabled
+├── SplitPrimaryAssignmentsView(SliderDragViewMixin, QTreeWidget)
+└── SplitMapWeightsList(SliderDragViewMixin, QListWidget)
+
+PrimaryTreeItem(QTreeWidgetItem)   # used by PrimaryTreeWidget and PrimaryDropTreeWidget
+```
+
+### 6.2 Delegate and model inheritance
+
+```
+QStyledItemDelegate
+├── SliderItemDelegate
+│   └── SplitMapWeightSliderDelegate
+└── SplitMapStatusDelegate
+
+QAbstractListModel
+├── ShapeItemsModel
+└── WorkShapeItemsModel
+
+QSortFilterProxyModel
+├── PrimaryShapesProxyModel
+├── ShapesFilterProxyModel
+└── PrimarySubsetProxyModel   # drop-box backing name set
+```
+
+### 6.3 MainWindow layout
+
+```
+MainWindow (central widget)
+└── root_layout
+    ├── controls_layout: Refresh | New | System combo | Heat Map
+    └── workspace_splitter (horizontal)
+        ├── tools panel
+        └── main_tabs (QTabWidget)
+            ├── Editor tab
+            │   └── editor splitter (horizontal)
+            │       ├── Primaries panel
+            │       │   ├── primaries_search (TokenSearchBar)
+            │       │   ├── filter toolbar
+            │       │   └── primaries_view (PrimaryTreeWidget)
+            │       ├── Shapes panel
+            │       │   ├── shapes_search (TokenSearchBar)
+            │       │   ├── header buttons + color filters
+            │       │   └── shapes_view (ShapeTreeWidget)
+            │       └── third-column panel
+            │           └── third-column splitter (vertical)
+            │               ├── "Sliders Drop Box"
+            │               │   ├── Get Active button
+            │               │   └── primary_drop_view (PrimaryDropTreeWidget)
+            │               ├── "Work Shapes"
+            │               │   └── work_shapes_view (WorkShapesListView)
+            │               └── "Active Shapes"
+            │                   ├── active_shapes_search (TokenSearchBar)
+            │                   └── active_shapes_view (SliderListView)
+            └── Split Settings tab
+                └── split settings splitter (horizontal)
+                    ├── "Primary Split Group Assignments"
+                    │   ├── split_primary_search (TokenSearchBar)
+                    │   └── split_primaries_tree (SplitPrimaryAssignmentsView)
+                    └── right column
+                        ├── split groups / split maps splitter (horizontal)
+                        │   ├── "Split Groups"
+                        │   │   ├── controls
+                        │   │   └── split_groups_tree (SplitGroupsTree)
+                        │   └── "Split Maps"
+                        │       ├── controls
+                        │       └── split_maps_list (SplitMapsTree)
+                        └── "Split Map Editor"
+                            └── split map weights splitter (horizontal)
+                                ├── weight controls
+                                └── split_map_weights_list (SplitMapWeightsList)
+```
+
+### 6.4 View → delegate → model/backing → layout
+
+| View class | Delegate | Model / backing store | Layout location |
+|---|---|---|---|
+| `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `BlueSteelEditor.get_primary_shapes()` | Editor tab → Primaries panel |
+| `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
+| `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
+| `WorkShapesListView` (`work_shapes_view`) | `SliderItemDelegate` | `_work_shape_model` (`WorkShapeItemsModel`) | Editor tab → Work Shapes (third column) |
+| `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column) |
+| `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |
+| `SplitGroupsTree` (`split_groups_tree`) | default `QTreeWidget` delegate | `QTreeWidget` items | Split Settings tab → Split Groups |
+| `SplitMapsTree` (`split_maps_list`) | `SplitMapStatusDelegate` | `QTreeWidget` items | Split Settings tab → Split Maps browser |
+| `SplitMapWeightsList` (`split_map_weights_list`) | `SplitMapWeightSliderDelegate` | `QListWidget` items | Split Settings tab → Split Map Editor |
