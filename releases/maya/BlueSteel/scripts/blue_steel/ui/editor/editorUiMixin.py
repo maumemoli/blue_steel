@@ -71,6 +71,7 @@ from .constants import (
     PRIMARY_TREE_NAME_ROLE,
     PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_CUSTOM_COLORS,
+    SPLITTER_HANDLE_WIDTH,
     TYPE_GROUP_ORDER,
     shape_type_group_name,
 )
@@ -148,7 +149,7 @@ from .qt import (
     shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropListView,
+    PrimaryDropTreeWidget,
     PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -166,6 +167,26 @@ from .widgets import (
 )
 
 
+
+
+class _ColorFilterRow(QWidget):
+    """Container for the color filter swatch row.
+
+    Hides its label when the row is narrower than the label plus the swatches,
+    which is exactly when the label would otherwise be squeezed or overlapped.
+    """
+
+    def __init__(self, label: QLabel, full_width: int, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._label = label
+        self._full_width = full_width
+        self.setMinimumWidth(0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        show_label = self.width() >= self._full_width
+        if show_label != self._label.isVisible():
+            self._label.setVisible(show_label)
 
 
 class EditorUiMixin(MainWindowMixin):
@@ -303,7 +324,7 @@ class EditorUiMixin(MainWindowMixin):
 
         workspace_splitter = Splitter(Qt.Horizontal)
         workspace_splitter.setChildrenCollapsible(True)
-        workspace_splitter.setHandleWidth(2)
+        workspace_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         self._allow_horizontal_collapse(workspace_splitter)
         self._main_splitter = workspace_splitter
         root_layout.addWidget(workspace_splitter, 1)
@@ -328,7 +349,7 @@ class EditorUiMixin(MainWindowMixin):
 
         splitter = Splitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(True)
-        splitter.setHandleWidth(2)
+        splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         self._allow_horizontal_collapse(splitter)
         self._editor_splitter = splitter
         editor_tab_layout.addWidget(splitter, 1)
@@ -480,31 +501,37 @@ class EditorUiMixin(MainWindowMixin):
         shapes_layout.addLayout(shapes_header_layout)
 
         # Color filter swatch row: six colors + a "no color" swatch, all toggleable.
-        color_filter_row = QHBoxLayout()
-        color_filter_row.setContentsMargins(0, 0, 0, 0)
-        color_filter_row.setSpacing(0)
         # Non-interactive label styled like the swatch buttons.
-        filter_label = QPushButton("FILTER BY COLOR:")
-        filter_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        filter_label.setFocusPolicy(Qt.NoFocus)
-        filter_label.setStyleSheet(
-            "QPushButton { border: 1px solid #222; border-radius: 2px; padding: 0 6px; }"
+        self._color_filter_label = QLabel("FILTER BY COLOR:")
+        self._color_filter_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._color_filter_label.setFocusPolicy(Qt.NoFocus)
+        self._color_filter_label.setStyleSheet(
+            "QLabel { border: 1px solid #222; border-radius: 2px; padding: 0 6px; }"
         )
-        # Pin the width to the text so the layout can never shrink it below the label.
-        filter_label.setFixedSize(
-            filter_label.fontMetrics().horizontalAdvance("FILTER BY COLOR:") + 16,
-            18,
+        label_width = self._color_filter_label.fontMetrics().horizontalAdvance("FILTER BY COLOR:") + 16
+        self._color_filter_label.setMinimumWidth(0)
+        self._color_filter_label.setMaximumWidth(label_width)
+        self._color_filter_label.setFixedHeight(18)
+
+        # Wrap the row in a widget so it reacts to its own resize (window
+        # resizes and splitter drags both resize this widget, unlike the window).
+        swatch_count = len(SHAPE_CUSTOM_COLORS) + 1  # colored swatches + "no color"
+        swatch_row_width = swatch_count * (18 + 4)  # swatch width + spacing
+        color_filter_row_widget = _ColorFilterRow(
+            self._color_filter_label,
+            full_width=label_width + swatch_row_width,
         )
-        color_filter_row.addWidget(filter_label, 0)
+        color_filter_row = QHBoxLayout(color_filter_row_widget)
+        color_filter_row.setContentsMargins(0, 0, 0, 0)
+        color_filter_row.setSpacing(4)
+        color_filter_row.addWidget(self._color_filter_label, 0)
         self._color_filter_swatch_buttons: List[QPushButton] = []
         self._color_filter_swatch_colors: Dict[QPushButton, Optional[str]] = {}
         for color_name, color_hex in SHAPE_CUSTOM_COLORS.items():
             swatch = QPushButton()
             swatch.setCheckable(True)
             swatch.setChecked(False)
-            swatch.setMinimumWidth(12)
-            swatch.setFixedHeight(18)
-            swatch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            swatch.setFixedSize(18, 18)
             swatch.setToolTip(
                 f"Show only shapes colored {color_name}.\n"
                 "Toggle on to filter; toggle off to clear.\n"
@@ -517,14 +544,12 @@ class EditorUiMixin(MainWindowMixin):
             swatch.toggled.connect(self._on_color_filter_swatch_toggled)
             self._color_filter_swatch_buttons.append(swatch)
             self._color_filter_swatch_colors[swatch] = color_hex
-            color_filter_row.addWidget(swatch, 1)
+            color_filter_row.addWidget(swatch, 0)
         # No Color swatch (shows an empty/transparent box).
         self._no_color_swatch = QPushButton()
         self._no_color_swatch.setCheckable(True)
         self._no_color_swatch.setChecked(False)
-        self._no_color_swatch.setMinimumWidth(12)
-        self._no_color_swatch.setFixedHeight(18)
-        self._no_color_swatch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._no_color_swatch.setFixedSize(18, 18)
         self._no_color_swatch.setToolTip(
             "Show only shapes with no custom color assigned.\n"
             "Toggle on to filter; toggle off to clear.\n"
@@ -539,8 +564,9 @@ class EditorUiMixin(MainWindowMixin):
         self._no_color_swatch.toggled.connect(self._on_color_filter_swatch_toggled)
         self._color_filter_swatch_buttons.append(self._no_color_swatch)
         self._color_filter_swatch_colors[self._no_color_swatch] = None
-        color_filter_row.addWidget(self._no_color_swatch, 1)
-        shapes_layout.addLayout(color_filter_row)
+        color_filter_row.addWidget(self._no_color_swatch, 0)
+        color_filter_row.addStretch(1)
+        shapes_layout.addWidget(color_filter_row_widget)
 
         shapes_layout.addWidget(self.shapes_view, 1)
         shapes_footer_layout = QVBoxLayout()
@@ -557,7 +583,7 @@ class EditorUiMixin(MainWindowMixin):
         third_column_layout.setSpacing(self.COMPACT_SPACING)
         third_column_splitter = Splitter(Qt.Vertical)
         third_column_splitter.setChildrenCollapsible(True)
-        third_column_splitter.setHandleWidth(2)
+        third_column_splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
         third_column_layout.addWidget(third_column_splitter, 1)
 
         primary_drop_section = QGroupBox("Sliders Drop Box")
@@ -570,15 +596,14 @@ class EditorUiMixin(MainWindowMixin):
         primary_drop_toolbar.addWidget(self.primary_drop_get_active_button)
         primary_drop_toolbar.addStretch(1)
         primary_drop_layout.addLayout(primary_drop_toolbar)
-        self.primary_drop_view = PrimaryDropListView(
+        self.primary_drop_view = PrimaryDropTreeWidget(
             self._on_primary_drop_list_dropped,
             self._on_primary_drop_remove_requested,
         )
         self._allow_horizontal_collapse(self.primary_drop_view)
         self.primary_drop_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.primary_drop_view.setModel(self._primary_subset_proxy)
         self._primary_drop_delegate = SliderItemDelegate(self.primary_drop_view)
-        self.primary_drop_view.setItemDelegate(self._primary_drop_delegate)
+        self.primary_drop_view.setItemDelegateForColumn(0, self._primary_drop_delegate)
         primary_drop_layout.addWidget(self.primary_drop_view, 1)
 
         work_shapes_section = QGroupBox("Work Shapes")
@@ -1047,6 +1072,8 @@ class EditorUiMixin(MainWindowMixin):
             self.heat_map_switch.toggled.connect(self._on_display_heat_map_toggled)
         if self.primaries_view.model() is not None:
             self.primaries_view.model().dataChanged.connect(self._on_primaries_tree_data_changed)
+        if self.primary_drop_view.model() is not None:
+            self.primary_drop_view.model().dataChanged.connect(self._on_primary_drop_tree_data_changed)
         self._primaries_delegate.valueDragStarted.connect(lambda: self._on_value_drag_state_changed(True))
         self._primaries_delegate.valueDragEnded.connect(lambda: self._on_value_drag_state_changed(False))
         if self._split_primary_slider_delegate is not None:
