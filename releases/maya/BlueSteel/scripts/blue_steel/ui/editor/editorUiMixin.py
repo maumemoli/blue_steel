@@ -233,6 +233,19 @@ class EditorUiMixin(MainWindowMixin):
         self.dock_close_button.setVisible(docked)
 
 
+    def _refresh_dock_button_state(self) -> None:
+        """Sync the dock toggle button with the actual workspaceControl state."""
+        if not cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, query=True, exists=True):
+            self._set_dock_button_state(docked=False)
+            return
+        is_floating = cmds.workspaceControl(
+            self.WORKSPACE_CONTROL_NAME,
+            query=True,
+            floating=True,
+        )
+        self._set_dock_button_state(docked=not is_floating)
+
+
     def _dock_to_maya_panel(self) -> bool:
         if not cmds.workspaceControl(self.DOCK_TARGET_CONTROL, query=True, exists=True):
             return False

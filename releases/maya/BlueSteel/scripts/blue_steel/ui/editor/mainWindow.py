@@ -339,6 +339,13 @@ class MainWindow(
             self.status_bar.setStyleSheet("")
 
 
+    def show(self, *args, **kwargs):
+        """Show the window and sync the dock toggle button with the actual state."""
+        result = super().show(*args, **kwargs)
+        self._refresh_dock_button_state()
+        return result
+
+
 
 def show() -> MainWindow:
     """Show the rewritten Blue Steel editor window.
@@ -374,8 +381,7 @@ def show() -> MainWindow:
         status_label.setOpenExternalLinks(True)
     WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
     WINDOW.resize(1200, max(720, WINDOW.sizeHint().height()))
-    WINDOW.show(dockable=True, area="right", floating=False)
-    WINDOW._dock_to_maya_panel()
+    WINDOW.show(dockable=True, area="right", floating=True)
     if status_label is not None:
         WINDOW.status_bar.addPermanentWidget(status_label)
 

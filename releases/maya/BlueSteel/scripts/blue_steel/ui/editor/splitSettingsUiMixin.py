@@ -199,7 +199,6 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
         right_column = QWidget(parent_widget)
         self._allow_horizontal_collapse(right_column)
-        right_column.setMaximumWidth(self.SPLIT_PANELS_MAX_WIDTH)
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(self.COMPACT_SPACING)

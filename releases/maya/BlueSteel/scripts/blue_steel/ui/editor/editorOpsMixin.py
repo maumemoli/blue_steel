@@ -559,7 +559,7 @@ class EditorOpsMixin(MainWindowMixin):
             "QPushButton { border: 1px solid palette(mid); border-radius: 5px; padding: 0px; font-weight: bold; }"
         )
         menu_layout.addWidget(self.dock_close_button, 0, Qt.AlignVCenter)
-        self._set_dock_button_state(docked=True)
+        self._refresh_dock_button_state()
         self.setMenuWidget(menu_widget)
 
         file_menu = menu_bar.addMenu("File")
