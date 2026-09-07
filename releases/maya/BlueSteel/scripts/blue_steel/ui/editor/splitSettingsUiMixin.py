@@ -171,6 +171,17 @@ from .widgets import (
 
 class SplitSettingsUiMixin(MainWindowMixin):
     def _build_split_settings_tab(self, parent_widget: QWidget) -> None:
+        """Build the split settings tab layout and widgets.
+
+        Creates the primary assignment tree, split group/map trees, split-map
+        editor, and their action buttons.
+
+        Parameters:
+            parent_widget (QWidget): The widget to host the layout.
+
+        Returns:
+            None
+        """
         layout = QVBoxLayout(parent_widget)
         self._compact_layout(layout, margin=self.COMPACT_MARGIN)
         split_settings_splitter = Splitter(Qt.Horizontal)
@@ -484,6 +495,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _reload_split_settings_from_editor(self) -> None:
+        """Reload every split-settings panel from the active editor.
+
+        Returns:
+            None
+        """
         if not self._is_split_tab_active():
             self._split_settings_refresh_pending = True
             return
@@ -506,6 +522,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _refresh_split_primary_assignments(self) -> None:
+        """Refresh the primary split-group assignments tree.
+
+        Returns:
+            None
+        """
         if self.split_primaries_tree is None:
             return
         if self.current_editor is None:
@@ -529,6 +550,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _refresh_split_groups(self) -> None:
+        """Refresh the split groups tree.
+
+        Returns:
+            None
+        """
         if self.split_groups_tree is None:
             return
         if self.current_editor is None:
@@ -544,6 +570,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _refresh_split_maps(self) -> None:
+        """Refresh the split maps tree.
+
+        Returns:
+            None
+        """
         if self.split_maps_list is None:
             return
         if self.current_editor is None:
@@ -567,6 +598,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _refresh_split_map_weights(self, split_map_name: Optional[str] = None) -> None:
+        """Refresh the split-map editor weight list.
+
+        Parameters:
+            split_map_name (Optional[str]): Unused; the edit map is resolved
+                from the editor.
+
+        Returns:
+            None
+        """
         if self.split_map_weights_list is None:
             return
         self.split_map_weights_list.clear()
@@ -630,6 +670,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _sync_split_map_weight_slider_values(self) -> None:
+        """Sync the weight slider values from the edit blendshape.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_map_weights_list is None:
             return
         try:
@@ -647,6 +692,16 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_map_weight_value_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+        """Apply edited split-map weight values back to the editor.
+
+        Parameters:
+            top_left (QModelIndex): The top-left model index.
+            bottom_right (QModelIndex): The bottom-right model index.
+            roles: The changed Qt roles.
+
+        Returns:
+            None
+        """
         if self._syncing_split_map_weight_values or self.current_editor is None or self.split_map_weights_list is None:
             return
         if roles and ShapeItemsModel.ValueRole not in roles:
@@ -667,18 +722,33 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _selected_split_group_name(self) -> Optional[str]:
+        """Return the selected split group name.
+
+        Returns:
+            Optional[str]: The selected group name, or ``None``.
+        """
         if self.split_groups_tree is None:
             return None
         return self.split_groups_tree.selected_group_name() or None
 
 
     def _selected_split_map_name(self) -> Optional[str]:
+        """Return the selected split map name.
+
+        Returns:
+            Optional[str]: The selected map name, or ``None``.
+        """
         if self.split_maps_list is None:
             return None
         return self.split_maps_list.map_name() or None
 
 
     def _current_edit_split_map_name(self) -> Optional[str]:
+        """Return the split map currently being edited.
+
+        Returns:
+            Optional[str]: The edit map name, or ``None``.
+        """
         if self.current_editor is None:
             return None
         try:
@@ -689,6 +759,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _selected_split_map_weight_area(self) -> Optional[str]:
+        """Return the selected split-map weight area.
+
+        Returns:
+            Optional[str]: The selected weight area name, or ``None``.
+        """
         if self.split_map_weights_list is None or self.split_map_weights_list.currentItem() is None:
             return None
         item = self.split_map_weights_list.currentItem()
@@ -699,6 +774,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_map_weight_selection_changed(self, current_item, _previous_item) -> None:
+        """Activate a split-map weight when its row is selected.
+
+        Parameters:
+            current_item: The newly selected list item.
+            _previous_item: The previously selected item (unused).
+
+        Returns:
+            None
+        """
         self._update_split_map_weight_operation_buttons()
         if self.current_editor is None or current_item is None:
             return
@@ -729,6 +813,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _update_split_map_weight_operation_buttons(self) -> None:
+        """Enable or disable the split-map weight operation buttons.
+
+        Returns:
+            None
+        """
         editing = self.current_editor is not None and bool(self._current_edit_split_map_name())
         has_weight = self.split_map_weights_list is not None and self.split_map_weights_list.currentItem() is not None
         can_paste = editing and getattr(self.current_editor, "copied_weight_map_values", None) is not None
@@ -739,11 +828,29 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_primary_search_changed(self, terms) -> None:
+        """Apply the primary search terms to the split primary tree.
+
+        Parameters:
+            terms: The search terms.
+
+        Returns:
+            None
+        """
         if self.split_primaries_tree is not None:
             self.split_primaries_tree.set_search_terms(terms)
 
 
     def _on_split_primaries_tree_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles) -> None:
+        """Propagate split-primary value edits to the primaries tree.
+
+        Parameters:
+            top_left (QModelIndex): The top-left model index.
+            bottom_right (QModelIndex): The bottom-right model index.
+            roles: The changed Qt roles.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_primaries_tree is None:
             return
         if roles and ShapeItemsModel.ValueRole not in roles:
@@ -761,6 +868,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
     
 
     def _on_primary_split_group_changed(self, group_name: str, primary_names) -> None:
+        """Assign primaries to a split group.
+
+        Parameters:
+            group_name (str): The target split group name.
+            primary_names: The primary shape names to assign.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         target_names = [str(name) for name in primary_names]
@@ -776,6 +892,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _show_split_primaries_context_menu(self, pos) -> None:
+        """Show the context menu for the split primaries tree.
+
+        Parameters:
+            pos: The local position of the right-click.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_primaries_tree is None:
             return
         item = self.split_primaries_tree.itemAt(pos)
@@ -805,6 +929,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _split_selected_shapes(self, primary_names: Sequence[str]) -> None:
+        """Split the selected primary shapes.
+
+        Parameters:
+            primary_names (Sequence[str]): The primary shape names to split.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -825,6 +957,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_group_map_selected(self, split_map_name: str) -> None:
+        """Select a split map in the split maps list.
+
+        Parameters:
+            split_map_name (str): The split map name.
+
+        Returns:
+            None
+        """
         if self.split_maps_list is None or not split_map_name:
             return
         matching = self.split_maps_list.find_map(split_map_name)
@@ -833,6 +973,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_group_selection_changed(self, group_name: str) -> None:
+        """Update the split group preview label on group selection.
+
+        Parameters:
+            group_name (str): The selected group name.
+
+        Returns:
+            None
+        """
         if self.split_group_preview_label is None:
             return
         if self.current_editor is None or not group_name:
@@ -852,10 +1000,26 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_map_selection_changed(self, split_map_name: str) -> None:
+        """Refresh the split-map weight editor when the map selection changes.
+
+        Parameters:
+            split_map_name (str): The selected split map name (unused).
+
+        Returns:
+            None
+        """
         self._refresh_split_map_weights()
 
 
     def _check_split_maps_normalization(self, split_map_name = None) -> None:
+        """Check and display the normalization status of split maps.
+
+        Parameters:
+            split_map_name: Optional map name to restrict the check to.
+
+        Returns:
+            None
+        """
         if not self._is_split_tab_active():
             return
         if self.split_map_weight_stats_label is None:
@@ -901,6 +1065,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _show_split_maps_context_menu(self, pos) -> None:
+        """Show the context menu for the split maps list.
+
+        Parameters:
+            pos: The local position of the right-click.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_maps_list is None:
             return
         item = self.split_maps_list.itemAt(pos)
@@ -941,6 +1113,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _show_split_map_weights_context_menu(self, pos) -> None:
+        """Show the context menu for the split-map weights list.
+
+        Parameters:
+            pos: The local position of the right-click.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_map_weights_list is None:
             return
         item = self.split_map_weights_list.itemAt(pos)
@@ -975,6 +1155,16 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _run_split_weight_map_operation(self, method_name: str, status_verb: str, weight_name: str = "") -> None:
+        """Run a split-map weight operation by method name.
+
+        Parameters:
+            method_name (str): The editor method to call.
+            status_verb (str): Verb for the status message.
+            weight_name (str): The weight name; resolved when empty.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -997,6 +1187,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_normalize_split_map_weights_requested(self) -> None:
+        """Normalize the weights of the selected split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._selected_split_map_name()
@@ -1017,6 +1212,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_create_split_group_clicked(self) -> None:
+        """Prompt for a name and create a split group.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         group_name, ok = QInputDialog.getText(self, "Create Split Group", "Split group name:")
@@ -1036,6 +1236,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_remove_split_group_clicked(self) -> None:
+        """Remove the selected split group.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         group_name = self._selected_split_group_name()
@@ -1052,6 +1257,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_rename_split_group_clicked(self) -> None:
+        """Prompt for a new name and rename the selected split group.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         group_name = self._selected_split_group_name()
@@ -1081,6 +1291,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_group_maps_changed(self, split_groups: Dict[str, List[str]]) -> None:
+        """Persist changed split group map assignments.
+
+        Parameters:
+            split_groups (Dict[str, List[str]]): The updated group-to-maps
+                mapping.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_groups_tree is None:
             return
         try:
@@ -1094,6 +1313,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_group_map_dragged_out(self, group_name: str, map_name: str) -> None:
+        """Remove a split map from a split group after a drag-out.
+
+        Parameters:
+            group_name (str): The split group name.
+            map_name (str): The split map name.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.split_groups_tree is None:
             return
         if not group_name:
@@ -1109,6 +1337,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_add_split_map_clicked(self) -> None:
+        """Prompt for a name and weight areas, then add a split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name, ok = QInputDialog.getText(self, "Add Split Map", "Split map name:")
@@ -1136,6 +1369,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_rename_split_map_clicked(self) -> None:
+        """Prompt for a new name and rename the selected split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         current_name = self._selected_split_map_name()
@@ -1157,6 +1395,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_remove_split_map_clicked(self) -> None:
+        """Remove the selected split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         current_name = self._selected_split_map_name()
@@ -1172,6 +1415,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_edit_split_map_clicked(self) -> None:
+        """Enter split-map edit mode for the selected split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._selected_split_map_name()
@@ -1192,6 +1440,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_normalize_edit_split_map_weights_clicked(self) -> None:
+        """Normalize the weights of the currently edited split map.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1207,6 +1460,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_apply_edit_split_map_clicked(self) -> None:
+        """Apply the current split-map edits.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1228,6 +1486,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_cancel_edit_split_map_clicked(self) -> None:
+        """Cancel the current split-map edits.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1249,6 +1512,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_add_split_map_weight_clicked(self) -> None:
+        """Prompt for an area name and add a split-map weight.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1275,6 +1543,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_rename_split_map_weight_clicked(self) -> None:
+        """Prompt for a new area name and rename a split-map weight.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1303,6 +1576,13 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_paint_split_map_weight_mask_clicked(self) -> None:
+        """Enter paint mode for a split-map weight.
+
+        Alt-click paints target weights; otherwise paints target masks.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1327,6 +1607,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_remove_split_map_weight_clicked(self) -> None:
+        """Remove the selected split-map weight.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         split_map_name = self._current_edit_split_map_name()
@@ -1347,11 +1632,26 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_map_edit_weight_value_changed(self, _shape_id: int, _shape_name: str, _value: float) -> None:
+        """Sync split-map weight sliders when an edit value changes.
+
+        Parameters:
+            _shape_id (int): The target id (unused).
+            _shape_name (str): The shape name (unused).
+            _value (float): The new value (unused).
+
+        Returns:
+            None
+        """
         if self._is_split_tab_active():
             self._sync_split_map_weight_slider_values()
 
 
     def _on_split_map_edit_structure_changed(self, *_args) -> None:
+        """Refresh the split-map weights when the edit structure changes.
+
+        Returns:
+            None
+        """
         if self._is_split_tab_active():
             self._refresh_split_map_weights()
         else:
@@ -1359,6 +1659,14 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_split_map_edit_blendshape_deleted(self, blendshape_name: str) -> None:
+        """Handle deletion of the split-map edit blendshape node.
+
+        Parameters:
+            blendshape_name (str): The deleted node name.
+
+        Returns:
+            None
+        """
         self._clear_split_map_edit_blendshape_tracker()
         self._refresh_split_map_weights()
         self._set_status(f"Split-map edit blendshape '{blendshape_name}' deleted.", warning=True)

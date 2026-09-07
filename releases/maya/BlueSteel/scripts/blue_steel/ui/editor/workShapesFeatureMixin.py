@@ -169,10 +169,21 @@ from .widgets import (
 
 class WorkShapesFeatureMixin(MainWindowMixin):
     def _selected_work_shape_names(self) -> List[str]:
+        """Return the names of the selected work shapes.
+
+        Returns:
+            List[str]: The selected work-shape names.
+        """
         return self._selected_names_from_list_view(self.work_shapes_view, self._work_shape_model)
 
 
     def _first_selected_work_shape_name(self) -> Optional[str]:
+        """Return the first selected work-shape name, or ``None``.
+
+        Returns:
+            Optional[str]: The first selected work-shape name, or ``None``
+            when no work shape is selected.
+        """
         selected_names = self._selected_work_shape_names()
         if not selected_names:
             return None
@@ -180,6 +191,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _select_work_shape(self, shape_name: str) -> None:
+        """Select a work shape in the work-shapes view.
+
+        Parameters:
+            shape_name (str): The work-shape name to select.
+
+        Returns:
+            None
+        """
         index = self._work_shape_model.index_by_name(shape_name)
         if not index.isValid() or self.work_shapes_view.selectionModel() is None:
             return
@@ -189,11 +208,21 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shapes_selection_changed(self, *_args) -> None:
+        """Update the button panel and heat-map target on selection changes.
+
+        Returns:
+            None
+        """
         self._update_work_shape_button_panel()
         self._update_heat_map_target_from_work_shapes_selection()
 
 
     def _update_work_shape_button_panel(self) -> None:
+        """Enable or disable the work-shape action buttons based on state.
+
+        Returns:
+            None
+        """
         has_editor = self.current_editor is not None and self.current_editor.work_blendshape is not None
         selected_shape_name = self._first_selected_work_shape_name()
         has_selection = bool(selected_shape_name)
@@ -204,6 +233,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _stop_active_blendshape_trackers(self) -> None:
+        """Stop every active blendshape tracker.
+
+        Returns:
+            None
+        """
         for tracker in (
             self.blendshape_tracker,
             self.work_blendshape_tracker,
@@ -215,6 +249,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _start_active_blendshape_trackers(self) -> None:
+        """Start every active blendshape tracker.
+
+        Returns:
+            None
+        """
         for tracker in (
             self.blendshape_tracker,
             self.work_blendshape_tracker,
@@ -226,6 +265,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _reload_work_shapes_from_editor(self) -> None:
+        """Rebuild the work-shape model and refresh dependent UI.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._work_shape_model.rebuild_from_editor(None)
         else:
@@ -235,6 +279,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_add_work_shape_clicked(self) -> None:
+        """Create a new work shape and select it.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -252,6 +301,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_remove_work_shapes_clicked(self) -> None:
+        """Remove the selected work shapes.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -284,6 +338,13 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_paint_work_shape_clicked(self) -> None:
+        """Enter paint mode for the selected work shape.
+
+        Alt-click paints weights; otherwise paints masks.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -304,6 +365,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_apply_work_shapes_clicked(self) -> None:
+        """Apply the active work shapes to their connected shapes.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -320,10 +386,28 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_edit_mode_toggle_requested(self, shape_name: str, _state: bool) -> None:
+        """Handle a work-shape edit-mode icon toggle.
+
+        Parameters:
+            shape_name (str): The work-shape name.
+            _state (bool): The requested state (unused).
+
+        Returns:
+            None
+        """
         self._on_toggle_work_shape_edit_mode(shape_name)
 
 
     def _on_toggle_work_shape_edit_mode(self, shape_name: Optional[str] = None) -> None:
+        """Toggle edit mode for a work shape.
+
+        Parameters:
+            shape_name (Optional[str]): The work-shape name; defaults to the
+                first selected work shape.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -375,6 +459,17 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shapes_double_clicked(self, model_index: QModelIndex) -> None:
+        """Handle a double-click on a work shape.
+
+        Alt-click jumps to the connected shape; otherwise begins inline
+        rename.
+
+        Parameters:
+            model_index (QModelIndex): The clicked model index.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or not model_index.isValid():
             return
         shape_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
@@ -399,6 +494,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_drop_received(self, work_shape_name: str, source_shape_name: str) -> None:
+        """Connect a work shape to a dropped source shape.
+
+        Parameters:
+            work_shape_name (str): The work shape receiving the connection.
+            source_shape_name (str): The dropped source shape name.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -418,6 +522,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_break_link_requested(self, work_shape_name: str) -> None:
+        """Break the connection between a work shape and its driver.
+
+        Parameters:
+            work_shape_name (str): The work shape name.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -436,12 +548,25 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _has_copied_work_weight_map_values(self) -> bool:
+        """Return whether copied work weight-map values are available.
+
+        Returns:
+            bool: ``True`` when copied weight-map values exist.
+        """
         if self.current_editor is None:
             return False
         return getattr(self.current_editor, "copied_weight_map_values", None) is not None
 
 
     def _on_work_shape_duplicate_requested(self, work_shape_name: str) -> None:
+        """Duplicate a work shape and select the copy.
+
+        Parameters:
+            work_shape_name (str): The work shape to duplicate.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -459,6 +584,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_extract_requested(self, work_shape_name: str) -> None:
+        """Extract a shape from a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to extract from.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -480,6 +613,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_connected_mesh_requested(self, work_shape_name: str) -> None:
+        """Select the mesh connected to a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape name.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.current_editor.work_blendshape is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -500,6 +641,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_copy_weights_requested(self, work_shape_name: str) -> None:
+        """Copy weight-map values from a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to copy from.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -512,6 +661,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_paste_weights_requested(self, work_shape_name: str) -> None:
+        """Paste copied weight-map values onto a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to paste onto.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -524,6 +681,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_paste_inverted_weights_requested(self, work_shape_name: str) -> None:
+        """Paste inverted copied weight-map values onto a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to paste onto.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -536,6 +701,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_add_copied_weights_requested(self, work_shape_name: str) -> None:
+        """Add copied weight-map values to a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to add to.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -548,6 +721,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_subtract_copied_weights_requested(self, work_shape_name: str) -> None:
+        """Subtract copied weight-map values from a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to subtract from.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -560,6 +741,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shapes_normalize_weights_requested(self, work_shape_names: Sequence[str]) -> None:
+        """Normalize weight maps across the selected work shapes.
+
+        Parameters:
+            work_shape_names (Sequence[str]): The work-shape names to
+                normalize.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -579,6 +769,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_clear_weights_requested(self, work_shape_name: str) -> None:
+        """Clear the weight-map values of a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to clear.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -592,6 +790,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _begin_inline_workshape_rename(self, model_index: QModelIndex) -> None:
+        """Begin inline renaming of a work shape.
+
+        Parameters:
+            model_index (QModelIndex): The model index of the work shape.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or not model_index.isValid():
             return
         old_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
@@ -622,6 +828,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _cancel_inline_workshape_rename(self) -> None:
+        """Cancel the active inline work-shape rename editor.
+
+        Returns:
+            None
+        """
         editor = self._workshape_rename_editor
         self._workshape_rename_editor = None
         self._workshape_rename_old_name = ""
@@ -630,6 +841,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _commit_inline_workshape_rename(self) -> None:
+        """Commit the active inline work-shape rename editor.
+
+        Returns:
+            None
+        """
         editor = self._workshape_rename_editor
         old_name = self._workshape_rename_old_name
         self._workshape_rename_editor = None
@@ -662,6 +878,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _capture_linked_drag_state(self) -> None:
+        """Capture start values for a linked drag.
+
+        Returns:
+            None
+        """
         self._linked_primary_start_values = {}
         self._linked_work_start_values = {}
         for shape_name in self._selected_primary_drop_shape_names():
@@ -677,16 +898,34 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_linked_drag_started(self) -> None:
+        """Mark the linked drag as active and capture its start state.
+
+        Returns:
+            None
+        """
         self._linked_drag_active = True
         self._linked_drag_ctrl_pressed = bool(QGuiApplication.keyboardModifiers() & Qt.ControlModifier)
         self._capture_linked_drag_state()
 
 
     def _on_linked_drag_selection_context(self, can_propagate: bool) -> None:
+        """Record whether a linked drag may propagate.
+
+        Parameters:
+            can_propagate (bool): Whether propagation is allowed.
+
+        Returns:
+            None
+        """
         self._linked_drag_can_propagate = bool(can_propagate)
 
 
     def _on_linked_drag_ended(self) -> None:
+        """Clear the linked drag state when the drag ends.
+
+        Returns:
+            None
+        """
         self._linked_drag_active = False
         self._linked_primary_start_values = {}
         self._linked_work_start_values = {}
@@ -695,6 +934,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_linked_drag_delta(self, delta_value: float) -> None:
+        """Apply a linked-drag delta to primary and work shapes.
+
+        Parameters:
+            delta_value (float): The value delta to apply.
+
+        Returns:
+            None
+        """
         if not self._linked_drag_active:
             return
         if not self._linked_drag_can_propagate:
@@ -710,17 +957,41 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_value_committed(self, shape_name: str, value: float) -> None:
+        """Report a committed work-shape value.
+
+        Parameters:
+            shape_name (str): The work-shape name.
+            value (float): The committed value.
+
+        Returns:
+            None
+        """
         if self._linked_drag_active:
             return
         self._set_status(f"Set work shape '{shape_name}' to {value:.3f}")
 
 
     def _on_work_shape_value_changed(self, shape_id: int, shape_name: str, value: float) -> None:
+        """Update the local work-shape model value from a tracker change.
+
+        Parameters:
+            shape_id (int): The work-shape target id (unused).
+            shape_name (str): The work-shape name.
+            value (float): The new value.
+
+        Returns:
+            None
+        """
         del shape_id
         self._work_shape_model.set_value_local(shape_name, value)
 
 
     def _on_work_shape_structure_changed(self, *_args) -> None:
+        """Reload work shapes after a structure change.
+
+        Returns:
+            None
+        """
         print("Work shape structure changed, reloading work shapes from editor...")
         if self.current_editor is not None and self.current_editor.work_blendshape is not None:
             self.current_editor.work_blendshape.invalidate_weights_cache()
@@ -728,6 +999,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_sculpt_target_changed(self, target_id: int, _shape_name: str) -> None:
+        """Sync the edit-shape selection with the sculpt target.
+
+        Parameters:
+            target_id (int): The active sculpt target id.
+            _shape_name (str): The shape name (unused).
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.current_editor.work_blendshape is None:
             self._work_shape_model.set_edit_shape(None)
             self._update_work_shape_button_panel()
@@ -742,7 +1022,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shapes_mute_toggle_requested(self, shape_name: str, state: bool) -> None:
-        """Handle work-shape delegate mute icon clicks with shapes-panel semantics."""
+        """Handle work-shape delegate mute icon clicks with shapes-panel semantics.
+
+        Parameters:
+            shape_name (str): The clicked work-shape name.
+            state (bool): The requested mute state.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
 
@@ -766,6 +1054,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_blendshape_target_connection_changed(self, _target_id: int, connected: bool) -> None:
+        """Update local connection state when a work target connection changes.
+
+        Parameters:
+            _target_id (int): The work target id.
+            connected (bool): Whether the target is now connected.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.current_editor.work_blendshape is None:
             return
         work_weight = self.current_editor.work_blendshape.get_weight_by_id(_target_id)
@@ -783,6 +1080,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_blendshape_driver_connection_changed(self, target_id: int, connected: bool) -> None:
+        """Update local driver state when a work driver connection changes.
+
+        Parameters:
+            target_id (int): The work target id.
+            connected (bool): Whether the driver is now connected.
+
+        Returns:
+            None
+        """
         if self.current_editor is None or self.current_editor.work_blendshape is None:
             return
         work_weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
@@ -793,6 +1099,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_blendshape_deleted(self, blendshape_name: str) -> None:
+        """Handle deletion of the work blendshape node.
+
+        Parameters:
+            blendshape_name (str): The deleted blendshape node name.
+
+        Returns:
+            None
+        """
         self.set_current_editor(None)
         self._set_status(f"Work blendshape '{blendshape_name}' deleted.", warning=True)
 

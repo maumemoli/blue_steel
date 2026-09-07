@@ -169,19 +169,43 @@ from .widgets import (
 
 class EditorSessionMixin(MainWindowMixin):
     def _clear_trackers_for_scene_operation(self) -> None:
-        """Temporarily stop trackers before scene-wide operations."""
+        """Stop all live trackers before a scene-wide operation.
+
+        Disposes the scene editor tracker and the blendshape tracker so their
+        Maya attribute callbacks do not fire while the operation mutates the
+        scene.
+
+        Returns:
+            None
+        """
         self._clear_scene_editor_tracker()
         self._clear_blendshape_tracker()
 
 
     def _restart_trackers_after_scene_operation(self) -> None:
-        """Restore trackers after scene-wide operations."""
+        """Restore the trackers stopped before a scene-wide operation.
+
+        Rebuilds the scene editor tracker and, when an editor is selected, its
+        blendshape tracker.
+
+        Returns:
+            None
+        """
         self._setup_scene_editor_tracker()
         if self.current_editor is not None:
             self._setup_blendshape_tracker()
 
 
     def _setup_scene_editor_tracker(self) -> None:
+        """Create and start the scene editor tracker.
+
+        Connects scene reset/open and editor add/remove/rename/frame-changed
+        signals to the matching handlers, replacing any previously installed
+        tracker.
+
+        Returns:
+            None
+        """
         self._clear_scene_editor_tracker()
         self.scene_editor_tracker = BlueSteelEditorsTracker()
         self.scene_editor_tracker.sceneReset.connect(self._on_scene_reset)
@@ -194,6 +218,14 @@ class EditorSessionMixin(MainWindowMixin):
 
     @staticmethod
     def _dispose_tracker(tracker) -> None:
+        """Safely dispose a tracker by killing it and deleting it.
+
+        Parameters:
+            tracker: The tracker object to dispose; ``None`` is a no-op.
+
+        Returns:
+            None
+        """
         if tracker is None:
             return
         try:
@@ -207,12 +239,26 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _clear_scene_editor_tracker(self) -> None:
+        """Dispose and clear the scene editor tracker reference.
+
+        Returns:
+            None
+        """
         tracker = self.scene_editor_tracker
         self.scene_editor_tracker = None
         self._dispose_tracker(tracker)
 
 
     def _setup_blendshape_tracker(self) -> None:
+        """Create and start the blendshape and work-blendshape trackers.
+
+        Connects shape value/structure/rename/deletion signals for the active
+        editor's blendshape and, when present, its work blendshape, plus the
+        split-map edit blendshape tracker.
+
+        Returns:
+            None
+        """
         self._clear_blendshape_tracker()
         if self.current_editor is None:
             return
@@ -241,6 +287,15 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _setup_split_map_edit_blendshape_tracker(self) -> None:
+        """Create and start the split-map edit blendshape tracker.
+
+        Resolves the split-map edit blendshape node name from the active
+        editor and connects its shape signals. Clears the tracker when no
+        valid node exists.
+
+        Returns:
+            None
+        """
         node_name = None
         if self.current_editor is not None:
             node_name = self.current_editor.split_map_edit_blendshape
@@ -266,12 +321,22 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _clear_split_map_edit_blendshape_tracker(self) -> None:
+        """Dispose and clear the split-map edit blendshape tracker reference.
+
+        Returns:
+            None
+        """
         tracker = self.split_map_edit_blendshape_tracker
         self.split_map_edit_blendshape_tracker = None
         self._dispose_tracker(tracker)
 
 
     def _clear_blendshape_tracker(self) -> None:
+        """Dispose and clear the blendshape and work-blendshape trackers.
+
+        Returns:
+            None
+        """
         self._clear_split_map_edit_blendshape_tracker()
         blendshape_tracker = self.blendshape_tracker
         self.blendshape_tracker = None
@@ -282,6 +347,14 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _setup_split_attr_grp_tracker(self) -> None:
+        """Create and start the split attribute-group controller tracker.
+
+        Connects attribute change/add/remove and node-deleted signals for the
+        active editor's split attribute group.
+
+        Returns:
+            None
+        """
         self._clear_split_attr_grp_tracker()
         if self.current_editor is None or not cmds.objExists(self.current_editor.split_attr_grp):
             return
@@ -294,6 +367,11 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _clear_split_attr_grp_tracker(self) -> None:
+        """Dispose and clear the split attribute-group tracker reference.
+
+        Returns:
+            None
+        """
         self._split_attr_refresh_pending = False
         self._split_attr_full_refresh_pending = False
         tracker = self.split_attr_grp_tracker
@@ -302,7 +380,18 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _schedule_split_attr_grp_value_refresh(self, attribute_name: str, _value) -> None:
-        """Refresh only assignment values when a primary enum value changes."""
+        """Schedule a split settings refresh after a controller attribute changes.
+
+        Performs a full refresh for non-enum attribute changes and a
+        value-only refresh for enum changes.
+
+        Parameters:
+            attribute_name (str): The name of the changed attribute.
+            _value: The new attribute value (unused).
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             return
         try:
@@ -313,10 +402,26 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _schedule_split_attr_grp_full_refresh(self, *_args) -> None:
+        """Schedule a full split settings refresh from an attribute change.
+
+        Returns:
+            None
+        """
         self._schedule_split_attr_grp_refresh(full=True)
 
 
     def _schedule_split_attr_grp_refresh(self, *, full: bool) -> None:
+        """Debounce and schedule the split settings refresh.
+
+        Defers to a single-shot timer when the split tab is active; otherwise
+        marks the refresh pending for the next time the tab becomes active.
+
+        Parameters:
+            full (bool): Whether a full reload is required.
+
+        Returns:
+            None
+        """
         if not self._is_split_tab_active():
             self._split_settings_refresh_pending = True
             return
@@ -328,6 +433,14 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _reload_split_settings_from_tracker(self) -> None:
+        """Apply the scheduled split settings refresh from the tracker timer.
+
+        Runs a full reload when requested, otherwise refreshes only the
+        primary assignments.
+
+        Returns:
+            None
+        """
         full_refresh = self._split_attr_full_refresh_pending
         self._split_attr_refresh_pending = False
         self._split_attr_full_refresh_pending = False
@@ -339,11 +452,26 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_split_attr_grp_deleted(self, _node_name: str) -> None:
+        """Handle deletion of the split attribute-group node.
+
+        Parameters:
+            _node_name (str): The deleted node name (unused).
+
+        Returns:
+            None
+        """
         self._clear_split_attr_grp_tracker()
         self._reload_split_settings_from_editor()
 
 
     def _reload_editor_menu(self) -> None:
+        """Repopulate the editor selector combo with the current editor names.
+
+        Preserves the currently selected editor when it still exists.
+
+        Returns:
+            None
+        """
         current_name = self.current_editor.name if self.current_editor else self.EMPTY_SYSTEM_LABEL
         names = []
         if hasattr(self.scene_editor_tracker, "get_editor_names"):
@@ -361,6 +489,11 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _select_first_available_editor(self) -> None:
+        """Select the first available editor in the combo, or none when empty.
+
+        Returns:
+            None
+        """
         if self.editor_combo.count() > 1:
             self.editor_combo.setCurrentIndex(1)
         else:
@@ -368,6 +501,14 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_editor_selected(self, name: str) -> None:
+        """Handle an editor selection from the combo box.
+
+        Parameters:
+            name (str): The selected editor name, or the empty placeholder.
+
+        Returns:
+            None
+        """
         if not name or name == self.EMPTY_SYSTEM_LABEL:
             self.set_current_editor(None)
             return
@@ -375,6 +516,13 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_scene_reset(self) -> None:
+        """Handle a scene reset event by clearing the active editor.
+
+        The reset is deferred to after Maya finishes tearing down the scene.
+
+        Returns:
+            None
+        """
         def deferred():
             self.set_current_editor(None)
             self._reload_editor_menu()
@@ -384,6 +532,13 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_scene_opened(self) -> None:
+        """Handle a scene opened event by reloading the editor menu.
+
+        The reload is deferred to after Maya finishes loading the scene.
+
+        Returns:
+            None
+        """
         def deferred():
             self._reload_editor_menu()
             self._select_first_available_editor()
@@ -393,16 +548,47 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_editor_added(self, _name: str) -> None:
+        """Handle a newly added editor by reloading the editor menu.
+
+        Parameters:
+            _name (str): The added editor name (unused).
+
+        Returns:
+            None
+        """
         self._reload_editor_menu()
 
 
     def _on_editor_removed(self, name: str) -> None:
+        """Handle a removed editor.
+
+        Clears the current editor when it is the one removed, then reloads the
+        menu.
+
+        Parameters:
+            name (str): The removed editor name.
+
+        Returns:
+            None
+        """
         if self.current_editor and self.current_editor.name == name:
             self.set_current_editor(None)
         self._reload_editor_menu()
 
 
     def _on_editor_renamed(self, new_name: str, old_name: str) -> None:
+        """Handle a renamed editor.
+
+        Switches to the new name when the active editor was renamed, otherwise
+        reloads the menu.
+
+        Parameters:
+            new_name (str): The new editor name.
+            old_name (str): The previous editor name.
+
+        Returns:
+            None
+        """
         if self.current_editor and self.current_editor.name == old_name:
             self.set_current_editor(new_name)
         else:
@@ -410,7 +596,17 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _on_scene_frame_changed(self, _frame: float) -> None:
-        """Keep slider UIs in sync while keyed values change over time."""
+        """Keep slider UIs in sync while keyed values change over time.
+
+        Refreshes shape values from the editor and updates the primary tree
+        sliders, skipping while a drag is active or the window is hidden.
+
+        Parameters:
+            _frame (float): The new frame number (unused).
+
+        Returns:
+            None
+        """
         if self.current_editor is None or not self.isVisible():
             return
         if self._primaries_drag_active or self._linked_drag_active:
@@ -425,6 +621,15 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _reload_shapes_from_editor(self) -> None:
+        """Rebuild every shape-backed model and view from the active editor.
+
+        Synchronizes the shape network, rebuilds the shape/work-shape models,
+        the primary/shapes/primary-drop trees, split settings, delegate
+        columns, info labels, and the work-shape button panel.
+
+        Returns:
+            None
+        """
         self._clear_related_shapes_cache()
         if self.current_editor is None:
             self._shape_model.rebuild_from_editor(None)
@@ -454,6 +659,11 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def _update_window_title(self) -> None:
+        """Update the window title with the version and active editor name.
+
+        Returns:
+            None
+        """
         editor_name = self.current_editor.name if self.current_editor is not None else ""
         title = f"Blue Steel v.{self.version}"
         if editor_name:
@@ -462,10 +672,19 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def set_current_editor(self, name: Optional[str]) -> None:
-        """Set active editor by name.
+        """Set the active editor by name.
+
+        Loads the editor and rebuilds every dependent model and view. Passing
+        an empty or invalid name clears the current editor.
+
+        Parameters:
+            name (Optional[str]): The editor node name to load, or ``None``.
+
+        Returns:
+            None
 
         Example:
-            >>> win.set_current_editor("myCharacter_blueSteel_container")
+            >>> win.set_current_editor("characterA_blueSteel_container")
         """
         self._clear_blendshape_tracker()
         self._clear_split_attr_grp_tracker()
@@ -532,7 +751,17 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def refresh_ui(self) -> None:
-        """Refresh model and editor list while preserving current selection when possible."""
+        """Refresh the model and editor list while preserving the selection.
+
+        Clears shape filters, reloads the editor menu, and re-selects the
+        active editor when it still exists.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.refresh_ui()
+        """
         self._clear_shapes_filters(rebuild_ui=False)
         selected_name = self.current_editor.name if self.current_editor else None
         self._reload_editor_menu()
@@ -544,6 +773,17 @@ class EditorSessionMixin(MainWindowMixin):
 
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        """Handle the window close event.
+
+        Turns off the HUD, closes the controller layout window, and disposes
+        all trackers before delegating to the Qt base class.
+
+        Parameters:
+            event: The Qt close event.
+
+        Returns:
+            None
+        """
         if self.current_editor is not None:
             self.current_editor.toggle_hud_display(False)
         if self._controller_layout_window is not None:

@@ -1681,6 +1681,11 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_shape_renamed(self, *_args) -> None:
+        """Handle a shape being renamed in the scene.
+
+        Returns:
+            None
+        """
         self._clear_related_shapes_cache()
         if self.current_editor is not None:
             self.current_editor.blendshape.invalidate_weights_cache()
@@ -1688,11 +1693,24 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_blendshape_deleted(self, blendshape_name: str) -> None:
+        """Handle deletion of the active blendshape node.
+
+        Parameters:
+            blendshape_name (str): The deleted blendshape node name.
+
+        Returns:
+            None
+        """
         self.set_current_editor(None)
         self._set_status(f"Blendshape '{blendshape_name}' deleted.", warning=True)
 
 
     def _update_info_labels(self) -> None:
+        """Update the info labels in the shapes and active shapes views.
+
+        Returns:
+            None
+        """
         total_primaries = sum(1 for _ in self._iter_primary_tree_leaves())
         selected_primaries = sum(
             1

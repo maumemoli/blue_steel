@@ -169,6 +169,14 @@ from .widgets import (
 
 class EditorOpsMixin(MainWindowMixin):
     def _show_controller_layout_window(self) -> None:
+        """Open (or raise) the controller layout window for the active editor.
+
+        Creates the window on first use, binds the current editor, and brings
+        it to the front.
+
+        Returns:
+            None
+        """
         if self._controller_layout_window is None:
             maya_parent = get_maya_main_window() or self
             self._controller_layout_window = ControllerLayoutWindow(
@@ -184,15 +192,36 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _editor_for_controller_layout(self) -> Optional[BlueSteelEditor]:
+        """Return the active editor for the controller layout window.
+
+        Returns:
+            Optional[BlueSteelEditor]: The current editor, or ``None``.
+        """
         return self.current_editor
 
 
     def _clear_controller_layout_window_ref(self) -> None:
+        """Clear the cached controller layout window reference.
+
+        Returns:
+            None
+        """
         self._controller_layout_window = None
 
 
     @undoable
     def commit_selected(self) -> None:
+        """Commit the selected meshes to the active editor's shapes.
+
+        Resolves polygon meshes from the current scene selection and calls
+        ``commit_shapes``, reporting how many meshes were committed.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.commit_selected()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -244,6 +273,17 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def add_selected_at_current_pose(self) -> None:
+        """Add the current pose of the selected mesh as a new shape.
+
+        Creates the shape from the active editor, then selects it in the
+        Shapes tree.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.add_selected_at_current_pose()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -275,6 +315,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_add_primary_clicked(self) -> None:
+        """Prompt for a name and add a new primary shape to the active editor.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -309,6 +354,18 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def remove_selected_shapes(self, shape_names: Optional[Sequence[str]] = None) -> None:
+        """Remove shapes from the active editor.
+
+        Parameters:
+            shape_names (Optional[Sequence[str]]): Names to remove; defaults
+                to the current Shapes-tree selection.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.remove_selected_shapes(["Smile"])
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -334,6 +391,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def remove_shapes_from_focused_view(self) -> None:
+        """Remove selected shapes from whichever view currently has focus.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.remove_shapes_from_focused_view()
+        """
         if self.primaries_view.hasFocus():
             self.remove_selected_primaries()
             return
@@ -344,6 +409,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def remove_selected_primaries(self) -> None:
+        """Remove the selected primary shapes and their dependents.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.remove_selected_primaries()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -370,6 +443,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def toggle_mute_selected_shapes(self) -> None:
+        """Toggle the mute state of the selected shapes.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.toggle_mute_selected_shapes()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -393,6 +474,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def unmute_all_shapes(self) -> None:
+        """Unmute every shape in the active editor.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.unmute_all_shapes()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -406,6 +495,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def unlock_all_shapes(self) -> None:
+        """Unlock every shape in the active editor.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.unlock_all_shapes()
+        """
         print("Unlocking all shapes...")
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
@@ -419,6 +516,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def select_face_ctrl(self) -> None:
+        """Select the active editor's face controller in the scene.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.select_face_ctrl()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -427,6 +532,16 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def zero_all(self) -> None:
+        """Zero out all shape values in the active editor.
+
+        Refreshes the shape model and primary tree sliders afterwards.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.zero_all()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -449,6 +564,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def rename_selected_mesh(self) -> None:
+        """Rename the selected mesh to the active editor's current pose name.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.rename_selected_mesh()
+        """
         selection = cmds.ls(selection=True)
         if not selection:
             self._set_status("No items selected in the scene.", warning=True)
@@ -468,6 +591,17 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def extract_selected(self, selected_shapes) -> None:
+        """Extract the selected shapes into a mesh at the current pose.
+
+        Parameters:
+            selected_shapes: The shape names to extract.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.extract_selected(["Smile"])
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -482,6 +616,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def duplicate_at_value(self) -> None:
+        """Duplicate the base mesh at the current pose.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.duplicate_at_value()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -494,6 +636,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def launch_mmtools(self) -> None:
+        """Toggle the mmTools window open or closed.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.launch_mmtools()
+        """
         workspace_control = "MMToolsWorkspaceControl"
         if (
             cmds.workspaceControl(workspace_control, query=True, exists=True)
@@ -507,6 +657,13 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_toggle_hud_clicked(self) -> None:
+        """Toggle the HUD display for the active editor.
+
+        Holding Alt while clicking toggles the list-combo variant.
+
+        Returns:
+            None
+        """
         modifiers = QGuiApplication.keyboardModifiers()
         alt_pressed = bool(modifiers & Qt.AltModifier)
         if self.current_editor is None:
@@ -521,6 +678,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def compare_shapes_debug(self) -> None:
+        """Run the debug shape comparison and report the result.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.compare_shapes_debug()
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -535,7 +700,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _create_menu_bar(self) -> None:
-        """Create the top menu bar migrated from the legacy editor window."""
+        """Create the top menu bar migrated from the legacy editor window.
+
+        Builds the File/Import/Export/Utilities/Converters/Help menus plus the
+        dock toggle and close buttons.
+
+        Returns:
+            None
+        """
         menu_widget = QWidget(self)
         menu_widget.setFixedHeight(24)
         menu_layout = QHBoxLayout(menu_widget)
@@ -669,6 +841,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _create_new_editor(self) -> None:
+        """Prompt for a name and create a new Blue Steel editor from the selection.
+
+        Returns:
+            None
+        """
         selection = cmds.ls(selection=True) or []
         if not selection:
             self._set_status("No mesh selected to create a new system.", error=True)
@@ -693,6 +870,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _import_objs(self) -> None:
+        """Import OBJ shapes from a directory into the active editor.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -717,6 +899,15 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _import_shapes_from_blendshape_node(self, absolute_delta: bool = False) -> None:
+        """Import shapes from a saved blendshape node file.
+
+        Parameters:
+            absolute_delta (bool): Whether to import absolute rather than
+                relative deltas.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -748,6 +939,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _import_split_data(self) -> None:
+        """Import split groups and/or split maps from a directory.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -816,6 +1012,11 @@ class EditorOpsMixin(MainWindowMixin):
             
 
     def _on_create_split_shapes_editor_requested(self) -> None:
+        """Split the active editor's shapes into a new split-shapes editor.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -848,6 +1049,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _export_split_data(self) -> None:
+        """Export split data from the active editor to a directory.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -870,6 +1076,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _export_objs(self) -> None:
+        """Export every shape in the active editor as OBJ files.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -893,6 +1104,15 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _export_shapes_as_blendshape_node(self, absolute_delta: bool = False) -> None:
+        """Export the active editor's shapes as a blendshape node file.
+
+        Parameters:
+            absolute_delta (bool): Whether to export absolute rather than
+                relative deltas.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -924,6 +1144,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _rename_current_editor(self) -> None:
+        """Prompt for a new name and rename the active editor.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -951,7 +1176,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_fix_invisible_blendshapes_requested(self) -> None:
-        """Fix Shape Editor visibility issues caused by misplaced mid-layer directories."""
+        """Fix Shape Editor visibility issues from misplaced mid-layer directories.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
@@ -966,6 +1195,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _toggle_exploded_container_action_state(self, collapsed: bool) -> None:
+        """Update the container explosion action text and tooltip.
+
+        Parameters:
+            collapsed (bool): Whether containers are currently collapsed.
+
+        Returns:
+            None
+        """
         if self.explode_container_action is None:
             return
         if collapsed:
@@ -977,6 +1214,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _toggle_node_editor_container_view(self) -> None:
+        """Toggle container asset explosion in the Node Editor panel.
+
+        Returns:
+            None
+        """
         if not cmds.nodeEditor("nodeEditorPanel1NodeEditorEd", exists=True):
             self._set_status("Node Editor panel not found.", warning=True)
             return
@@ -987,6 +1229,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_connect_simplex_controller_requested(self) -> None:
+        """Connect the selected Simplex controller to the editor's controller.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("Please select a Blue Steel Editor before connecting Simplex controllers.",
                              warning=True)
@@ -1012,6 +1259,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_simplex_converter_requested(self) -> None:
+        """Convert a Simplex facial system into the active editor.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("Please select a Blue Steel Editor before converting Simplex systems.",
                               warning=True)
@@ -1043,6 +1295,11 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def _on_prepare_for_publishing_requested(self) -> None:
+        """Prepare the active editor for publishing after confirmation.
+
+        Returns:
+            None
+        """
         if self.current_editor is None:
             self._set_status("Please select a Blue Steel Editor before preparing for publishing.", warning=True)
             return
@@ -1065,6 +1322,14 @@ class EditorOpsMixin(MainWindowMixin):
 
 
     def show_about(self) -> None:
+        """Show the About dialog for Blue Steel.
+
+        Returns:
+            None
+
+        Example:
+            >>> win.show_about()
+        """
         QMessageBox.about(
             self, "About",
             "Blues Steel\n\n"
