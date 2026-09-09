@@ -479,14 +479,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             if self.shapes_list_active_button.isChecked():
                 self.shapes_list_active_button.setChecked(False)
             try:
-                connected_shape_name = self.current_editor.get_work_shape_driver(shape_name)
+                connected_shape_names = self.current_editor.get_work_shape_driver_shapes(shape_name)
             except Exception as exc:
                 self._set_status(f"Error finding connected shape for '{shape_name}': {exc}", error=True)
                 return
-            if not connected_shape_name:
+            if not connected_shape_names:
                 self._set_status(f"Work shape '{shape_name}' is not connected to a shape.", warning=True)
                 return
-            connected_shape_name = str(connected_shape_name)
+            connected_shape_name = str(connected_shape_names[0])
             self._set_shape_pose_by_name(connected_shape_name)
             self._select_shape_and_primaries(connected_shape_name)
             return
@@ -535,7 +535,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             return
         try:
             self._stop_active_blendshape_trackers()
-            self.current_editor.disconnect_work_blendshape_weight(work_shape_name)
+            self.current_editor.disconnect_work_shape_drivers(work_shape_name)
         except Exception as exc:
             self._set_status(f"Error breaking link for '{work_shape_name}': {exc}", error=True)
             return

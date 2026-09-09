@@ -984,39 +984,62 @@ class BlueSteelEditor(object):
         self.work_blendshape.remove_target(w)
 
     @undoable
-    def disconnect_work_blendshape_weight(self, work_shape_name: str):
+    def disconnect_work_shape_drivers(self, work_shape_name: str, drivers_list: list = []):
         """
         Disconnect a work shape from the face control.
         Parameters:
             work_shape_name (str): The name of the work shape to disconnect
+            drivers_list (list, optional): The list of driver shapes to disconnect from the work shape.
+            If empty, disconnect all drivers.
         """
         w = self.work_blendshape.get_weight_by_name(work_shape_name)
         if w is None:
             raise ValueError(f"Work shape '{work_shape_name}' not found in blendshape.")
-        driver = self.work_blendshape.get_weight_driver(w)
-        if driver is not None and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
-            cmds.delete(driver)
+        driver_nodes = self.get_work_shape_driver_nodes(work_shape_name)
+        if not driver_nodes: # there are no connections here.
+            return
+        if not drivers_list: # we are freeing the work shape from all the connections.
+            cmds.delete(driver_nodes)
+            return
+        connected_driver_shapes = self.get_work_shape_driver_shapes(work_shape_name)
+        if all(driver not in connected_driver_shapes for driver in drivers_list):
+            return
+        # it is faster to delete the nodes and recreate the connections
+        cmds.delete(driver_nodes)
+        shapes_to_reconnect = [shape for shape in connected_driver_shapes if shape not in drivers_list]
+        for connected_driver_shape in shapes_to_reconnect:
+            self.connect_work_blendshape_weight_to_blendshape_weight(work_shape_name, connected_driver_shape)
 
-    def get_work_shape_driver(self, weight: str):
+
+    def get_work_shape_driver_shapes(self, work_shape_name: str)->list:
         """
-        Get the driver of a work shape.
+        Get the shapes driving the work shape.
         Parameters:
-            work_shape_weight (Weight): The weight object of the work shape
+            work_shape_name (str): The name of the work shape
         Returns:
-            str: The name of the driver node, or None if not found
+            list: A list of the names of the driver shapes, or an empty list if not found
         """
-        if not isinstance(weight, Weight):
-            weight = self.work_blendshape.get_weight_by_name(weight)
-            if weight is None:
-                raise ValueError(f"Weight for work shape '{weight}' not found in blendshape.") 
-        driver = self.work_blendshape.get_weight_driver(weight)
-        if driver and cmds.nodeType(driver) in ["animCurveUL", "animCurveUA", "animCurveUT", "animCurveUU"]:
+        connected_shapes = []
+        driver_nodes = self.get_work_shape_driver_nodes(work_shape_name)
+        if len(driver_nodes) == 0:
+            return connected_shapes
+        elif len(driver_nodes) == 1: #this is a single shape connection
+            driver = driver_nodes[0]
             connections = cmds.listConnections(f"{driver}.input", plugs=True) or []
             for conn in connections:
                 if conn.startswith(f"{self.blendshape.name}."):
+                    driver_shape_name = conn.split(".")[-1]
+                    connected_shapes.append(driver_shape_name)
+            return connected_shapes
+        elif len(driver_nodes) == 2: #this is a multiple shapes connection with an average nnode
+            driver = driver_nodes[1]
+            connections = cmds.listConnections(f"{driver}.input1D", plugs=True) or []
+            for conn in connections:
+                if conn.startswith(f"{self.blendshape.name}."):
                     primary_shape_name = conn.split(".")[-1]
-                    return primary_shape_name
-        return None
+                    connected_shapes.append(primary_shape_name)
+            return connected_shapes
+        return connected_shapes
 
     def get_shapes_with_connected_work_shapes(self):
         """
@@ -1026,11 +1049,12 @@ class BlueSteelEditor(object):
         shapes_with_connected_work_shapes = {}
         work_weights = self.work_blendshape.get_weights() or []
         for work_weight in work_weights:
-            primary_shape_name = self.get_work_shape_driver(work_weight)
-            if primary_shape_name:
-                if primary_shape_name not in shapes_with_connected_work_shapes:
-                    shapes_with_connected_work_shapes[primary_shape_name] = []
-                shapes_with_connected_work_shapes[primary_shape_name].append(work_weight)
+            primary_shape_names = self.get_work_shape_driver_shapes(work_weight)
+            if primary_shape_names:
+                for primary_shape_name in primary_shape_names:
+                    if primary_shape_name not in shapes_with_connected_work_shapes:
+                        shapes_with_connected_work_shapes[primary_shape_name] = []
+                    shapes_with_connected_work_shapes[primary_shape_name].append(work_weight)
         return shapes_with_connected_work_shapes
 
     
@@ -1042,15 +1066,16 @@ class BlueSteelEditor(object):
         connected_work_shapes = {}
         work_weights = self.work_blendshape.get_weights() or []
         for work_weight in work_weights:
-            primary_shape_name = self.get_work_shape_driver(work_weight)
-            if primary_shape_name:
-                connected_work_shapes[work_weight] = primary_shape_name
+            primary_shape_names = self.get_work_shape_driver_shapes(work_weight)
+            if primary_shape_names:
+                connected_work_shapes[work_weight] = primary_shape_names[0]
         return connected_work_shapes
 
     @undoable
     def apply_active_work_shapes(self):
         """
         Apply the active work shapes to their linked primary shapes.
+        #TODO: THIS IS BROKEN NEEDS WORK
         """
         connected_shapes = self.get_shapes_with_connected_work_shapes()
         # we need to get all the work shapes values
@@ -1078,7 +1103,10 @@ class BlueSteelEditor(object):
                 self.enable_all_deformers()
                 cmds.delete(dup)
             for linked_work_shape in linked_work_shapes:
-                self.delete_work_shape(linked_work_shape)
+                if self.get_work_shape_driver_shapes(linked_work_shape) ==1:
+                    self.delete_work_shape(linked_work_shape)
+                else:
+                    self.disconnect_work_shape_drivers(linked_work_shape, [connected_shape])
         # restore the work shapes values
         for work_shape in self.work_blendshape.get_weights() or []:
             if work_shape in work_shapes_values:
@@ -1089,7 +1117,7 @@ class BlueSteelEditor(object):
         print(f"================================================================")
         return committed_connected_shapes
 
-    def _get_work_shape_driver_nodes(self, work_shape_name: str) -> list:
+    def get_work_shape_driver_nodes(self, work_shape_name: str) -> list:
         """
         This method is to get the driver nodes if an empty list is returned the weight is not connected
         if the list has one element it means that there is only one shape driving the work shape.
@@ -1098,15 +1126,36 @@ class BlueSteelEditor(object):
         Returns:
             list: A list of driver nodes for the given work shape.
         """
-        pass
+        if self.work_blendshape is None or not isinstance(self.work_blendshape, Blendshape):
+            return []
+        weight = self.work_blendshape.get_weight_by_name(work_shape_name)
+        if weight is None:
+            return []
+        driver_node = self.work_blendshape.get_weight_driver(weight)
+        # let's check if the driver node is a driven key node
+        if not driver_node or cmds.nodeType(driver_node) not in ["animCurveUL",
+                                                                 "animCurveUA",
+                                                                 "animCurveUT",
+                                                                 "animCurveUU"]:
+            return []
+        # if the driver node connects directly to the blendshape we just return the driver node.
+        input_node = cmds.listConnections(f"{driver_node}.input") or []
+        if not input_node or input_node == [self.blendshape.name]:
+            return [driver_node] # this set driven key is not connected.
+        else:
+            if cmds.nodeType(input_node[0]) == "plusMinusAverage":
+                return [driver_node, input_node[0]]
+            else:
+                return [driver_node, input_node[0]]
 
-    @undoable
-    def connect_work_blendshape_weight_to_blendshape_weight(self,work_shape_name: str, shape_name: str):
+    def _create_work_shape_set_driven_key(self, work_shape_name: str, shape_name: str) -> str:
         """
-        Connect a work shape to the face control for direct manipulation.
+        Create a set driven key connection between a work shape and a primary shape.
         Parameters:
             work_shape_name (str): The name of the work shape to connect
             shape_name (str): The name of the primary shape to connect to
+        Returns:
+            str: The name of the driver node created for the set driven key connection.
         """
         work_shape_weight = self.work_blendshape.get_weight_by_name(work_shape_name)
         if work_shape_weight is None:
@@ -1122,7 +1171,10 @@ class BlueSteelEditor(object):
 
         # if the drive still exists that means that some manual connections were made
         # and we need to disconnect them before creating the driven key connection
-        input_connection = cmds.listConnections(f"{self.work_blendshape.name}.{work_shape_name}", source=True, destination=False, plugs=True) or []
+        input_connection = cmds.listConnections(f"{self.work_blendshape.name}.{work_shape_name}",
+                                                source=True,
+                                                destination=False,
+                                                plugs=True) or []
         for conn in input_connection:
             cmds.disconnectAttr(conn, f"{self.work_blendshape.name}.{work_shape_name}")
 
@@ -1139,20 +1191,43 @@ class BlueSteelEditor(object):
 
         cmds.keyTangent(driver, index =(0, 0), inTangentType="linear", outTangentType="linear")
         cmds.keyTangent(driver, index =(1, 1), inTangentType="linear", outTangentType="linear")
-        # print("Driven key connection created successfully.")
-        work_shape_name_base = f"{shape_name}_WS_"
-        if work_shape_name.startswith(work_shape_name_base):
-            return # we don't need to rename this.
+        return driver
 
-        work_weights = self.work_blendshape.get_weights() or []
-        index = 1
-        while True:
-            new_work_shape_name = f"{work_shape_name_base}{str(index).zfill(3)}"
-            if new_work_shape_name not in work_weights:
-                break
-            index += 1
+    @undoable
+    def connect_work_blendshape_weight_to_blendshape_weight(self,work_shape_name: str, shape_name: str):
+        """
+        Connect a work shape to the face control for direct manipulation.
+        Parameters:
+            work_shape_name (str): The name of the work shape to connect
+            shape_name (str): The name of the primary shape to connect to
+        """
+        # we need to check if there are existing driving nodes
+        driver_nodes = self.get_work_shape_driver_nodes(work_shape_name)
+        driver_shapes = self.get_work_shape_driver_shapes(work_shape_name)
+        if not driver_nodes:
+            driver = self._create_work_shape_set_driven_key(work_shape_name, shape_name)
+            return
+        if shape_name in driver_shapes:
+            return # we don't need to create a new driven key if it already exists
+        if driver_nodes:
+            if len(driver_nodes) == 1: # we need to add an average node between the existing driver and the new one
+                driver_input_connection = cmds.listConnections(f"{driver_nodes[0]}.input",
+                                                               source=True,
+                                                               destination=False,
+                                                               plugs=True) or []
+                
+                average_node = cmds.createNode("plusMinusAverage")
+                cmds.setAttr(f"{average_node}.operation", 3)
+                cmds.connectAttr(driver_input_connection[0], f"{average_node}.input1D[0]")
+                cmds.connectAttr(f"{average_node}.output1D",f"{driver_nodes[0]}.input", force=True)
+                driver_nodes.append(average_node)
 
-        self.rename_work_shape(work_shape_name, new_work_shape_name)
+            average_node = driver_nodes[1]
+            next_id = attrUtils.get_next_available_index(f"{average_node}.input1D")
+            cmds.connectAttr(f"{self.blendshape.name}.{shape_name}", f"{average_node}.input1D[{next_id}]")
+            return
+        
+
 
     def copy_blendshape_weight_map_values(self, blendshape: Blendshape, shape_name: str):
         """
@@ -1787,8 +1862,13 @@ class BlueSteelEditor(object):
         parent_dir = self.work_blendshape.get_weight_parent_directory(weight)
         if parent_dir is None:
             raise ValueError(f"Parent directory for work shape '{old_name}' not found.")
+        driver_nodes = self.get_work_shape_driver_nodes(old_name)
         self.work_blendshape.rename_weight(old_name, new_name)
         self.work_blendshape.rename_target_dir(parent_dir, new_name)
+        if driver_nodes:
+            for driver_node in driver_nodes:
+                new_driver_node_name = driver_node.replace(old_name, new_name)
+                cmds.rename(driver_node, new_driver_node_name)
 
     def set_work_shape_editable(self, shape_name: str):
         """

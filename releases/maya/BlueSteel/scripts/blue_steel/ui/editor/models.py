@@ -951,7 +951,7 @@ class WorkShapeItemsModel(QAbstractListModel):
                 value = float(editor.work_blendshape.get_weight_value(weight))
                 muted = bool(editor.get_work_shape_muted_state(name))
                 connected = weight in connected_weights
-                driver_connected = bool(editor.get_work_shape_driver(weight))
+                driver_connected = bool(editor.get_work_shape_driver_nodes(weight))
                 self._row_by_name[name] = len(self._rows)
                 row = {
                     "name": name,
