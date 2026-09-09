@@ -96,7 +96,12 @@ class SliderDragViewMixin:
 
     def _slider_delegate(self):
         if hasattr(self, "itemDelegateForColumn"):
-            return self.itemDelegateForColumn(0)
+            column_delegate = self.itemDelegateForColumn(0)
+            if _is_slider_delegate(column_delegate):
+                return column_delegate
+        stored_delegate = getattr(self, "_slider_drag_delegate", None)
+        if _is_slider_delegate(stored_delegate):
+            return stored_delegate
         return self.itemDelegate()
 
     def _resolve_icon_click(self, event_pos):
@@ -335,6 +340,11 @@ class SliderListView(SliderDragViewMixin, QListView):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._icon_click_active = False
+        self._slider_drag_delegate = None
+
+    def setItemDelegate(self, delegate) -> None:  # noqa: N802
+        self._slider_drag_delegate = delegate
+        super().setItemDelegate(delegate)
 
     def _selected_draggable_shape_names(self) -> List[str]:
         model = self.model()

@@ -772,6 +772,30 @@ class EditorSessionMixin(MainWindowMixin):
         self._set_status("Refreshed UI.")
 
 
+    def _dispose_trackers(self) -> None:
+        """Dispose every live tracker owned by this window.
+
+        This is idempotent and only touches Python tracker attributes, so it
+        is safe to call from ``closeEvent`` and from the ``destroyed`` signal
+        handler even while the Qt object tree is being torn down.
+
+        Returns:
+            None
+        """
+        self._clear_blendshape_tracker()
+        self._clear_split_attr_grp_tracker()
+        self._clear_scene_editor_tracker()
+
+
+    def _on_window_destroyed(self, *_args) -> None:
+        """Dispose trackers when the underlying C++ window is destroyed.
+
+        Returns:
+            None
+        """
+        self._dispose_trackers()
+
+
     def closeEvent(self, event) -> None:  # noqa: N802
         """Handle the window close event.
 
@@ -790,9 +814,7 @@ class EditorSessionMixin(MainWindowMixin):
             self._controller_layout_window.close()
             self._controller_layout_window.deleteLater()
             self._controller_layout_window = None
-        self._clear_blendshape_tracker()
-        self._clear_split_attr_grp_tracker()
-        self._clear_scene_editor_tracker()
+        self._dispose_trackers()
         super().closeEvent(event)
 
 

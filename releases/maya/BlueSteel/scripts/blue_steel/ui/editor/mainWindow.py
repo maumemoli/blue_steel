@@ -319,6 +319,8 @@ class MainWindow(
         self._split_map_weight_operation_buttons: List[QPushButton] = []
         self._split_map_weight_paste_operation_buttons: List[QPushButton] = []
 
+        self.destroyed.connect(self._on_window_destroyed)
+
         self._build_ui()
         self._connect_ui_signals()
         self._setup_scene_editor_tracker()
