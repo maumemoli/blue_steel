@@ -732,6 +732,17 @@ class SplitSettingsUiMixin(MainWindowMixin):
         return self.split_groups_tree.selected_group_name() or None
 
 
+    def _selected_split_group_map_name(self) -> Optional[str]:
+        """Return the selected split map name in the split groups tree.
+
+        Returns:
+            Optional[str]: The selected split map name, or ``None``.
+        """
+        if self.split_groups_tree is None:
+            return None
+        return self.split_groups_tree.selected_map_name() or None
+
+
     def _selected_split_map_name(self) -> Optional[str]:
         """Return the selected split map name.
 
@@ -1236,7 +1247,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
 
 
     def _on_remove_split_group_clicked(self) -> None:
-        """Remove the selected split group.
+        """Remove the selected split map from its group, or the selected group.
+
+        When a split map is selected in the split groups tree, the button removes
+        that split map from its parent group. Otherwise it removes the selected
+        split group.
 
         Returns:
             None
@@ -1245,6 +1260,16 @@ class SplitSettingsUiMixin(MainWindowMixin):
             return
         group_name = self._selected_split_group_name()
         if not group_name:
+            return
+        split_map_name = self._selected_split_group_map_name()
+        if split_map_name and split_map_name != getattr(self.current_editor, "SHAPE_NAME_STR", None):
+            try:
+                self.current_editor.remove_split_map_from_split_group(group_name, split_map_name)
+            except Exception as exc:
+                self._set_status(f"Error removing split map '{split_map_name}' from split group: {exc}", error=True)
+                return
+            self._refresh_split_groups()
+            self._set_status(f"Removed split map '{split_map_name}' from split group '{group_name}'.")
             return
         try:
             self.current_editor.remove_split_group(group_name)

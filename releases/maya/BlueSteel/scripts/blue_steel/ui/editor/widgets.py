@@ -359,6 +359,12 @@ class SplitGroupsTree(QTreeWidget):
     def selected_group_name(self) -> str:
         return self._group_name(self.currentItem())
 
+    def selected_map_name(self) -> str:
+        item = self.currentItem()
+        if item is None or item.parent() is None:
+            return ""
+        return str(item.data(0, self.MAP_NAME_ROLE) or "")
+
     def select_group(self, group_name: str) -> None:
         for row in range(self.topLevelItemCount()):
             item = self.topLevelItem(row)
