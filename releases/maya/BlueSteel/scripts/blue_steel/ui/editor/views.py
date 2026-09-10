@@ -539,6 +539,10 @@ class WorkShapesListView(SliderListView):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        # Keep items sized to the viewport so the right-pinned work-shape edit
+        # button follows panel width changes instead of staying at the initial
+        # item width (QListView defaults to Fixed resize mode).
+        self.setResizeMode(QListView.Adjust)
         self._collapsed_driver_names = set()
         self._driver_editor = None
         self._driver_press_active = False

@@ -290,6 +290,15 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(edit, [("mouthFix_workShape", True)])
         self.assertTrue(self.view.drivers_expanded(self.index))
 
+    def test_edit_button_stays_right_aligned_when_view_resizes(self):
+        for width in (180, 520):
+            self.view.resize(width, 300)
+            APP.processEvents()
+            edit_rect = self.delegate._edit_mode_icon_rect(self.option(), self.index)
+            viewport_width = self.view.viewport().width()
+            self.assertLess(edit_rect.right(), viewport_width)
+            self.assertGreaterEqual(edit_rect.right(), viewport_width - 8)
+
     def test_scrolled_children_use_viewport_coordinates(self):
         self.view.resize(520, 85)
         APP.processEvents()
