@@ -381,7 +381,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             return
         finally:
             self._start_active_blendshape_trackers()
-        self._reload_work_shapes_from_editor()
+        self._reload_shapes_from_editor()
         self._set_status(f"Committed {len(applied_work_shapes)} linked shape(s). Check the Script Editor for the list.")
 
 

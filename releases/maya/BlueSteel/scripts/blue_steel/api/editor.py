@@ -1075,43 +1075,48 @@ class BlueSteelEditor(object):
     def apply_active_work_shapes(self):
         """
         Apply the active work shapes to their linked primary shapes.
-        #TODO: THIS IS BROKEN NEEDS WORK
         """
         connected_shapes = self.get_shapes_with_connected_work_shapes()
         # we need to get all the work shapes values
-        work_shapes_values= {}
+        unlinked_work_shapes_values= {}
         committed_connected_shapes = set()
+        shapes_to_commit = {}
+        work_shapes_to_delete = set()
+        work_shapes = self.work_blendshape.get_weights() or []
         for work_shape_weight in self.work_blendshape.get_weights() or []:
-            work_shapes_values[work_shape_weight] = self.work_blendshape.get_weight_value(work_shape_weight)
-        for connected_shape in utilities.sort_for_insertion(connected_shapes.keys(), self.separator):
-            work_shapes = self.work_blendshape.get_weights() or []
+            if not self.get_work_shape_driver_nodes(work_shape_weight):
+                unlinked_work_shapes_values[work_shape_weight] = self.work_blendshape.get_weight_value(work_shape_weight)
+            
+        for connected_shape in connected_shapes:
             # we need to set the pose to the shape
             current_shape = self.get_shape(connected_shape)
             self.set_shape_pose(current_shape)
+            committed_connected_shapes.add(connected_shape)
             linked_work_shapes = connected_shapes[connected_shape]
-            # we need to set the value of all the other shapes to 1
-            for work_shape in work_shapes:
-                if work_shape not in linked_work_shapes:
-                    self.work_blendshape.set_weight_value(work_shape, 0.0)
+            work_shapes_to_delete.update(linked_work_shapes)
             # we can duplicate the base mesh and commit the shape.
             dup = cmds.duplicate(self.base_mesh, name=connected_shape)[0]
-            committed_connected_shapes.add(connected_shape)
-            try:
-                self.disable_all_deformers()
-                self.commit_shape(connected_shape, dup)
-            finally:
-                self.enable_all_deformers()
-                cmds.delete(dup)
-            for linked_work_shape in linked_work_shapes:
-                if self.get_work_shape_driver_shapes(linked_work_shape) ==1:
-                    self.delete_work_shape(linked_work_shape)
-                else:
-                    self.disconnect_work_shape_drivers(linked_work_shape, [connected_shape])
-        # restore the work shapes values
-        for work_shape in self.work_blendshape.get_weights() or []:
-            if work_shape in work_shapes_values:
-                self.work_blendshape.set_weight_value(work_shape, work_shapes_values[work_shape])
-        formatted_committed_shapes ='\n      '.join(committed_connected_shapes)
+            shapes_to_commit[connected_shape] = dup
+        try:
+            self.disable_all_deformers()
+            for connected_shape in utilities.sort_for_insertion(shapes_to_commit.keys(), self.separator):
+                shape_to_commit = shapes_to_commit[connected_shape]
+                self.commit_shape(connected_shape, shape_to_commit)
+            # restore the unlinked work shapes values
+            for work_shape_weight in unlinked_work_shapes_values:
+                self.work_blendshape.set_weight_value(work_shape_weight, unlinked_work_shapes_values[work_shape_weight])
+            # delete the work shapes that are no longer needed
+            for work_shape in work_shapes_to_delete:
+                self.delete_work_shape(work_shape)
+
+        finally:
+            self.enable_all_deformers()
+            # we need to delete the commit meshes
+            shapes_to_delete = list(shapes_to_commit.values())
+            cmds.delete(shapes_to_delete)
+
+
+        formatted_committed_shapes ='\n      '.join(shapes_to_commit.keys())
         print(f"================================================================")
         print(f"Applied active work shapes to their linked primary shapes:\n      {formatted_committed_shapes}")
         print(f"================================================================")
