@@ -459,10 +459,9 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shapes_double_clicked(self, model_index: QModelIndex) -> None:
-        """Handle a double-click on a work shape.
+        """Begin inline rename on a parent work shape.
 
-        Alt-click jumps to the connected shape; otherwise begins inline
-        rename.
+        Driver-label double-clicks are handled separately by the view.
 
         Parameters:
             model_index (QModelIndex): The clicked model index.
@@ -475,22 +474,34 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         shape_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
         if not shape_name:
             return
-        if QGuiApplication.keyboardModifiers() & Qt.AltModifier:
-            if self.shapes_list_active_button.isChecked():
-                self.shapes_list_active_button.setChecked(False)
-            try:
-                connected_shape_names = self.current_editor.get_work_shape_driver_shapes(shape_name)
-            except Exception as exc:
-                self._set_status(f"Error finding connected shape for '{shape_name}': {exc}", error=True)
-                return
-            if not connected_shape_names:
-                self._set_status(f"Work shape '{shape_name}' is not connected to a shape.", warning=True)
-                return
-            connected_shape_name = str(connected_shape_names[0])
-            self._set_shape_pose_by_name(connected_shape_name)
-            self._select_shape_and_primaries(connected_shape_name)
-            return
         self._begin_inline_workshape_rename(model_index)
+
+
+    def _on_work_shape_driver_pose_requested(self, driver_name: str) -> None:
+        """Activate the double-clicked driver, not the parent's first connection."""
+        if self.current_editor is None or not driver_name:
+            return
+        if self.shapes_list_active_button.isChecked():
+            self.shapes_list_active_button.setChecked(False)
+        self._set_shape_pose_by_name(driver_name)
+        self._select_shape_and_primaries(driver_name)
+
+
+    def _on_work_shape_driver_removal_requested(self, work_shape_name: str, driver_name: str) -> None:
+        """Disconnect only the dragged driver; never delete the driver shape."""
+        if self.current_editor is None or not work_shape_name or not driver_name:
+            return
+        try:
+            self._stop_active_blendshape_trackers()
+            self.current_editor.disconnect_work_shape_drivers(work_shape_name, [driver_name])
+        except Exception as exc:
+            self._set_status(f"Error removing driver '{driver_name}' from '{work_shape_name}': {exc}", error=True)
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+        self._reload_work_shapes_from_editor()
+        self._select_work_shape(work_shape_name)
+        self._set_status(f"Removed driver '{driver_name}' from '{work_shape_name}'.")
 
 
     def _on_work_shape_drop_received(self, work_shape_name: str, source_shape_name: str) -> None:

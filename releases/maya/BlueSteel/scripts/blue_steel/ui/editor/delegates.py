@@ -38,6 +38,8 @@ from .qt import (
     QObject,
     QPainter,
     QPersistentModelIndex,
+    QPoint,
+    QPolygon,
     QRect,
     QSize,
     QStyle,
@@ -644,6 +646,128 @@ class SliderItemDelegate(QStyledItemDelegate):
 
         return super().editorEvent(event, model, option, index)
 
+
+
+class WorkShapeItemDelegate(SliderItemDelegate):
+    """Keep one model index per work shape, with a collapsible driver section.
+
+    Only the parent band contains slider controls. Driver labels are painted
+    children, not editable model rows; the view handles disclosure/pose clicks.
+    """
+
+    DRIVER_HEIGHT = 20
+    DISCLOSURE_WIDTH = 20
+    DRIVER_INDENT = 8
+
+    def parent_rect(self, option, index) -> QRect:
+        rect = QRect(option.rect)
+        rect.setHeight(super().sizeHint(option, index).height())
+        return rect
+
+    def _parent_option(self, option, index):
+        return OptionRect(self.parent_rect(option, index), getattr(option, "fontMetrics", None))
+
+    def _drivers_expanded(self, index) -> bool:
+        return self.parent().drivers_expanded(index)
+
+    def sizeHint(self, option, index):  # noqa: N802
+        size = super().sizeHint(option, index)
+        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        if drivers and self._drivers_expanded(index):
+            size.setHeight(size.height() + self.DRIVER_HEIGHT * len(drivers))
+        return size
+
+    def _area_rects(self, option, index):
+        value_rect, text_rect = super()._area_rects(self._parent_option(option, index), index)
+        if index.data(WorkShapeItemsModel.DriverNamesRole):
+            text_rect.adjust(self.DISCLOSURE_WIDTH, 0, 0, 0)
+        return value_rect, text_rect
+
+    def _connected_mesh_icon_rect(self, option, index) -> QRect:
+        return super()._connected_mesh_icon_rect(self._parent_option(option, index), index)
+
+    def _mute_icon_rect(self, option, index) -> QRect:
+        return super()._mute_icon_rect(self._parent_option(option, index), index)
+
+    def _lock_icon_rect(self, option, index) -> QRect:
+        return super()._lock_icon_rect(self._parent_option(option, index), index)
+
+    def _edit_mode_icon_rect(self, option, index) -> QRect:
+        return super()._edit_mode_icon_rect(self._parent_option(option, index), index)
+
+    def disclosure_rect(self, option, index) -> QRect:
+        if not index.data(WorkShapeItemsModel.DriverNamesRole):
+            return QRect()
+        _, text_rect = self._area_rects(option, index)
+        left = text_rect.left() - self.DISCLOSURE_WIDTH
+        # At very narrow widths, never let disclosure steal the edit-mode icon.
+        right = self._edit_mode_icon_rect(option, index).left()
+        width = max(0, min(self.DISCLOSURE_WIDTH, right - left))
+        return QRect(left, text_rect.top(), width, text_rect.height())
+
+    def driver_at_pos(self, option, index, pos) -> Optional[str]:
+        """Resolve the same child bands used by painting, never the parent."""
+        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        if not drivers or not self._drivers_expanded(index) or not option.rect.contains(pos):
+            return None
+        offset = pos.y() - self.parent_rect(option, index).bottom() - 1
+        child = offset // self.DRIVER_HEIGHT
+        if 0 <= child < len(drivers):
+            return str(drivers[child])
+        return None
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        # Reuse all parent painting with its original height, including icons.
+        item_rect = QRect(option.rect)
+        parent_rect = self.parent_rect(option, index)
+        try:
+            option.rect = parent_rect
+            super().paint(painter, option, index)
+        finally:
+            option.rect = item_rect
+
+        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        if not drivers:
+            return
+        expanded = self._drivers_expanded(index)
+        disclosure = self.disclosure_rect(option, index)
+        painter.save()
+        # A filled, font-independent triangle stays legible at Maya UI scales.
+        half = min(7, (disclosure.width() - 2) // 2)
+        if half > 0:
+            center = disclosure.center()
+            x, y = center.x(), center.y()
+            if expanded:
+                points = [QPoint(x - half, y - half // 2),
+                          QPoint(x + half, y - half // 2), QPoint(x, y + half)]
+            else:
+                points = [QPoint(x - half // 2, y - half),
+                          QPoint(x - half // 2, y + half), QPoint(x + half, y)]
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(option.palette.text().color())
+            painter.drawPolygon(QPolygon(points))
+        if expanded:
+            child_area = QRect(item_rect.left(), parent_rect.bottom() + 1,
+                               item_rect.width(), self.DRIVER_HEIGHT * len(drivers))
+            painter.fillRect(child_area, option.palette.alternateBase().color())
+            _, name_rect = self._area_rects(option, index)
+            branch_x = disclosure.center().x()
+            for row, name in enumerate(drivers):
+                top = child_area.top() + row * self.DRIVER_HEIGHT
+                center_y = top + self.DRIVER_HEIGHT // 2
+                text_left = name_rect.left() + self.DRIVER_INDENT
+                text_rect = QRect(text_left, top,
+                                  max(0, item_rect.right() - self.RIGHT_MARGIN - text_left),
+                                  self.DRIVER_HEIGHT)
+                painter.setPen(option.palette.mid().color())
+                branch_bottom = center_y if row == len(drivers) - 1 else top + self.DRIVER_HEIGHT
+                painter.drawLine(branch_x, top, branch_x, branch_bottom)
+                painter.drawLine(branch_x, center_y, text_left - 4, center_y)
+                painter.setPen(option.palette.text().color())
+                label = option.fontMetrics.elidedText(str(name), Qt.ElideRight, text_rect.width())
+                painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, label)
+        painter.restore()
 
 
 class SplitMapWeightSliderDelegate(SliderItemDelegate):

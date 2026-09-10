@@ -77,7 +77,7 @@ from .constants import (
 )
 from .mainWindowMixin import MainWindowMixin, target_shape_names
 from .controllerLayoutWindow import ControllerLayoutWindow
-from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate
+from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate, WorkShapeItemDelegate
 from .models import (
     PrimaryShapesProxyModel,
     PrimarySubsetProxyModel,
@@ -657,7 +657,7 @@ class EditorUiMixin(MainWindowMixin):
         self._allow_horizontal_collapse(self.work_shapes_view)
         self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.work_shapes_view.setModel(self._work_shape_model)
-        self._work_shapes_delegate = SliderItemDelegate(self.work_shapes_view)
+        self._work_shapes_delegate = WorkShapeItemDelegate(self.work_shapes_view)
         self.work_shapes_view.setItemDelegate(self._work_shapes_delegate)
         work_shapes_layout.addWidget(self.work_shapes_view, 1)
 
@@ -1122,6 +1122,8 @@ class EditorUiMixin(MainWindowMixin):
         self.active_shapes_view.clicked.connect(self._on_active_shapes_item_clicked)
         self.active_shapes_view.doubleClicked.connect(self._on_active_shapes_double_clicked)
         self.work_shapes_view.doubleClicked.connect(self._on_work_shapes_double_clicked)
+        self.work_shapes_view.driverPoseRequested.connect(self._on_work_shape_driver_pose_requested)
+        self.work_shapes_view.driverRemovalRequested.connect(self._on_work_shape_driver_removal_requested)
         if self.active_shapes_view.selectionModel() is not None:
             self.active_shapes_view.selectionModel().selectionChanged.connect(self._on_active_shapes_selection_changed)
         self.select_editor_button.clicked.connect(self.select_face_ctrl)

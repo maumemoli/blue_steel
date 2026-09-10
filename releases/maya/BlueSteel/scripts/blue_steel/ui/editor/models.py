@@ -844,6 +844,7 @@ class WorkShapeItemsModel(QAbstractListModel):
     InEditModeRole = Qt.UserRole + 50
     ConnectedRole = Qt.UserRole + 51
     DriverConnectedRole = Qt.UserRole + 52
+    DriverNamesRole = Qt.UserRole + 53
 
     valueCommitted = Signal(str, float)
 
@@ -893,6 +894,8 @@ class WorkShapeItemsModel(QAbstractListModel):
             return bool(row.get("connected", False))
         if role == self.DriverConnectedRole:
             return bool(row.get("driver_connected", False))
+        if role == self.DriverNamesRole:
+            return row.get("driver_names", tuple())
         if role == Qt.ToolTipRole:
             return row.get("tooltip", None)
         return None
@@ -960,6 +963,7 @@ class WorkShapeItemsModel(QAbstractListModel):
                     "muted": muted,
                     "connected": connected,
                     "driver_connected": driver_connected,
+                    "driver_names": self._driver_names_from_editor(name),
                 }
                 if connected:
                     row["tooltip"] = "Connected extraction mesh"
@@ -967,6 +971,18 @@ class WorkShapeItemsModel(QAbstractListModel):
                 if self._edit_shape_name is None and int(weight.id) in sculpt_target_indices:
                     self._edit_shape_name = name
         self.endResetModel()
+
+    def _driver_names_from_editor(self, shape_name: str) -> tuple:
+        """Cache display names, not Maya nodes, for the delegate's child labels."""
+        if self._editor is None or self._editor.work_blendshape is None:
+            return tuple()
+        try:
+            names = self._editor.get_work_shape_driver_shapes(shape_name) or []
+        except (RuntimeError, ValueError):
+            # A custom or partially disconnected Maya graph may have driver
+            # nodes without resolvable shape inputs. Keep its parent usable.
+            return tuple()
+        return tuple(dict.fromkeys(str(name) for name in names if name))
 
     def has_connected_driver_shapes(self) -> bool:
         for row in self._rows:
@@ -1040,11 +1056,19 @@ class WorkShapeItemsModel(QAbstractListModel):
             return
         row = self._rows[row_index]
         target_connected = bool(connected)
-        if bool(row.get("driver_connected", False)) == target_connected:
+        # A second driver can be added while the connected boolean stays True.
+        driver_names = self._driver_names_from_editor(shape_name) if target_connected else tuple()
+        if (
+            bool(row.get("driver_connected", False)) == target_connected
+            and row.get("driver_names", tuple()) == driver_names
+        ):
             return
         row["driver_connected"] = target_connected
+        row["driver_names"] = driver_names
         model_index = self.index(row_index, 0)
-        self.dataChanged.emit(model_index, model_index, [self.DriverConnectedRole, Qt.DisplayRole])
+        self.dataChanged.emit(model_index, model_index, [
+            self.DriverConnectedRole, self.DriverNamesRole, Qt.DisplayRole,
+        ])
 
     def refresh_values_from_editor(self) -> List[tuple]:
         """Pull current work-blendshape values and update rows without rebuilding.

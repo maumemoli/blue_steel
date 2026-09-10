@@ -24,13 +24,19 @@ from .constants import (
 from .models import ShapeItemsModel, WorkShapeItemsModel
 from .qt import (
     QAbstractItemView,
+    QApplication,
+    QColor,
+    QCursor,
     QDrag,
+    QEvent,
     QIcon,
     QItemSelectionModel,
     QListView,
     QListWidget,
     QMenu,
     QMimeData,
+    QPainter,
+    QPixmap,
     QSize,
     Qt,
     QTreeWidget,
@@ -510,7 +516,10 @@ class SliderListView(SliderDragViewMixin, QListView):
 
 
 class WorkShapesListView(SliderListView):
-    """Work shapes list supporting drops from shape lists and link context actions."""
+    """Work shapes with parent controls and collapsible, pose-activating drivers."""
+
+    driverPoseRequested = Signal(str)
+    driverRemovalRequested = Signal(str, str)
 
     def __init__(
         self,
@@ -530,6 +539,14 @@ class WorkShapesListView(SliderListView):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._collapsed_driver_names = set()
+        self._driver_editor = None
+        self._driver_press_active = False
+        self._driver_drag_target = None
+        self._driver_drag_start = None
+        self._driver_drag_active = False
+        self._driver_drag_outside = None
+        self._driver_trash_cursor = None
         self._drop_callback = drop_callback
         self.duplicate_callback = duplicate_callback
         self.extract_work_shape_mesh_callback = extract_work_shape_mesh_callback
@@ -543,11 +560,208 @@ class WorkShapesListView(SliderListView):
         self._clear_weights_callback = clear_weights_callback
         self._can_paste_weights_callback = can_paste_weights_callback
         self._can_extract_mesh_callback = can_extract_mesh_callback
+        self.setToolTip(
+            "Driver shapes: double-click to set pose. Drag outside this list and release "
+            "to remove that driver connection. Escape cancels."
+        )
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
         self.setDefaultDropAction(Qt.CopyAction)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def setModel(self, model) -> None:  # noqa: N802
+        self._cancel_driver_drag()
+        previous = self.model()
+        if previous is not None:
+            previous.modelAboutToBeReset.disconnect(self._cancel_driver_drag)
+            previous.modelReset.disconnect(self._sync_driver_expansion)
+            previous.dataChanged.disconnect(self._driver_data_changed)
+        if previous is not model:
+            self._collapsed_driver_names.clear()
+        super().setModel(model)
+        if model is not None:
+            model.modelAboutToBeReset.connect(self._cancel_driver_drag)
+            model.modelReset.connect(self._sync_driver_expansion)
+            model.dataChanged.connect(self._driver_data_changed)
+        self._sync_driver_expansion()
+
+    def _sync_driver_expansion(self) -> None:
+        model = self.model()
+        editor = getattr(model, "_editor", None)
+        if editor is not self._driver_editor:
+            self._collapsed_driver_names.clear()
+            self._driver_editor = editor
+        surviving_names = set()
+        if model is not None:
+            for row in range(model.rowCount()):
+                index = model.index(row, 0)
+                if index.data(WorkShapeItemsModel.DriverNamesRole):
+                    surviving_names.add(str(index.data(ShapeItemsModel.NameRole)))
+        self._collapsed_driver_names.intersection_update(surviving_names)
+
+    def _driver_data_changed(self, first, last, roles=()) -> None:
+        if roles and WorkShapeItemsModel.DriverNamesRole not in roles:
+            return
+        self._cancel_driver_drag()
+        delegate = self.itemDelegate()
+        for row in range(first.row(), last.row() + 1):
+            index = self.model().index(row, 0)
+            if not index.data(WorkShapeItemsModel.DriverNamesRole):
+                self._collapsed_driver_names.discard(str(index.data(ShapeItemsModel.NameRole)))
+            if delegate is not None:
+                delegate.sizeHintChanged.emit(index)
+        self.viewport().update()
+
+    def drivers_expanded(self, index) -> bool:
+        return str(index.data(ShapeItemsModel.NameRole)) not in self._collapsed_driver_names
+
+    def _toggle_drivers(self, index) -> None:
+        name = str(index.data(ShapeItemsModel.NameRole))
+        if self.drivers_expanded(index):
+            self._collapsed_driver_names.add(name)
+        else:
+            self._collapsed_driver_names.discard(name)
+        self.itemDelegate().sizeHintChanged.emit(index)
+        self.viewport().update()
+
+    def _work_shape_hit(self, pos):
+        """Return (parent index, part, driver name) using delegate geometry."""
+        index = self.indexAt(pos)
+        if not index.isValid():
+            return index, None, None
+        delegate = self.itemDelegate()
+        if not hasattr(delegate, "driver_at_pos"):
+            return index, "parent", None
+        option = OptionRect(self.visualRect(index), self.fontMetrics())
+        if delegate.disclosure_rect(option, index).contains(pos):
+            return index, "disclosure", None
+        driver = delegate.driver_at_pos(option, index, pos)
+        if driver is not None:
+            return index, "driver", driver
+        return index, "parent", None
+
+    def _trash_cursor(self) -> QCursor:
+        if self._driver_trash_cursor is None:
+            # Draw a high-contrast bin rather than depending on a Maya resource
+            # or a font glyph; both can be unavailable on some installations.
+            dpr = self.devicePixelRatioF()
+            pixmap = QPixmap(round(32 * dpr), round(32 * dpr))
+            pixmap.setDevicePixelRatio(dpr)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QColor("white"))
+            painter.setBrush(QColor(210, 55, 55))
+            painter.drawRoundedRect(7, 10, 18, 19, 2, 2)
+            painter.drawRect(12, 3, 8, 4)
+            painter.drawRect(5, 7, 22, 3)
+            for x in (12, 16, 20):
+                painter.drawLine(x, 14, x, 25)
+            painter.end()
+            self._driver_trash_cursor = QCursor(pixmap, 16, 16)
+        return self._driver_trash_cursor
+
+    def _outside_driver_panel(self, global_pos) -> bool:
+        # Include the list frame and scrollbars: these are not removal targets.
+        return not self.rect().contains(self.mapFromGlobal(global_pos))
+
+    def _move_driver_drag(self, global_pos) -> None:
+        if not self._driver_drag_active:
+            if (global_pos - self._driver_drag_start).manhattanLength() < QApplication.startDragDistance():
+                return
+            self._driver_drag_active = True
+            QApplication.setOverrideCursor(Qt.ClosedHandCursor)
+        outside = self._outside_driver_panel(global_pos)
+        if outside != self._driver_drag_outside:
+            cursor = self._trash_cursor() if outside else QCursor(Qt.ClosedHandCursor)
+            QApplication.changeOverrideCursor(cursor)
+            self._driver_drag_outside = outside
+
+    def _cancel_driver_drag(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+            if self._driver_drag_active:
+                QApplication.restoreOverrideCursor()
+        self._driver_drag_target = None
+        self._driver_drag_start = None
+        self._driver_drag_active = False
+        self._driver_drag_outside = None
+
+    def _finish_driver_drag(self, global_pos) -> None:
+        target = self._driver_drag_target
+        remove = self._driver_drag_active and self._outside_driver_panel(global_pos)
+        # Restore the cursor/filter before emitting: the callback can reset the
+        # model, raise an error, or close the editor. Never leave a trash cursor.
+        self._cancel_driver_drag()
+        self._driver_press_active = False
+        if remove and target is not None:
+            self.driverRemovalRequested.emit(*target)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if getattr(self, "_driver_drag_target", None) is not None:
+            event_type = event.type()
+            if event_type == QEvent.MouseMove:
+                self._move_driver_drag(event.globalPos())
+                return True
+            if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self._finish_driver_drag(event.globalPos())
+                return True
+            if event_type == QEvent.ShortcutOverride and event.key() == Qt.Key_Escape:
+                event.accept()  # Keep Maya/global shortcuts from stealing cancellation.
+                return True
+            if event_type == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self._cancel_driver_drag()
+                return True
+            if event_type == QEvent.ApplicationDeactivate or (
+                watched in (self, self.window())
+                and event_type in (QEvent.Hide, QEvent.Close, QEvent.DeferredDelete, QEvent.WindowDeactivate)
+            ):
+                self._cancel_driver_drag()
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        self._cancel_driver_drag()
+        self._driver_press_active = False
+        index, part, driver = self._work_shape_hit(event.pos())
+        if part in {"driver", "disclosure"}:
+            self._driver_press_active = True
+            if event.button() == Qt.LeftButton:
+                if part == "disclosure":
+                    self._toggle_drivers(index)
+                else:
+                    self._driver_drag_target = (str(index.data(ShapeItemsModel.NameRole)), driver)
+                    self._driver_drag_start = event.globalPos()
+                    QApplication.instance().installEventFilter(self)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        # QListView can begin rubber-band selection even after a consumed press.
+        if self._driver_press_active:
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._driver_press_active:
+            self._driver_press_active = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        self._cancel_driver_drag()
+        _, part, driver = self._work_shape_hit(event.pos())
+        if part in {"driver", "disclosure"}:
+            self._driver_press_active = True
+            if event.button() == Qt.LeftButton and part == "driver":
+                self.driverPoseRequested.emit(driver)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _shape_names_from_mime(self, mime_data: QMimeData) -> List[str]:
         if mime_data is None:
@@ -564,8 +778,8 @@ class WorkShapesListView(SliderListView):
         model = self.model()
         if model is None:
             return None
-        index = self.indexAt(pos)
-        if not index.isValid():
+        index, part, _ = self._work_shape_hit(pos)
+        if not index.isValid() or part != "parent":
             return None
         if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
             return None
