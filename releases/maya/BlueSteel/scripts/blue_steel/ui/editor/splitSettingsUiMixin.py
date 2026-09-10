@@ -267,6 +267,8 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self.split_groups_tree.setToolTip(
             "Select a group or map; drop maps onto groups, drag to reorder, or drag out to remove"
         )
+        self.split_groups_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.split_groups_tree.customContextMenuRequested.connect(self._on_split_groups_context_menu_requested)
         split_groups_tree_layout.addWidget(self.split_groups_tree, 1)
         self.split_groups_frame_layout = FrameLayout("Split Group Preview")
         split_groups_tree_layout.addWidget(self.split_groups_frame_layout)
@@ -1244,6 +1246,30 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._refresh_split_primary_assignments()
         self._refresh_split_groups()
         self._set_status(f"Created split group '{group_name}'.")
+
+
+    def _on_split_groups_context_menu_requested(self, pos: QPoint) -> None:
+        """Show the context menu for the split groups tree.
+
+        Parameters:
+            pos (QPoint): The local position of the right-click.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None or self.split_groups_tree is None:
+            return
+        item = self.split_groups_tree.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.split_groups_tree.setCurrentItem(item)
+
+        menu = QMenu(self.split_groups_tree)
+        remove_action = menu.addAction("Remove")
+        selected_action = menu.exec(self.split_groups_tree.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_groups_tree.viewport().mapToGlobal(pos))
+        if selected_action == remove_action:
+            self._on_remove_split_group_clicked()
 
 
     def _on_remove_split_group_clicked(self) -> None:
