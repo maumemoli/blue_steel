@@ -709,7 +709,6 @@ class EditorOpsMixin(MainWindowMixin):
             None
         """
         menu_widget = QWidget(self)
-        menu_widget.setFixedHeight(24)
         menu_layout = QHBoxLayout(menu_widget)
         menu_layout.setContentsMargins(0, 0, 2, 0)
         menu_layout.setSpacing(2)
@@ -838,6 +837,15 @@ class EditorOpsMixin(MainWindowMixin):
         about_action = QAction("About", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+        # Size the menu-bar row from the menu bar's natural height so the File
+        # menu and the dock/close buttons scale with the display DPI instead of
+        # being clipped by a hardcoded height.
+        button_size = max(20, menu_bar.sizeHint().height())
+        icon_size = max(14, int(button_size * 0.6))
+        self.dock_toggle_button.setFixedSize(button_size, button_size)
+        self.dock_toggle_button.setIconSize(QSize(icon_size, icon_size))
+        self.dock_close_button.setFixedSize(button_size, button_size)
 
 
     def _create_new_editor(self) -> None:
