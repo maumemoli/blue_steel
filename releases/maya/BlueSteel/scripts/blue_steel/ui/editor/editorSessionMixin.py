@@ -230,11 +230,14 @@ class EditorSessionMixin(MainWindowMixin):
             return
         try:
             tracker.kill()
-        except RuntimeError:
-            return
+        except Exception:
+            # The underlying C++ object may already be gone, or a Maya
+            # callback may have failed to unregister. Never let a single
+            # tracker abort the disposal of the remaining trackers.
+            pass
         try:
             tracker.deleteLater()
-        except RuntimeError:
+        except Exception:
             pass
 
 
@@ -338,11 +341,14 @@ class EditorSessionMixin(MainWindowMixin):
             None
         """
         self._clear_split_map_edit_blendshape_tracker()
+        # Clear every reference up front so an unexpected failure while
+        # disposing one tracker can never leave the later ones (notably the
+        # work-blendshape tracker) alive and still registered with Maya.
         blendshape_tracker = self.blendshape_tracker
-        self.blendshape_tracker = None
-        self._dispose_tracker(blendshape_tracker)
         work_blendshape_tracker = self.work_blendshape_tracker
+        self.blendshape_tracker = None
         self.work_blendshape_tracker = None
+        self._dispose_tracker(blendshape_tracker)
         self._dispose_tracker(work_blendshape_tracker)
 
 
@@ -776,8 +782,9 @@ class EditorSessionMixin(MainWindowMixin):
         """Dispose every live tracker owned by this window.
 
         This is idempotent and only touches Python tracker attributes, so it
-        is safe to call from ``closeEvent`` and from the ``destroyed`` signal
-        handler even while the Qt object tree is being torn down.
+        is safe to call from ``closeEvent``, ``dockCloseEventTriggered`` and
+        the ``destroyed`` signal handler even while the Qt object tree is
+        being torn down.
 
         Returns:
             None
@@ -785,6 +792,50 @@ class EditorSessionMixin(MainWindowMixin):
         self._clear_blendshape_tracker()
         self._clear_split_attr_grp_tracker()
         self._clear_scene_editor_tracker()
+
+
+    def _shutdown_window(self) -> None:
+        """Perform the shared cleanup that must run whenever the UI closes.
+
+        Turns off the HUD, disposes the controller layout window, and disposes
+        every tracker. This is the body shared by :meth:`closeEvent` and
+        :meth:`dockCloseEventTriggered`.
+
+        It is idempotent so it is safe to run from multiple close paths
+        (dock close, ``closeEvent`` and the ``destroyed`` signal).
+
+        Returns:
+            None
+        """
+        if self.current_editor is not None:
+            self.current_editor.toggle_hud_display(False)
+        if self._controller_layout_window is not None:
+            self._controller_layout_window.close()
+            self._controller_layout_window.deleteLater()
+            self._controller_layout_window = None
+        self._dispose_trackers()
+
+
+    def _rearm_trackers_if_needed(self) -> None:
+        """Recreate trackers when a retained window is shown again.
+
+        Closing a dockable workspace control with ``retain=True`` only hides
+        the widget; ``_shutdown_window`` disposes its trackers. When Maya
+        restores that retained control the widget is shown again without
+        going through ``__init__``, so re-arm the trackers when they are
+        missing.
+
+        Returns:
+            None
+        """
+        if self.scene_editor_tracker is None:
+            self._setup_scene_editor_tracker()
+        if self.current_editor is None:
+            return
+        if self.blendshape_tracker is None:
+            self._setup_blendshape_tracker()
+        if self.split_attr_grp_tracker is None:
+            self._setup_split_attr_grp_tracker()
 
 
     def _on_window_destroyed(self, *_args) -> None:
@@ -808,13 +859,7 @@ class EditorSessionMixin(MainWindowMixin):
         Returns:
             None
         """
-        if self.current_editor is not None:
-            self.current_editor.toggle_hud_display(False)
-        if self._controller_layout_window is not None:
-            self._controller_layout_window.close()
-            self._controller_layout_window.deleteLater()
-            self._controller_layout_window = None
-        self._dispose_trackers()
+        self._shutdown_window()
         super().closeEvent(event)
 
 

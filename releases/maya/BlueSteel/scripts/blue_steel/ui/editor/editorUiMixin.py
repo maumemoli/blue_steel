@@ -709,6 +709,7 @@ class EditorUiMixin(MainWindowMixin):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._schedule_initial_splitter_layout()
+        self._rearm_trackers_if_needed()
 
 
     def _schedule_initial_splitter_layout(self) -> None:

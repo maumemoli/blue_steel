@@ -348,6 +348,22 @@ class MainWindow(
         return result
 
 
+    def dockCloseEventTriggered(self) -> None:  # noqa: N802
+        """Handle closing the dockable workspace control.
+
+        Maya invokes this (via
+        ``maya.app.general.mayaMixin.workspaceControlClosed``) instead of Qt's
+        ``closeEvent`` whenever the Blue Steel workspace control is closed,
+        including the dock tab close button, the floating window close button
+        and the in-app "X" button. ``MayaQWidgetDockableMixin`` defines an
+        empty stub here and precedes the feature mixins in the MRO, so the
+        override must live on ``MainWindow`` itself.
+
+        Returns:
+            None
+        """
+        self._shutdown_window()
+
 
 def show() -> MainWindow:
     """Show the rewritten Blue Steel editor window.
@@ -360,13 +376,30 @@ def show() -> MainWindow:
     global WINDOW
     global SHOW_UPDATE_CHECK
 
-    try:
-        if WINDOW is not None:
-            WINDOW.close()
-            WINDOW.deleteLater()
-            WINDOW = None
-    except Exception:
-        WINDOW = None
+    # Resolve any window that we still need to shut down, including one that
+    # survived a module reload (the mayaMixin keeps a reference to every
+    # workspace control it created, so it may be alive without ``WINDOW``).
+    existing = WINDOW
+    if existing is None:
+        try:
+            from maya.app.general.mayaMixin import mixinWorkspaceControls
+            existing = mixinWorkspaceControls.get(MainWindow.WORKSPACE_CONTROL_NAME)
+        except Exception:
+            existing = None
+    if existing is not None:
+        try:
+            existing._shutdown_window()
+        except Exception:
+            pass
+        try:
+            existing.close()
+        except Exception:
+            pass
+        try:
+            existing.deleteLater()
+        except Exception:
+            pass
+    WINDOW = None
     if cmds.workspaceControl(MainWindow.WORKSPACE_CONTROL_NAME, query=True, exists=True):
         cmds.deleteUI(MainWindow.WORKSPACE_CONTROL_NAME, control=True)
 
