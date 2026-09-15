@@ -410,6 +410,24 @@ class Blendshape(object):
                     connected_targets[weight.id].append(target_item_id)
         return connected_targets
 
+    def regenerate_target(self, target_index, target_item_id=6000, disconnect=False):
+        """
+        Regenerate the specified target in the blendShape node.
+        Parameters:
+            target_index (int): The index of the target to regenerate.
+            target_item_id (int): The ID of the target item to regenerate.
+        Returns:
+            None
+        """
+        regenerated = None
+        if target_item_id != 6000:
+            inbetween_value = float((target_item_id - 5000)/1000)
+            regenerated = cmds.sculptTarget(self.name, e=True, r=True, t=target_index, ibw=inbetween_value)
+        else:
+            regenerated = cmds.sculptTarget(self.name, e=True, r=True, t=target_index)
+        if disconnect:
+            self.disconnect_mesh_from_target(target_index, target_item_id)
+        return regenerated
 
     def get_muted_targets(self)->list:
         """

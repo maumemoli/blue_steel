@@ -1888,7 +1888,7 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_sculpt_target_index(weight.id)
 
     @undoable
-    def add_work_shape(self, name = "WorkShape")->str:
+    def add_work_shape(self, name = "WorkShape", target_object=None)->str:
         """
         Will create a new work shape in the work blendshape node.
         Returns:
@@ -1899,7 +1899,7 @@ class BlueSteelEditor(object):
         work_shape_name = self.work_blendshape.generate_unique_weight_name(name)
         # we need to add a target directory for the work shape
         parent__dir = self.work_blendshape.add_target_dir(work_shape_name)
-        weight = self.work_blendshape.add_target(work_shape_name)
+        weight = self.work_blendshape.add_target(work_shape_name, target_object=target_object)
         self.work_blendshape.set_weight_parent_directory(weight, parent__dir)
         self.work_blendshape.set_weight_value(weight, 1.0)
         self.set_work_shape_editable(work_shape_name)
@@ -4999,3 +4999,123 @@ class BlueSteelEditor(object):
                     unmmatched_shapes.append(shape)
                     print(f"Shape '{shape}': max difference = {shape_max_diff:.6f}")
         return unmmatched_shapes, max_difference, max_diff_shape
+
+
+# masking
+    def get_base_mesh_points(self):
+        base_mesh = self.base_mesh
+        if not base_mesh or not cmds.objExists(base_mesh):
+            raise ValueError("Base mesh does not exist")
+        return mayaUtils.get_points_as_numpy(base_mesh)
+
+    def get_deformed_mesh_points(self, disable_other_deformers=True)->np.ndarray:
+        """Capture the points of the deformed mesh as a numpy array.
+        Parameters:
+            disable_other_deformers (bool): Whether to temporarily disable other deformers
+            while capturing the points.
+        
+        Returns:
+            np.ndarray: The points of the deformed mesh as a numpy array.
+        """
+        points = None
+        try:
+            if disable_other_deformers:
+                self.disable_all_deformers()
+            points = mayaUtils.get_mesh_raw_points(self.base_mesh)
+        finally:
+            if disable_other_deformers:
+                self.enable_all_deformers()
+        return points
+
+    def get_shapes_absolute_deltas(self, shapes_list: list, disable_other_deformers=True) -> dict:
+        """Calculate the absolute deltas for a list of shapes.
+
+        Parameters:
+            shapes_list (list): List of shape names to calculate deltas for.
+            disable_other_deformers (bool): Whether to temporarily disable other deformers while capturing the points.
+
+        Returns:
+            dict: A dictionary where keys are shape names and values are the absolute deltas as numpy arrays.
+        """
+        deltas = {}
+        # let's store the pose 
+        self._store_current_pose()
+        base_points = self.get_base_mesh_points()
+        for shape in shapes_list:
+            self.set_shape_pose(shape)
+            shape_points = self.get_deformed_mesh_points(disable_other_deformers=disable_other_deformers)
+            if shape_points.shape[1] == 4:
+                shape_points = shape_points[:, :3]
+            deltas[shape] = shape_points - base_points
+        # restore the pose after calculating deltas
+        self._restore_stored_pose()
+        return deltas
+
+    def propagate_work_shape_to_active_shapes(self,
+                                              work_shape: str,
+                                              min_propagation_level = 2,
+                                              disable_other_deformers=True):
+        """
+        Propagate the delta of the current work shape down to the active shapes
+        duplicating the work shape and masking the delta according to the active shapes.
+        The delta that cannot be propagated will stay in a work shape called unpropagated.
+        Parameters:
+            work_shape (str): The name of the work shape to propagate from.
+            active_shapes (list): List of active shape names to propagate to.
+            min_propagation_level (int): The combo shape minimum propagation level.
+            disable_other_deformers (bool): Whether to temporarily disable other deformers while capturing the points.
+
+        Returns:
+            None
+        """
+        work_shape_weight = self.work_blendshape.get_weight_by_name(work_shape)
+        if work_shape_weight is None:
+            raise ValueError(f"Work shape '{work_shape}' not found in the blendshape.")
+
+        # we gonna get the active shapes.
+        active_shapes = []
+        for weight in self.blendshape.weights:
+            weight_value = self.blendshape.get_weight_value(weight)
+            if weight_value > 0.0:
+                shape = self.get_shape(weight)
+                if shape.level >= min_propagation_level:
+                    active_shapes.append(shape)
+        if not active_shapes:
+            raise ValueError(f"No active shapes found with the required propagation level {min_propagation_level}.")
+        # we need the absolute deltas for the active shapes.
+        active_deltas = self.get_shapes_absolute_deltas(active_shapes,
+                                                        disable_other_deformers=disable_other_deformers)
+        new_work_shapes = list()
+        # we need to regenerate the target to quickly connect it to the newly generated shapes
+        regenerated = self.work_blendshape.regenerate_target(work_shape_weight.id)
+        # we need to create the unassigned work shape
+        unassigned_work_shape_name = f"{work_shape}_unassigned"
+        unassigned_work_shape = self.add_work_shape(name=unassigned_work_shape_name,
+                                                    target_object=regenerated[0])
+        
+        new_work_shapes.append(unassigned_work_shape)
+        unassigned_weights = np.ones_like(active_deltas.get(active_shapes[0], np.array([])))[:, 0]
+        for shape in active_shapes:
+            delta = active_deltas.get(shape, None)
+            lengths = np.linalg.norm(delta, axis=1)
+            # further processing of lengths can be done here
+            weights = (~np.isclose(lengths, 0.0, atol=0.001)).astype(float)   
+            unassigned_weights = unassigned_weights * (1 - weights)
+            works_shape_name = f"{shape}_decomp"
+            work_shape = self.add_work_shape(name=works_shape_name,
+                                             target_object=regenerated[0])
+            # now we need to set the weights
+            self.work_blendshape.set_weight_map_values(work_shape.id, weights)
+            # we can connect the new workshape to the active shape
+            self.connect_work_blendshape_weight_to_blendshape_weight(work_shape, shape)
+            new_work_shapes.append(work_shape)
+        self.work_blendshape.set_weight_map_values(unassigned_work_shape.id, unassigned_weights)
+        # we need to normalize the maps
+        self.normalize_work_weight_map_values(new_work_shapes)
+        self.work_blendshape.set_weight_value(unassigned_work_shape, 1.0)
+        self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
+        cmds.delete(regenerated[0])
+
+
+
+        
