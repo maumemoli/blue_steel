@@ -1076,16 +1076,17 @@ class BlueSteelEditor(object):
         """
         Apply the active work shapes to their linked primary shapes.
         """
+        self._store_current_pose()
         connected_shapes = self.get_shapes_with_connected_work_shapes()
         # we need to get all the work shapes values
         unlinked_work_shapes_values= {}
         committed_connected_shapes = set()
         shapes_to_commit = {}
         work_shapes_to_delete = set()
-        work_shapes = self.work_blendshape.get_weights() or []
         for work_shape_weight in self.work_blendshape.get_weights() or []:
             if not self.get_work_shape_driver_nodes(work_shape_weight):
                 unlinked_work_shapes_values[work_shape_weight] = self.work_blendshape.get_weight_value(work_shape_weight)
+                self.work_blendshape.set_weight_value(work_shape_weight, 0)
             
         for connected_shape in connected_shapes:
             # we need to set the pose to the shape
@@ -1114,6 +1115,7 @@ class BlueSteelEditor(object):
             # we need to delete the commit meshes
             shapes_to_delete = list(shapes_to_commit.values())
             cmds.delete(shapes_to_delete)
+            self._restore_stored_pose()
 
 
         formatted_committed_shapes ='\n      '.join(shapes_to_commit.keys())
@@ -5006,9 +5008,9 @@ class BlueSteelEditor(object):
         base_mesh = self.base_mesh
         if not base_mesh or not cmds.objExists(base_mesh):
             raise ValueError("Base mesh does not exist")
-        return mayaUtils.get_points_as_numpy(base_mesh)
+        return mayaUtils.get_mesh_raw_points(base_mesh)
 
-    def get_deformed_mesh_points(self, disable_other_deformers=True)->np.ndarray:
+    def get_deformed_mesh_points(self)->np.ndarray:
         """Capture the points of the deformed mesh as a numpy array.
         Parameters:
             disable_other_deformers (bool): Whether to temporarily disable other deformers
@@ -5017,44 +5019,152 @@ class BlueSteelEditor(object):
         Returns:
             np.ndarray: The points of the deformed mesh as a numpy array.
         """
-        points = None
-        try:
-            if disable_other_deformers:
-                self.disable_all_deformers()
-            points = mayaUtils.get_mesh_raw_points(self.base_mesh)
-        finally:
-            if disable_other_deformers:
-                self.enable_all_deformers()
+
+        points = mayaUtils.get_mesh_raw_points(self.base_mesh)
+
         return points
 
-    def get_shapes_absolute_deltas(self, shapes_list: list, disable_other_deformers=True) -> dict:
-        """Calculate the absolute deltas for a list of shapes.
+    @staticmethod
+    def _normalize_masks(masks: dict) -> dict:
+        """Normalize a set of per-vertex masks into a partition of unity.
+
+        The ``unpropagated`` mask is the complement of the union of the shape
+        masks, so every vertex has at least one non-zero weight and the column
+        sums are always safe to divide by.
 
         Parameters:
-            shapes_list (list): List of shape names to calculate deltas for.
-            disable_other_deformers (bool): Whether to temporarily disable other deformers while capturing the points.
+            masks (dict): Mapping of mask name to a (N,) float/int numpy array.
 
         Returns:
-            dict: A dictionary where keys are shape names and values are the absolute deltas as numpy arrays.
+            dict: Same keys with float32 arrays whose per-vertex sum is 1.0.
+        """
+        names = list(masks.keys())
+        if not names:
+            return {}
+        arrays = [np.asarray(masks[name], dtype=np.float32) for name in names]
+        stacked = np.vstack(arrays)
+        sums = stacked.sum(axis=0)
+        # Guard degenerate inputs even though 'unpropagated' normally prevents zero sums.
+        sums[sums == 0.0] = 1.0
+        stacked /= sums
+        return {name: stacked[i] for i, name in enumerate(names)}
+
+    @staticmethod
+    def _blur_mask_borders(masks: dict,
+                           neighbors_row: np.ndarray,
+                           neighbors_col: np.ndarray,
+                           strength: float,
+                           iterations: int) -> dict:
+        """Blur mask borders with a few Laplacian smoothing passes.
+
+        The smoothing operator is linear and applied equally to every mask, so
+        a normalized set of masks stays normalized (partition of unity is
+        preserved) and no re-normalization is required afterwards.
+
+        Parameters:
+            masks (dict): Mapping of mask name to a (N,) float numpy array.
+            neighbors_row (np.ndarray): Row indices of unique undirected edges.
+            neighbors_col (np.ndarray): Column indices of unique undirected edges.
+            strength (float): Blend factor per pass (0.0 keeps the mask,
+                1.0 replaces a vertex with its neighbor average).
+            iterations (int): Number of smoothing passes.
+
+        Returns:
+            dict: Same keys with blurred float32 arrays.
+        """
+        strength = float(strength)
+        blurred = {}
+        for name, mask in masks.items():
+            values = np.asarray(mask, dtype=np.float32).copy()
+            for _ in range(iterations):
+                neighbor_sum = np.bincount(neighbors_row,
+                                           weights=values[neighbors_col],
+                                           minlength=values.size).astype(np.float32)
+                degree = np.bincount(neighbors_row,
+                                     minlength=values.size).astype(np.float32)
+                neighbor_avg = neighbor_sum / np.maximum(degree, 1.0)
+                # Isolated vertices have no neighbors; keep their value so the
+                # smoothing operator maps the constant-1 mask to itself.
+                neighbor_avg = np.where(degree > 0.0, neighbor_avg, values)
+                values = (1.0 - strength) * values + strength * neighbor_avg
+            blurred[name] = values
+        return blurred
+
+    def get_shapes_delta_masks(self,
+                               shapes_list: list,
+                               normalize: bool = True,
+                               blur_iterations: int = 0,
+                               blur_strength: float = 0.5,
+                               progress_callback=None) -> dict:
+        """Calculate delta masks for a list of shapes.
+
+        The masks are normalized into a partition of unity so overlapping
+        shapes share the delta instead of summing past 1.0. An optional mesh
+        adjacency blur can soften the mask borders afterwards.
+
+        Parameters:
+            shapes_list (list): List of shape names to calculate delta masks for.
+            normalize (bool): Whether to normalize the masks into a partition
+                of unity before returning them. Defaults to True.
+            blur_iterations (int): Number of Laplacian smoothing passes used
+                to blur the mask borders. 0 disables blurring.
+            blur_strength (float): Blend factor per blur pass (0.0..1.0).
+            progress_callback (callable, optional): Called with the shape name
+                after each shape mask is calculated. Used to advance a progress
+                bar. Defaults to None.
+
+        Returns:
+            dict: A dictionary where keys are shape names and values are the
+            per-vertex mask numpy arrays.
         """
         deltas = {}
         # let's store the pose 
         self._store_current_pose()
-        base_points = self.get_base_mesh_points()
-        for shape in shapes_list:
-            self.set_shape_pose(shape)
-            shape_points = self.get_deformed_mesh_points(disable_other_deformers=disable_other_deformers)
-            if shape_points.shape[1] == 4:
-                shape_points = shape_points[:, :3]
-            deltas[shape] = shape_points - base_points
-        # restore the pose after calculating deltas
-        self._restore_stored_pose()
+        self.disable_all_deformers()
+        neutral = self.duplicate_base_mesh_neutral_state("TemporaryNeutral")
+        base_points = mayaUtils.get_mesh_raw_points(neutral)
+
+        total_vertices = base_points.shape[0]
+        upropagated = np.ones(total_vertices, dtype=np.float32)
+        try:
+            for shape in shapes_list:
+                self.set_shape_pose(shape)
+                duplicated = self.duplicate_base_mesh_at_current_pose()
+                deformed_points = mayaUtils.get_mesh_raw_points(duplicated[0])
+                mask = np.zeros(total_vertices, dtype=np.float32)
+                components = np.where(np.abs(deformed_points - base_points).max(axis=1) > 0.01)[0]
+                mask[components] = 1.0
+                upropagated[components] = 0.0
+                deltas[shape] = mask
+                cmds.delete(duplicated)
+                if progress_callback is not None:
+                    progress_callback(shape)
+            deltas["unpropagated"] = upropagated
+
+            if normalize:
+                deltas = self._normalize_masks(deltas)
+
+            if blur_iterations > 0:
+                neighbors_row, neighbors_col = mayaUtils.get_mesh_vertex_neighbors(self.base_mesh)
+                deltas = self._blur_mask_borders(deltas,
+                                                 neighbors_row,
+                                                 neighbors_col,
+                                                 blur_strength,
+                                                 blur_iterations)
+        finally:
+            # restore the pose after calculating deltas
+            self._restore_stored_pose()
+            self.enable_all_deformers()
+            cmds.delete(neutral)
+        
         return deltas
 
     def propagate_work_shape_to_active_shapes(self,
                                               work_shape: str,
                                               min_propagation_level = 2,
-                                              disable_other_deformers=True):
+                                              normalize=True,
+                                              blur_iterations=10,
+                                              blur_strength=1.0):
         """
         Propagate the delta of the current work shape down to the active shapes
         duplicating the work shape and masking the delta according to the active shapes.
@@ -5063,7 +5173,9 @@ class BlueSteelEditor(object):
             work_shape (str): The name of the work shape to propagate from.
             active_shapes (list): List of active shape names to propagate to.
             min_propagation_level (int): The combo shape minimum propagation level.
-            disable_other_deformers (bool): Whether to temporarily disable other deformers while capturing the points.
+            normalize (bool): Whether to normalize the delta masks into a partition of unity.
+            blur_iterations (int): Number of Laplacian smoothing passes used to blur mask borders.
+            blur_strength (float): Blend factor per blur pass (0.0..1.0).
 
         Returns:
             None
@@ -5082,39 +5194,76 @@ class BlueSteelEditor(object):
                     active_shapes.append(shape)
         if not active_shapes:
             raise ValueError(f"No active shapes found with the required propagation level {min_propagation_level}.")
-        # we need the absolute deltas for the active shapes.
-        active_deltas = self.get_shapes_absolute_deltas(active_shapes,
-                                                        disable_other_deformers=disable_other_deformers)
-        new_work_shapes = list()
-        # we need to regenerate the target to quickly connect it to the newly generated shapes
-        regenerated = self.work_blendshape.regenerate_target(work_shape_weight.id)
-        # we need to create the unassigned work shape
-        unassigned_work_shape_name = f"{work_shape}_unassigned"
-        unassigned_work_shape = self.add_work_shape(name=unassigned_work_shape_name,
-                                                    target_object=regenerated[0])
-        
-        new_work_shapes.append(unassigned_work_shape)
-        unassigned_weights = np.ones_like(active_deltas.get(active_shapes[0], np.array([])))[:, 0]
-        for shape in active_shapes:
-            delta = active_deltas.get(shape, None)
-            lengths = np.linalg.norm(delta, axis=1)
-            # further processing of lengths can be done here
-            weights = (~np.isclose(lengths, 0.0, atol=0.001)).astype(float)   
-            unassigned_weights = unassigned_weights * (1 - weights)
-            works_shape_name = f"{shape}_decomp"
-            work_shape = self.add_work_shape(name=works_shape_name,
-                                             target_object=regenerated[0])
-            # now we need to set the weights
-            self.work_blendshape.set_weight_map_values(work_shape.id, weights)
-            # we can connect the new workshape to the active shape
-            self.connect_work_blendshape_weight_to_blendshape_weight(work_shape, shape)
-            new_work_shapes.append(work_shape)
-        self.work_blendshape.set_weight_map_values(unassigned_work_shape.id, unassigned_weights)
-        # we need to normalize the maps
-        self.normalize_work_weight_map_values(new_work_shapes)
-        self.work_blendshape.set_weight_value(unassigned_work_shape, 1.0)
-        self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
-        cmds.delete(regenerated[0])
+        # --- Start the progress bar ---
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        # one step per delta mask plus one per propagated shape ("unpropagated" included)
+        total_steps = 2 * len(active_shapes) + 1
+        multi_mesh = None
+        regenerated = None
+
+        class _PropagationCancelled(Exception):
+            pass
+
+        def advance(status):
+            if cmds.progressBar(gMainProgressBar, query=True, isCancelled=True):
+                raise _PropagationCancelled()
+            cmds.progressBar(gMainProgressBar, edit=True, step=1, status=status)
+
+        cmds.progressBar(gMainProgressBar, edit=True,
+                         beginProgress=True,
+                         isInterruptable=True,
+                         status=f"Propagating work shape '{work_shape}'...",
+                         maxValue=total_steps)
+        try:
+            # we need the absolute deltas for the active shapes.
+            active_deltas = self.get_shapes_delta_masks(active_shapes,
+                                                        normalize=normalize,
+                                                        blur_iterations=blur_iterations,
+                                                        blur_strength=blur_strength,
+                                                        progress_callback=lambda shape: advance(f"Calculating delta mask: {shape}..."))
+            # we need to regenerate the target to quickly connect it to the newly generated shapes
+            regenerated = self.work_blendshape.regenerate_target(work_shape_weight.id)
+            multi_mesh = self.duplicate_base_mesh_neutral_state("multi_mesh")
+            multi_mesh_blend = Blendshape.create("MultiMeshBlend",multi_mesh)
+            multi_weight = multi_mesh_blend.add_target("weight_multiplier", regenerated[0])
+            multi_mesh_blend.set_weight_value(multi_weight, 1.0)
+            for shape in active_deltas:
+                advance(f"Propagating work shape: {shape}...")
+                mask_weight = self.blendshape.get_weight_by_name(shape)
+                mask_weight_value = 1.0
+                if mask_weight is not None:
+                    mask_weight_value = self.blendshape.get_weight_value(mask_weight)
+                multi_weight_val = 1.0 / mask_weight_value
+                multi_mesh_blend.set_weight_value(multi_weight, multi_weight_val)
+                mask = active_deltas.get(shape, None)
+                if mask is None:
+                    print(f"No mask found for shape '{shape}', skipping.")
+                    continue
+                work_shape_name = f"{shape}_decomp" if shape=="unpropagated" else f"{work_shape}_{shape}"
+                current_work_shape = self.add_work_shape(name=work_shape_name,
+                                                         target_object=multi_mesh)
+                if shape == "unpropagated":
+                    unpropagated_work_shape = current_work_shape
+                # now we need to set the weights
+                self.work_blendshape.set_weight_map_values(current_work_shape.id, mask.tolist())
+                # we can connect the new workshape to the active shape
+                if shape == "unpropagated":
+                    continue
+                self.connect_work_blendshape_weight_to_blendshape_weight(current_work_shape, shape)
+            # Mask normalization/blurring is handled by get_shapes_delta_masks.
+            self.work_blendshape.set_weight_value(unpropagated_work_shape, 1.0)
+            self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
+        except _PropagationCancelled:
+            print(f"Propagation of work shape '{work_shape}' cancelled.")
+        finally:
+            # --- End the progress bar ---
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            if multi_mesh is not None and cmds.objExists(multi_mesh):
+                cmds.delete(multi_mesh)
+            if regenerated is not None and cmds.objExists(regenerated[0]):
+                cmds.delete(regenerated[0])
+            # refreshing the viewport to remove the progress bar artifacts
+            cmds.refresh(force=True)
 
 
 

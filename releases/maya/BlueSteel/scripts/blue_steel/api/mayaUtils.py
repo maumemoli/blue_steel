@@ -52,6 +52,64 @@ def create_mfn_mesh(mesh_name: str):
     mfn_mesh = om.MFnMesh(get_dag_path(mesh_name))
     return mfn_mesh
 
+
+def get_mesh_vertex_neighbors(mesh_name: str):
+    """Build undirected vertex adjacency for a mesh as flat index arrays.
+
+    Edges are derived from the polygon perimeter, which avoids per-vertex API
+    queries and works for triangles, quads and ngons alike.
+
+    Parameters:
+        mesh_name (str): The name of the mesh.
+
+    Returns:
+        tuple: ``(neighbors_row, neighbors_col)`` where each pair
+        ``(neighbors_row[i], neighbors_col[i])`` is a unique undirected edge.
+    """
+    mfn_mesh = create_mfn_mesh(mesh_name)
+    num_vertices = mfn_mesh.numVertices()
+
+    # getVertices returns (polygon vertex counts, flattened polygon vertex ids).
+    polygon_counts = om.MIntArray()
+    polygon_vertices = om.MIntArray()
+    mfn_mesh.getVertices(polygon_counts, polygon_vertices)
+
+    counts = np.asarray(list(polygon_counts), dtype=np.int64)
+    vertices = np.asarray(list(polygon_vertices), dtype=np.int64)
+
+    total = vertices.size
+    if total == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty
+
+    # Start offset of each polygon in the flat vertex id array.
+    starts = np.zeros(counts.size, dtype=np.int64)
+    np.cumsum(counts[:-1], out=starts[1:])
+
+    polygon_starts = np.repeat(starts, counts)
+    local_indices = np.arange(total, dtype=np.int64) - polygon_starts
+    polygon_sizes = np.repeat(counts, counts)
+
+    # Next vertex in each polygon, wrapping around to close the perimeter.
+    next_global = polygon_starts + ((local_indices + 1) % polygon_sizes)
+
+    a = vertices
+    b = vertices[next_global]
+
+    # Drop degenerate edges and make the adjacency symmetric.
+    valid = a != b
+    a, b = a[valid], b[valid]
+    row = np.concatenate([a, b])
+    col = np.concatenate([b, a])
+
+    # Deduplicate directed pairs.
+    keys = row.astype(np.int64) * num_vertices + col
+    keys = np.unique(keys)
+    row = keys // num_vertices
+    col = keys % num_vertices
+
+    return row.astype(np.int64), col.astype(np.int64)
+
 # Utility functions to get Blendshape Plugs attributes
 def get_dependency_node(node_name: str):
     """
