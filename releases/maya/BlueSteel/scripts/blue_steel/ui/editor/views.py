@@ -536,6 +536,7 @@ class WorkShapesListView(SliderListView):
         clear_weights_callback: Optional[Callable[[str], None]] = None,
         can_paste_weights_callback: Optional[Callable[[], bool]] = None,
         can_extract_mesh_callback: Optional[Callable[[], bool]] = None,
+        propagate_to_active_shapes_callback: Optional[Callable[[str], None]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -564,6 +565,7 @@ class WorkShapesListView(SliderListView):
         self._clear_weights_callback = clear_weights_callback
         self._can_paste_weights_callback = can_paste_weights_callback
         self._can_extract_mesh_callback = can_extract_mesh_callback
+        self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
         self.setToolTip(
             "Driver shapes: double-click to set pose. Drag outside this list and release "
             "to remove that driver connection. Escape cancels."
@@ -822,6 +824,8 @@ class WorkShapesListView(SliderListView):
         normalize_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
         menu = QMenu(self)
         duplicate_action = menu.addAction(f"Duplicate")
+        propagate_to_active_shapes_action = menu.addAction("Propagate to Active Shape")
+        propagate_to_active_shapes_action.setEnabled(self._propagate_to_active_shapes_callback is not None)
         extract_work_shape_mesh_action = menu.addAction("Extract Mesh")
         can_extract_mesh = self._can_extract_mesh_callback is None or self._can_extract_mesh_callback()
         extract_work_shape_mesh_action.setEnabled(can_extract_mesh)
@@ -859,6 +863,8 @@ class WorkShapesListView(SliderListView):
             self.duplicate_callback(receiver_name)
         elif selected_action == extract_work_shape_mesh_action:
             self.extract_work_shape_mesh_callback(receiver_name)
+        elif selected_action == propagate_to_active_shapes_action and self._propagate_to_active_shapes_callback is not None:
+            self._propagate_to_active_shapes_callback(receiver_name)
         elif selected_action == break_link_action:
             self._break_link_callback(receiver_name)
         elif selected_action == copy_weights_action and self._copy_weights_callback is not None:

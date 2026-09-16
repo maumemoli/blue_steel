@@ -96,10 +96,12 @@ from .qt import (
     QCursor,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QDoubleValidator,
     QDrag,
     QEvent,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QGuiApplication,
     QHBoxLayout,
@@ -129,6 +131,7 @@ from .qt import (
     QRect,
     QSize,
     QSizePolicy,
+    QSpinBox,
     QSortFilterProxyModel,
     QSplitter,
     QStatusBar,
@@ -621,6 +624,80 @@ class WorkShapesFeatureMixin(MainWindowMixin):
                 self._work_shape_model.set_connected_state_local(work_shape_name, bool(weight in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])))
         self._select_work_shape(work_shape_name)
         self._set_status(f"Extracted shape '{new_shape_name}' from work shape '{work_shape_name}'.")
+
+
+    def _on_work_shape_propagate_to_active_shapes_requested(self, work_shape_name: str) -> None:
+        """Propagate a work shape to the active shapes using user-set settings.
+
+        Opens a dialog to configure the minimum propagation level and the mask
+        blurring options, then calls the editor propagation routine.
+
+        Parameters:
+            work_shape_name (str): The work shape to propagate from.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Propagate to Active Shape")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        min_level_spin = QSpinBox(dialog)
+        min_level_spin.setRange(0, 999)
+        min_level_spin.setValue(2)
+        form.addRow("Minimum Propagation Level", min_level_spin)
+        blur_iterations_spin = QSpinBox(dialog)
+        blur_iterations_spin.setRange(0, 999)
+        blur_iterations_spin.setValue(10)
+        form.addRow("Weights Blur Iteration", blur_iterations_spin)
+        blur_strength_spin = QDoubleSpinBox(dialog)
+        blur_strength_spin.setRange(0.0, 1.0)
+        blur_strength_spin.setSingleStep(0.05)
+        blur_strength_spin.setDecimals(2)
+        blur_strength_spin.setValue(1.0)
+        form.addRow("Weights Blur Strength", blur_strength_spin)
+        layout.addLayout(form)
+        dialog_buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        dialog_buttons.button(QDialogButtonBox.Ok).setText("Propagate")
+        dialog_buttons.accepted.connect(dialog.accept)
+        dialog_buttons.rejected.connect(dialog.reject)
+        layout.addWidget(dialog_buttons)
+        if hasattr(dialog, "exec"):
+            result = dialog.exec()
+        else:
+            result = dialog.exec_()
+        if result != QDialog.Accepted:
+            self._set_status("Propagation cancelled.")
+            return
+
+        min_propagation_level = min_level_spin.value()
+        blur_iterations = blur_iterations_spin.value()
+        blur_strength = blur_strength_spin.value()
+        try:
+            self._stop_active_blendshape_trackers()
+            self.current_editor.propagate_work_shape_to_active_shapes(
+                work_shape_name,
+                min_propagation_level=min_propagation_level,
+                blur_iterations=blur_iterations,
+                blur_strength=blur_strength,
+            )
+        except Exception as exc:
+            self._set_status(f"Error propagating work shape '{work_shape_name}': {exc}", error=True)
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+        self._reload_work_shapes_from_editor()
+        self._set_status(
+            f"Propagated work shape '{work_shape_name}' to active shapes "
+            f"(level {min_propagation_level}, blur {blur_iterations} x {blur_strength:.2f})."
+        )
 
 
     def _on_work_shape_connected_mesh_requested(self, work_shape_name: str) -> None:
