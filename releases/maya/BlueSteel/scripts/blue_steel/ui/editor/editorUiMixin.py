@@ -668,6 +668,10 @@ class EditorUiMixin(MainWindowMixin):
         self.active_shapes_search = TokenSearchBar("Filter active shapes...")
         active_shapes_layout.addWidget(self.active_shapes_search)
         self.active_shapes_view = SliderListView()
+        # Active Shapes is a display/monitor panel: sliders are read-only so
+        # values cannot be scrubbed or edited here. Name drag-and-drop and the
+        # mute/lock icons still work.
+        self.active_shapes_view._sliders_read_only = True
         self._allow_horizontal_collapse(self.active_shapes_view)
         self.active_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.active_shapes_view.setDragEnabled(True)
@@ -1177,6 +1181,7 @@ class EditorUiMixin(MainWindowMixin):
             self.split_primaries_tree.model().dataChanged.connect(self._on_split_primaries_tree_data_changed)
             self.split_primaries_tree.setContextMenuPolicy(Qt.CustomContextMenu)
             self.split_primaries_tree.customContextMenuRequested.connect(self._show_split_primaries_context_menu)
+            self.split_primaries_tree.itemDoubleClicked.connect(self._on_split_primaries_item_double_clicked)
         if self.split_groups_tree is not None:
             self.split_groups_tree.mapSelected.connect(self._on_split_group_map_selected)
             self.split_groups_tree.mapsChanged.connect(self._on_split_group_maps_changed)

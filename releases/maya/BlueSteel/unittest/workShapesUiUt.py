@@ -129,6 +129,41 @@ def feature_handlers():
 HANDLERS = feature_handlers()
 
 
+def split_handlers():
+    """Load split-settings handlers without the full main-window bootstrap."""
+    path = UI_PATH / "splitSettingsUiMixin.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {"_on_split_primaries_item_double_clicked"}
+    methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
+               for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    namespace = {"ShapeItemsModel": UI["models"].ShapeItemsModel}
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace
+
+
+SPLIT_HANDLERS = split_handlers()
+
+
+class FakeTreeItem:
+    """Minimal QTreeWidgetItem stand-in for role-keyed double-click tests."""
+
+    def __init__(self, name, is_header=False, parent=None):
+        self._name = name
+        self._is_header = is_header
+        self._parent = parent
+
+    def parent(self):
+        return self._parent
+
+    def data(self, column, role):
+        del column
+        if role == Model.IsHeaderRole:
+            return self._is_header
+        if role == Model.NameRole:
+            return self._name
+        return None
+
+
 class WorkShapesUiTests(unittest.TestCase):
     def setUp(self):
         self.editor = FakeEditor()
@@ -369,6 +404,196 @@ class WorkShapesUiTests(unittest.TestCase):
         host._set_shape_pose_by_name.assert_not_called()
         host._select_shape_and_primaries.assert_not_called()
         host._begin_inline_workshape_rename.assert_called_once_with(self.index)
+
+    def test_value_area_double_click_starts_numeric_edit_without_rename(self):
+        """Double-clicking the slider bar opens the numeric value editor."""
+        host = Mock()
+        host.current_editor = self.editor
+        host._work_shape_model = self.model
+        self.view.doubleClicked.connect(
+            lambda index: HANDLERS["_on_work_shapes_double_clicked"](host, index))
+        value_rect, _ = self.delegate._area_rects(self.option(), self.index)
+        self.double_click(value_rect.center())
+        self.assertEqual(self.view.state(), QtWidgets.QAbstractItemView.EditingState)
+        host._begin_inline_workshape_rename.assert_not_called()
+        editor = self.view.findChild(QtWidgets.QLineEdit)
+        self.assertIsNotNone(editor)
+        self.assertEqual(editor.text(), "0.2500")
+
+    def test_name_area_double_click_still_renames_without_value_editor(self):
+        """Name-area double-clicks keep the rename action and open no editor."""
+        host = Mock()
+        host.current_editor = self.editor
+        host._work_shape_model = self.model
+        self.view.doubleClicked.connect(
+            lambda index: HANDLERS["_on_work_shapes_double_clicked"](host, index))
+        _, name_rect = self.delegate._area_rects(self.option(), self.index)
+        self.click(name_rect.center(), double=True)
+        host._begin_inline_workshape_rename.assert_called_once_with(self.index)
+        self.assertNotEqual(self.view.state(), QtWidgets.QAbstractItemView.EditingState)
+
+    def double_click(self, pos):
+        """Deliver a raw double-click event (no drag side effects offscreen)."""
+        global_pos = self.view.viewport().mapToGlobal(pos)
+        window_pos = self.view.viewport().window().mapFromGlobal(global_pos)
+        event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseButtonDblClick,
+            QtCore.QPointF(pos),
+            QtCore.QPointF(window_pos),
+            QtCore.QPointF(global_pos),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        APP.sendEvent(self.view.viewport(), event)
+        APP.processEvents()
+
+    def test_slider_delegate_only_edits_when_view_opts_in(self):
+        """Views without the opt-in flag never create a value editor."""
+        option = self.option()
+        self.assertIsInstance(
+            self.delegate.createEditor(self.view.viewport(), option, self.index),
+            QtWidgets.QLineEdit,
+        )
+        plain_view = UI["views"].SliderListView()
+        try:
+            plain_view.setModel(self.model)
+            plain_delegate = UI["delegates"].SliderItemDelegate(plain_view)
+            plain_view.setItemDelegate(plain_delegate)
+            self.assertFalse(bool(plain_delegate._slider_value_edit_enabled()))
+            self.assertIsNone(
+                plain_delegate.createEditor(plain_view.viewport(), option, self.index)
+            )
+        finally:
+            plain_view.deleteLater()
+            APP.processEvents()
+
+    def test_opt_in_tree_views_disable_default_edit_triggers(self):
+        """Opted-in trees only allow the slider double-click to open an editor."""
+        for view_cls in (UI["views"].ShapeTreeWidget, UI["views"].PrimaryTreeWidget):
+            view = view_cls()
+            try:
+                self.assertTrue(bool(view._enable_slider_value_edit))
+                self.assertEqual(
+                    view.editTriggers(), QtWidgets.QAbstractItemView.NoEditTriggers
+                )
+            finally:
+                view.deleteLater()
+                APP.processEvents()
+
+    def test_tree_view_explicit_edit_opens_value_editor(self):
+        """Explicit edit() works on a NoEditTriggers tree with an editable row."""
+        view = UI["views"].ShapeTreeWidget()
+        try:
+            delegate = UI["delegates"].SliderItemDelegate(view)
+            view.setItemDelegateForColumn(0, delegate)
+            item = QtWidgets.QTreeWidgetItem(["name"])
+            item.setData(0, Model.NameRole, "name")
+            item.setData(0, Model.TypeRole, "PrimaryShape")
+            item.setData(0, Model.ValueRole, 0.5)
+            item.setData(0, Model.EditableRole, True)
+            item.setData(0, Model.IsHeaderRole, False)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+            view.addTopLevelItem(item)
+            view.resize(300, 100)
+            view.show()
+            APP.processEvents()
+            view.edit(view.indexFromItem(item, 0))
+            APP.processEvents()
+            self.assertEqual(view.state(), QtWidgets.QAbstractItemView.EditingState)
+            editor = view.findChild(QtWidgets.QLineEdit)
+            self.assertIsNotNone(editor)
+            self.assertEqual(editor.text(), "0.5000")
+        finally:
+            view.close()
+            view.deleteLater()
+            APP.processEvents()
+
+    def plain_slider_view(self):
+        """Build a standalone SliderListView with the work-shape model."""
+        view = UI["views"].SliderListView()
+        view.setModel(self.model)
+        delegate = UI["delegates"].SliderItemDelegate(view)
+        view.setItemDelegate(delegate)
+        view.resize(520, 200)
+        view.show()
+        APP.processEvents()
+        return view, delegate
+
+    def test_read_only_slider_view_blocks_drag(self):
+        """A read-only slider view does not start a value scrub on press."""
+        view, delegate = self.plain_slider_view()
+        try:
+            option = QtWidgets.QStyleOptionViewItem()
+            option.rect = view.visualRect(self.index)
+            option.fontMetrics = view.fontMetrics()
+            value_rect, _ = delegate._area_rects(option, self.index)
+
+            view._sliders_read_only = True
+            QtTest.QTest.mousePress(
+                view.viewport(), Qt.LeftButton, Qt.NoModifier, value_rect.center())
+            APP.processEvents()
+            self.assertFalse(delegate.is_drag_active())
+            QtTest.QTest.mouseRelease(
+                view.viewport(), Qt.LeftButton, Qt.NoModifier, value_rect.center())
+            APP.processEvents()
+
+            # The same press starts a scrub once the view is interactive again.
+            view._sliders_read_only = False
+            QtTest.QTest.mousePress(
+                view.viewport(), Qt.LeftButton, Qt.NoModifier, value_rect.center())
+            APP.processEvents()
+            self.assertTrue(delegate.is_drag_active())
+            delegate.external_drag_end(value_rect.center().x())
+            APP.processEvents()
+        finally:
+            view.close()
+            view.deleteLater()
+            APP.processEvents()
+
+    def test_read_only_view_disables_value_edit(self):
+        """Read-only wins over the value-edit opt-in and createEditor returns None."""
+        view, delegate = self.plain_slider_view()
+        try:
+            view._enable_slider_value_edit = True
+            view._sliders_read_only = True
+            self.assertFalse(delegate._slider_value_edit_enabled())
+            self.assertIsNone(
+                delegate.createEditor(view.viewport(), self.option(), self.index))
+        finally:
+            view.close()
+            view.deleteLater()
+            APP.processEvents()
+
+    def test_split_assignment_name_double_click_sets_pose(self):
+        """Double-clicking a child primary name sets that shape to its pose."""
+        host = Mock()
+        host.current_editor = self.editor
+        handler = SPLIT_HANDLERS["_on_split_primaries_item_double_clicked"]
+        handler(host, FakeTreeItem("jawOpen", parent=object()), 0)
+        host._set_shape_pose_by_name.assert_called_once_with("jawOpen")
+
+    def test_split_assignment_group_and_header_are_ignored(self):
+        """Group rows and header-flagged rows do not trigger a pose."""
+        host = Mock()
+        host.current_editor = self.editor
+        handler = SPLIT_HANDLERS["_on_split_primaries_item_double_clicked"]
+        handler(host, FakeTreeItem("GroupA", is_header=True, parent=None), 0)
+        handler(host, FakeTreeItem("GroupA", is_header=True, parent=object()), 0)
+        host._set_shape_pose_by_name.assert_not_called()
+
+    def test_split_assignment_double_click_guards(self):
+        """Missing editor, non-zero column, None item, and empty name are ignored."""
+        host = Mock()
+        handler = SPLIT_HANDLERS["_on_split_primaries_item_double_clicked"]
+        item = FakeTreeItem("jawOpen", parent=object())
+        host.current_editor = None
+        handler(host, item, 0)
+        host.current_editor = self.editor
+        handler(host, item, 1)
+        handler(host, None, 0)
+        handler(host, FakeTreeItem("", parent=object()), 0)
+        host._set_shape_pose_by_name.assert_not_called()
 
     def move_mouse(self, pos, receiver=None):
         # Qt 5's offscreen QTest.mouseMove does not deliver moves outside the

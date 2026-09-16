@@ -904,6 +904,30 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._set_status(f"Assigned {len(target_names)} primary shape(s) to split group '{group_name}'.")
 
 
+    def _on_split_primaries_item_double_clicked(self, item, column) -> None:
+        """Set a double-clicked split-assignment primary to its pose.
+
+        Only child primary rows respond; group headers are ignored.
+
+        Parameters:
+            item (QTreeWidgetItem): The double-clicked tree item.
+            column (int): The double-clicked column.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None or item is None or column != 0:
+            return
+        if item.parent() is None:
+            return
+        if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+            return
+        primary_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
+        if not primary_name:
+            return
+        self._set_shape_pose_by_name(primary_name)
+
+
     def _show_split_primaries_context_menu(self, pos) -> None:
         """Show the context menu for the split primaries tree.
 

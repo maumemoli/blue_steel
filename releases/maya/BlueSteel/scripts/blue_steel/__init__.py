@@ -1,7 +1,7 @@
 import json
 from . import env
 from .version import Version
-
+from maya import cmds
 
 try:
     import requests

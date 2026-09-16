@@ -924,7 +924,12 @@ class ShapesFeatureMixin(MainWindowMixin):
                     ShapeItemsModel.ColorRole,
                 ):
                     leaf.setData(0, role, self._shapes_proxy.data(proxy_index, role))
-                leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+                leaf_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled
+                if bool(self._shapes_proxy.data(proxy_index, ShapeItemsModel.EditableRole)):
+                    # Only primary shapes expose the slider value editor; the view
+                    # uses NoEditTriggers so this flag alone does not open it.
+                    leaf_flags |= Qt.ItemIsEditable
+                leaf.setFlags(leaf_flags)
                 type_group_item.addChild(leaf)
                 self._shape_tree_items[name] = leaf
                 if name in selected_names:

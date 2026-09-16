@@ -5,6 +5,7 @@ from maya import cmds
 Here go all the evnvironment variables that are used in the project.
 """
 
+
 SEPARATOR = "_"
 VERSION = "v1.6.5"
 # NOTE: ``env`` is also imported by the drag-and-drop installer *before* the

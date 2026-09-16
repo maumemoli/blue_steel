@@ -96,9 +96,13 @@ class SliderDragViewMixin:
     The delegate owns value painting and the drag math; the view owns the Qt
     event flow. ``mousePressEvent`` resolves icon clicks first and otherwise
     asks the delegate to start a slider drag via ``external_drag_start``.
+
+    Set ``_sliders_read_only = True`` to make the sliders display-only: icon
+    clicks and name selection/drag still work, but value scrubbing is disabled.
     """
 
     _icon_click_active = False
+    _sliders_read_only = False
 
     def _slider_delegate(self):
         if hasattr(self, "itemDelegateForColumn"):
@@ -129,7 +133,8 @@ class SliderDragViewMixin:
             delegate = self._slider_delegate()
             index = self.indexAt(event.pos())
             if (
-                _is_slider_delegate(delegate)
+                not self._sliders_read_only
+                and _is_slider_delegate(delegate)
                 and index.isValid()
                 and not bool(index.data(ShapeItemsModel.IsHeaderRole))
                 and bool(index.data(ShapeItemsModel.EditableRole))
@@ -171,6 +176,26 @@ class SliderDragViewMixin:
             self._icon_click_active = True
             event.accept()
             return
+        if event.button() == Qt.LeftButton:
+            delegate = self._slider_delegate()
+            value_rect_for = getattr(delegate, "value_rect_for", None)
+            index = self.indexAt(event.pos())
+            if (
+                _is_slider_delegate(delegate)
+                and value_rect_for is not None
+                and getattr(delegate, "_slider_value_edit_enabled", lambda: False)()
+                and index.isValid()
+                and not bool(index.data(ShapeItemsModel.IsHeaderRole))
+                and bool(index.data(ShapeItemsModel.EditableRole))
+            ):
+                option = OptionRect(self.visualRect(index), self.fontMetrics())
+                if value_rect_for(index, option).contains(event.pos()):
+                    # Slider double-click enters "value set mode" and consumes the
+                    # event so the view's doubleClicked/itemDoubleClicked pose or
+                    # rename handlers do not also fire.
+                    self.edit(index)
+                    event.accept()
+                    return
         super().mouseDoubleClickEvent(event)
 
 
@@ -520,6 +545,7 @@ class WorkShapesListView(SliderListView):
 
     driverPoseRequested = Signal(str)
     driverRemovalRequested = Signal(str, str)
+    _enable_slider_value_edit = True
 
     def __init__(
         self,
@@ -544,6 +570,9 @@ class WorkShapesListView(SliderListView):
         # button follows panel width changes instead of staying at the initial
         # item width (QListView defaults to Fixed resize mode).
         self.setResizeMode(QListView.Adjust)
+        # Slider double-clicks are the only path that opens the value editor;
+        # name double-clicks keep their rename behavior.
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._collapsed_driver_names = set()
         self._driver_editor = None
         self._driver_press_active = False
@@ -894,6 +923,21 @@ class ShapeTreeWidget(SliderDragViewMixin, QTreeWidget):
     _shapes_tree_layout = True
     _panel_icon_slots = 2
     _uses_native_branch_indicator = False
+    _enable_slider_value_edit = True
+
+    def __init__(self, parent=None) -> None:
+        """Create the shapes tree with slider-only value editing enabled.
+
+        Parameters:
+            parent (QWidget, optional): Parent widget.
+
+        Returns:
+            None
+        """
+        super().__init__(parent)
+        # Slider double-clicks are the only path that opens the value editor;
+        # name double-clicks keep their pose behavior.
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
@@ -1012,6 +1056,21 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
     _shapes_tree_layout = False
     _panel_icon_slots = 0
     _uses_native_branch_indicator = False
+    _enable_slider_value_edit = True
+
+    def __init__(self, parent=None) -> None:
+        """Create the primaries tree with slider-only value editing enabled.
+
+        Parameters:
+            parent (QWidget, optional): Parent widget.
+
+        Returns:
+            None
+        """
+        super().__init__(parent)
+        # Slider double-clicks are the only path that opens the value editor;
+        # name double-clicks keep their pose behavior.
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
@@ -1238,9 +1297,12 @@ class SplitPrimaryAssignmentsView(SliderDragViewMixin, QTreeWidget):
     _primary_tree_layout = True
     _primary_slider_layout = False
     _uses_native_branch_indicator = False
+    _enable_slider_value_edit = True
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        # Slider double-clicks are the only path that opens the value editor.
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._source_model = None
         self._assignments: Dict[str, str] = {}
         self._search_terms: List[str] = []

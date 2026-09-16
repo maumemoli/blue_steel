@@ -264,6 +264,9 @@ Row painting and slider-drag logic.
 - `SliderItemDelegate(QStyledItemDelegate)` — paints a shape row (name, value bar, mute/lock/connected-mesh/work-edit icons) and owns the value drag interaction.
   - Signals: `valueDragStarted()`, `valueDragEnded()`, `valueDragDelta(float)`, `valueDragSelectionContext(bool)`, `muteToggleRequested(str, bool)`, `lockToggleRequested(str, bool)`, `connectedMeshRequested(str)`, `workEditModeToggleRequested(str, bool)`.
   - `_is_primary_tree_view()` — detect which view kind this delegate serves.
+  - `_slider_value_edit_enabled()` — whether the hosting view opted into slider double-click value editing (`_enable_slider_value_edit`); always `False` for read-only views (`_sliders_read_only`).
+  - `_allows_value_editor_without_view_opt_in()` — override hook for delegates with their own numeric field.
+  - `value_rect_for(index, option)` — slider/value rectangle used by the views for double-click hit-testing.
   - `sizeHint(option, index)`
   - `__init__(parent=None)`
   - `_open_drag_undo_chunk()` / `_close_drag_undo_chunk()` — wrap a drag in one undo chunk.
@@ -274,7 +277,8 @@ Row painting and slider-drag logic.
   - `_is_lock_icon_visible(index)` / `_shows_mute_icon(index)` / `_is_work_edit_mode_icon_visible(index)` / `_panel_reserved_icon_slots()` / `_reserved_icon_slots(index)` — visibility helpers.
   - `_draw_icon_pixmap(painter, icon_rect, icon)`
   - `paint(painter, option, index)` — main paint routine.
-  - `createEditor(parent, option, index)` / `setEditorData(...)` / `setModelData(...)` / `updateEditorGeometry(...)` — inline editing.
+  - `createEditor(parent, option, index)` / `setEditorData(...)` / `setModelData(...)` / `updateEditorGeometry(...)` — inline editing. `createEditor` only builds an editor when the row is editable and the view opted in (or the delegate allows editing without the opt-in).
+  - `editorEvent(event, model, option, index)` — handle icon clicks within rows; a double-click on the value rect of an opted-in view enters "value set mode" and other double-clicks fall through so the view pose/rename handlers still run.
   - `_set_drag_value_from_pos(model, x_pos)` — map a pointer x to a value.
   - `_resolve_drag_targets(index)` — decide which shapes move together (linked/selection).
   - `_start_drag(model, index, event_pos, value_rect)` — begin a drag.
@@ -287,6 +291,7 @@ Row painting and slider-drag logic.
 
 - `SplitMapWeightSliderDelegate(SliderItemDelegate)` — variant for split-map weight rows.
   - `sizeHint(...)`, `_row_rects(...)`, `_area_rects(...)`, `paint(...)`, `editorEvent(...)`, `updateEditorGeometry(...)`, `_shows_mute_icon(...)`, `_panel_reserved_icon_slots()`.
+  - Overrides `_allows_value_editor_without_view_opt_in()` so its dedicated numeric field keeps editing even though `SplitMapWeightsList` does not opt into slider editing.
 
 ---
 
@@ -301,9 +306,14 @@ Views and drag/keyboard behavior.
 
 - `SliderDragViewMixin` — shared mouse handling for slider-style views. Cooperates with `SliderItemDelegate.external_drag_*`.
   - `_slider_delegate()` — return the delegate (handles list vs tree column delegates).
+  - `_sliders_read_only` — class default `False`; set `True` on a view to make its sliders display-only (no value scrubbing). Icon clicks and name selection/drag still work.
   - `_resolve_icon_click(event_pos)` — map a click to an icon action (default `None`).
   - `_emit_icon_click(payload)` — emit the resolved icon action.
-  - `mousePressEvent(event)` / `mouseMoveEvent(event)` / `mouseReleaseEvent(event)` / `mouseDoubleClickEvent(event)` — icon clicks + delegate drag forwarding.
+  - `mousePressEvent(event)` / `mouseMoveEvent(event)` / `mouseReleaseEvent(event)` / `mouseDoubleClickEvent(event)` — icon clicks + delegate drag forwarding. `mousePressEvent` skips `external_drag_start` when `_sliders_read_only` is set. `mouseDoubleClickEvent` also enters "value set mode" (opens the numeric editor via `view.edit(index)`) when a view that sets `_enable_slider_value_edit` receives a double-click inside the slider value rect, consuming the event so pose/rename handlers do not fire.
+
+Views that participate in slider double-click value editing set `_enable_slider_value_edit = True` and `setEditTriggers(NoEditTriggers)`: `PrimaryTreeWidget` (and its `PrimaryDropTreeWidget` subclass / Sliders Drop Box), `ShapeTreeWidget`, `WorkShapesListView`, and `SplitPrimaryAssignmentsView`.
+
+The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`: its sliders display values and follow scene updates but cannot be scrubbed or value-edited. `_enable_slider_value_edit` is not set there, and a read-only view also forces the delegate's `_slider_value_edit_enabled()` to `False`.
 
 - `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`.
   - `__init__(drop_callback, remove_callback=None, parent=None)`
@@ -354,6 +364,7 @@ Views and drag/keyboard behavior.
   - `startDrag(supported_actions)`
   - `_drop_group_name(pos)`
   - `dragEnterEvent` / `dragMoveEvent` / `dropEvent` / `mousePressEvent`
+  - Double-clicking a child primary's name sets that shape to its pose (handled by `_on_split_primaries_item_double_clicked`); double-clicking the slider bar opens the numeric value editor.
 
 ---
 
@@ -603,6 +614,7 @@ Shared base and utilities for all feature mixins.
 - `_on_split_map_weight_selection_changed(current, previous)` / `_update_split_map_weight_operation_buttons()`
 - `_on_split_primary_search_changed(terms)` / `_on_split_primaries_tree_data_changed(...)`
 - `_on_primary_split_group_changed(group_name, primary_names)`
+- `_on_split_primaries_item_double_clicked(item, column)` — set a double-clicked child primary to its pose.
 - `_show_split_primaries_context_menu(pos)`
 - `_split_selected_shapes(primary_names)`
 - `_on_split_group_map_selected(split_map_name)` / `_on_split_group_selection_changed(group_name)` / `_on_split_map_selection_changed(split_map_name)`
@@ -686,6 +698,11 @@ A slider drag is split between the view and the delegate:
 
 - `views.py::SliderDragViewMixin` forwards mouse press/move/release to the
   delegate's `external_drag_start/move/end` API and checks `is_drag_active()`.
+- `views.py::SliderDragViewMixin.mouseDoubleClickEvent` implements "value set
+  mode": for views with `_enable_slider_value_edit`, a double-click inside the
+  slider value rect calls `view.edit(index)` and consumes the event so the
+  view's pose/rename double-click handlers do not also fire. `value_rect_for()`
+  on the delegate provides the hit rectangle.
 - `delegates.py::SliderItemDelegate` owns the drag math (`_start_drag`,
   `_end_drag`, `_set_drag_value_from_pos`, `_resolve_drag_targets`) and installs
   a global `_DragEventFilter` so dragging keeps working when the cursor leaves
@@ -835,9 +852,11 @@ MainWindow (central widget)
 | `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `BlueSteelEditor.get_primary_shapes()` | Editor tab → Primaries panel |
 | `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
 | `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
-| `WorkShapesListView` (`work_shapes_view`) | `SliderItemDelegate` | `_work_shape_model` (`WorkShapeItemsModel`) | Editor tab → Work Shapes (third column) |
-| `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column) |
+| `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `_work_shape_model` (`WorkShapeItemsModel`) | Editor tab → Work Shapes (third column) |
+| `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
 | `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |
 | `SplitGroupsTree` (`split_groups_tree`) | default `QTreeWidget` delegate | `QTreeWidget` items | Split Settings tab → Split Groups |
 | `SplitMapsTree` (`split_maps_list`) | `SplitMapStatusDelegate` | `QTreeWidget` items | Split Settings tab → Split Maps browser |
 | `SplitMapWeightsList` (`split_map_weights_list`) | `SplitMapWeightSliderDelegate` | `QListWidget` items | Split Settings tab → Split Map Editor |
+
+Slider double-click value editing ("value set mode") is enabled only on views that set `_enable_slider_value_edit = True`: `PrimaryTreeWidget`, `PrimaryDropTreeWidget`, `ShapeTreeWidget` (primary rows only), `WorkShapesListView`, and `SplitPrimaryAssignmentsView`. These views also use `NoEditTriggers` so the only path that opens the inline numeric editor is the slider-area double-click handled by `SliderDragViewMixin.mouseDoubleClickEvent`. Name-area double-clicks keep their existing action: pose for `PrimaryTreeWidget`/`ShapeTreeWidget`, rename for `WorkShapesListView`, and pose for child primary rows of `SplitPrimaryAssignmentsView` (`_on_split_primaries_item_double_clicked`).

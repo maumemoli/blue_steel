@@ -110,6 +110,44 @@ class SliderItemDelegate(QStyledItemDelegate):
         parent_view = self.parent()
         return bool(getattr(parent_view, "_primary_tree_layout", False))
 
+    def _slider_value_edit_enabled(self) -> bool:
+        """Return whether the hosting view opted into slider double-click editing.
+
+        Only views that explicitly set ``_enable_slider_value_edit`` expose the
+        "value set mode" numeric editor when the slider bar is double-clicked.
+        Read-only slider views (``_sliders_read_only``) never expose it.
+
+        Returns:
+            bool: True when the parent view allows slider value editing.
+        """
+        if getattr(self.parent(), "_sliders_read_only", False):
+            return False
+        return bool(getattr(self.parent(), "_enable_slider_value_edit", False))
+
+    def _allows_value_editor_without_view_opt_in(self) -> bool:
+        """Allow subclasses to expose a value editor without the view opt-in.
+
+        The split-map weight delegate owns a dedicated numeric field and keeps
+        editing it even though its list does not opt into slider editing.
+
+        Returns:
+            bool: True when the delegate provides its own value editor path.
+        """
+        return False
+
+    def value_rect_for(self, index: QModelIndex, option) -> QRect:
+        """Return the slider/value rectangle for ``index`` using ``option`` geometry.
+
+        Parameters:
+            index (QModelIndex): Row index whose value area is requested.
+            option: Geometry option carrying at least ``rect``.
+
+        Returns:
+            QRect: The slider/value hit rectangle.
+        """
+        value_rect, _ = self._area_rects(option, index)
+        return value_rect
+
     def sizeHint(self, option, index):  # noqa: N802
         if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
             return QSize(option.rect.width(), 28)
@@ -441,9 +479,9 @@ class SliderItemDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):  # noqa: N802
         if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
             return None
-        if self._is_primary_tree_view() or bool(getattr(self.parent(), "_primary_slider_layout", False)):
-            return None
         if not bool(index.model().data(index, ShapeItemsModel.EditableRole)):
+            return None
+        if not (self._slider_value_edit_enabled() or self._allows_value_editor_without_view_opt_in()):
             return None
         editor = QLineEdit(parent)
         editor.setFrame(False)
@@ -636,13 +674,20 @@ class SliderItemDelegate(QStyledItemDelegate):
             return super().editorEvent(event, model, option, index)
 
         if event.type() == QEvent.MouseButtonDblClick:
-            # Open the inline value editor only on the slider area; always consume
-            # so Qt does not start its own name-edit on editable rows.
+            # Open the inline value editor only on the slider area of views that
+            # opted into "value set mode". Other double-clicks fall through so
+            # the view's doubleClicked/itemDoubleClicked pose or rename handlers
+            # still run on the name area.
             value_rect, _ = self._area_rects(option, index)
             parent = self.parent()
-            if value_rect.contains(event.pos()) and isinstance(parent, QAbstractItemView):
+            if (
+                self._slider_value_edit_enabled()
+                and value_rect.contains(event.pos())
+                and isinstance(parent, QAbstractItemView)
+            ):
                 parent.edit(index)
-            return True
+                return True
+            return super().editorEvent(event, model, option, index)
 
         return super().editorEvent(event, model, option, index)
 
@@ -813,6 +858,17 @@ class SplitMapWeightSliderDelegate(SliderItemDelegate):
     def _area_rects(self, option, index):
         slider_rect, _value_field_rect, text_rect = self._row_rects(option, index)
         return slider_rect, text_rect
+
+    def _allows_value_editor_without_view_opt_in(self) -> bool:
+        """Keep the split-map numeric field editable without a view opt-in.
+
+        Returns:
+            bool: Always True for the split-map weight delegate.
+        """
+        # The split-map weight list owns a dedicated numeric field, so keep its
+        # double-click editing even though the list does not opt into slider
+        # value editing.
+        return True
 
     def paint(self, painter: QPainter, option, index) -> None:
         value = max(0.0, min(1.0, float(index.data(ShapeItemsModel.ValueRole) or 0.0)))
