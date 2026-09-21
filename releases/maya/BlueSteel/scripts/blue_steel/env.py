@@ -74,14 +74,6 @@ class Environment:
     DELTA_MAP_STRING_IDENTIFIER: str = "deltaMap"
     SHAPE_NAME_STR: str = "<<SHAPE_NAME>>"
     CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER: str = "customShapesColor"
-    SHAPE_CUSTOM_COLORS = {
-                            "Red": "#e74c3c",
-                            "Blue": "#4a90d9",
-                            "Green": "#4ba66d",
-                            "Yellow": "#f1c40f",
-                            "Pink": "#e84393",
-                            "Purple": "#9b59b6",
-                        }
 
     # TARGET GROUP NAMES
     PRIMARY_SHAPES_GRP_NAME: str = "Primaries_GRP"
