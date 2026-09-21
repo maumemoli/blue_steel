@@ -15,7 +15,7 @@ value has to be queried on every access.
 import os
 import sys
 from dataclasses import dataclass, field
-
+from pathlib import Path
 from maya import cmds
 
 
@@ -35,7 +35,12 @@ def _get_module_path():
 
 def _get_icons_path():
     module_path = _get_module_path()
-    return os.path.join(module_path, "icons") if module_path else ""
+    if module_path is None:
+        file_path = Path(__file__).resolve()
+        if len(file_path.parents) >= 2:
+            module_path = file_path.parents[2]
+    icons_path = os.path.join(module_path, "icons")
+    return os.path.join(module_path, "icons") if os.path.exists(icons_path) else ""
 
 
 @dataclass(frozen=True)
