@@ -1,54 +1,24 @@
-import json
-from . import env
+
 from .version import Version
 from maya import cmds
+import sys
+from .updater import get_latest_version
 
-try:
-    import requests
-except ImportError:
-    requests = None
-    from urllib import request
+__maya_version__ = int(cmds.about(version=True))
+__python_version__ = sys.version_info.major
 
-
-if env.ENVIRONMENT.MAYA_VERSION < 2022 or env.ENVIRONMENT.PYTHON_VERSION < 3:
+if __maya_version__ < 2022 or __python_version__ < 3:
     raise RuntimeError("BlueSteel requires Maya 2022 or higher with Python 3.x")
+
 __url__ = "https://api.github.com/repos/maumemoli/blue_steel/releases/latest"
 __update_url__ = "https://github.com/maumemoli/blue_steel/releases/latest"
-
-def get_latest_version()-> str:
-    """
-    Check if the current version of BlueSteel is the latest one available on GitHub.
-
-    Returns:
-        str: The latest version available on GitHub. If the current version is the latest,
-        it returns the current version.
-    """
-    try:
-        if requests is not None:
-            response = requests.get(__url__)
-            if response.status_code == 200:
-                latest_version = response.json()["tag_name"]
-                return latest_version
-            else:
-                print("Could not check for updates. Status code: {}".format(response.status_code))
-                return None
-        else:
-            with request.urlopen(__url__) as response:
-                if response.status == 200:
-                    data = json.loads(response.read())
-                    latest_version = data["tag_name"]
-                    return latest_version
-                else:
-                    print("Could not check for updates. Status code: {}".format(response.status))
-                    return None
-    except Exception as e:
-        print("An error occurred while checking for updates: {}".format(e))
-        return None
-
-
-__version__ = Version(env.ENVIRONMENT.VERSION)
+__version__ = Version("v1.6.5-beta1")
 __author__ = "Maurizio Memoli"
-__latest_version__ = Version(get_latest_version() or env.ENVIRONMENT.VERSION)
+__latest_version__ = Version(get_latest_version(__url__)) if get_latest_version(__url__) else None
+
+
+
+
 
 
 def show():

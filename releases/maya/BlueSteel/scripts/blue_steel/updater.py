@@ -18,10 +18,14 @@ import tempfile
 import zipfile
 import logging
 
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
+    from urllib import request
+import json
 from maya import cmds
 
-from . import __url__, __version__
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,15 +35,44 @@ _ASSET_NAME_TEMPLATE = "BlueSteel-{tag}.zip"
 # Top-level folder inside the release asset zip.
 _ZIP_ROOT_FOLDER = "BlueSteel"
 
+def get_latest_version(url: str) -> str:
+    """
+    Check if the current version of BlueSteel is the latest one available on GitHub.
+
+    Returns:
+        str: The latest version available on GitHub. If the current version is the latest,
+        it returns the current version.
+    """
+    try:
+        if requests is not None:
+            response = requests.get(url)
+            if response.status_code == 200:
+                latest_version = response.json()["tag_name"]
+                return latest_version
+            else:
+                print("Could not check for updates. Status code: {}".format(response.status_code))
+                return None
+        else:
+            with request.urlopen(url) as response:
+                if response.status == 200:
+                    data = json.loads(response.read())
+                    latest_version = data["tag_name"]
+                    return latest_version
+                else:
+                    print("Could not check for updates. Status code: {}".format(response.status))
+                    return None
+    except Exception as e:
+        print("An error occurred while checking for updates: {}".format(e))
+        return None
 
 def _get_bluesteel_root() -> str:
     """Return the local BlueSteel module root directory."""
     return cmds.moduleInfo(moduleName="blue_steel_maya", path=True)
 
 
-def _fetch_release_info() -> dict:
+def _fetch_release_info(url: str) -> dict:
     """Return the JSON payload for the latest GitHub release."""
-    resp = requests.get(__url__, timeout=30)
+    resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -104,10 +137,11 @@ def _extract_zip(zip_bytes: bytes, dest: str) -> None:
         LOGGER.info("Extracted %d files into %s", extracted, dest)
 
 
-def update(force: bool = False) -> str:
+def update(url: str, version: str, force: bool = False) -> str:
     """Download and install the latest BlueSteel release.
 
     Args:
+        url: The URL to fetch the latest release information from.
         force: If *True*, re-install even when the local version already
             matches the latest release.
 
@@ -115,16 +149,16 @@ def update(force: bool = False) -> str:
         The version string that was installed (or the current version if
         no update was needed).
     """
-    release = _fetch_release_info()
+    release = _fetch_release_info(url)
     latest_tag = release.get("tag_name", "")
     if not latest_tag:
         raise RuntimeError("Could not determine the latest release tag.")
 
-    if not force and latest_tag == __version__:
-        msg = "Already up-to-date ({}).".format(__version__)
+    if not force and latest_tag == version:
+        msg = "Already up-to-date ({}).".format(version)
         LOGGER.info(msg)
         cmds.warning(msg)
-        return __version__
+        return version
 
     asset_url = _find_asset_url(release, latest_tag)
     zip_bytes = _download_asset(asset_url)
@@ -159,7 +193,7 @@ def update(force: bool = False) -> str:
         raise
 
     msg = "BlueSteel updated from {} to {}. Restart Maya to use the new version.".format(
-        __version__, latest_tag
+        version, latest_tag
     )
     LOGGER.info(msg)
     cmds.warning(msg)

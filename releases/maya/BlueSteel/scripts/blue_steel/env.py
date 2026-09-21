@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from maya import cmds
-
+from . import __version__, __url__, __update_url__, __latest_version__, __maya_version__, __python_version__
 
 def dynamic_geometry_attributes_exists():
     """Return whether the dynamicGeometryAttributes plugin is registered."""
@@ -49,11 +49,11 @@ class Environment:
 
     # ENVIRONMENT VARIABLES
     SEPARATOR: str = "_"
-    VERSION: str = "v1.6.5-beta1"
+    VERSION: str = __version__
     EDITOR_NAME_SUFFIX: str = "blueSteelEditor"
     ICONS_PATH: str = field(default_factory=_get_icons_path)
-    MAYA_VERSION: int = field(default_factory=lambda: int(cmds.about(version=True)))
-    PYTHON_VERSION: int = field(default_factory=lambda: sys.version_info.major)
+    MAYA_VERSION: int = __maya_version__
+    PYTHON_VERSION: int = __python_version__
 
     # ATTR
     MAIN_BLENDSHAPE_STRING_IDENTIFIER: str = "mainBlendShape"

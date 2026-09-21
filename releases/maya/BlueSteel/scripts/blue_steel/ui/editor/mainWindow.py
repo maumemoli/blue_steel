@@ -34,6 +34,7 @@ from .models import (
 from .qt import (
     QAction,
     QGroupBox,
+    QHBoxLayout,
     QIcon,
     QLabel,
     QLineEdit,
@@ -41,10 +42,12 @@ from .qt import (
     QPushButton,
     QSize,
     QSplitter,
+    QStyle,
     QTabWidget,
     QTimer,
     QTreeWidgetItem,
     QWidget,
+    Qt,
     get_maya_main_window,
 )
 from .views import (
@@ -256,6 +259,49 @@ class MainWindow(
         self._shutdown_window()
 
 
+def _build_dismissible_status_widget(status_label: QLabel) -> QWidget:
+    """Wrap a status label with a circular close button.
+
+    The returned widget is a horizontal container holding ``status_label``
+    followed by a small black circular button showing the standard Qt close
+    cross. Clicking the button hides the notification. The circle is sized 10%
+    larger than the label text height so its glyph and the text stay visually
+    balanced.
+
+    Args:
+        status_label (QLabel): The update notification label to make dismissible.
+
+    Returns:
+        QWidget: A container with the label and its close button.
+
+    Example:
+        >>> container = _build_dismissible_status_widget(QLabel("Update available"))
+    """
+    diameter = max(1, round(status_label.fontMetrics().height() * 1.1))
+
+    close_button = QPushButton(status_label)
+    close_button.setFixedSize(diameter, diameter)
+    close_button.setIconSize(QSize(diameter, diameter))
+    close_button.setCursor(Qt.PointingHandCursor)
+    close_button.setToolTip("Dismiss")
+    close_button.setIcon(status_label.style().standardIcon(QStyle.SP_TitleBarCloseButton))
+    close_button.setStyleSheet(
+        "QPushButton { background-color: black; border: none;"
+        f" border-radius: {diameter // 2}px; padding: 0px; }}"
+        "QPushButton:hover { background-color: #333333; }"
+    )
+
+    container = QWidget(status_label.parentWidget())
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    layout.addWidget(status_label)
+    layout.addWidget(close_button, 0, Qt.AlignVCenter)
+
+    close_button.clicked.connect(container.hide)
+    return container
+
+
 def show() -> MainWindow:
     """Show the rewritten Blue Steel editor window.
 
@@ -296,20 +342,32 @@ def show() -> MainWindow:
 
     maya_main_window = get_maya_main_window()
     import blue_steel
+
     status_label = None
-    if blue_steel.__version__  < blue_steel.__latest_version__:
-        url = blue_steel.__update_url__
+    update_url = blue_steel.__update_url__
+    if blue_steel.__latest_version__ is None:
+        status_label = QLabel(
+            f'Unable to determine the latest version. '
+            f'<a href="{update_url}" style="color: #e7b45a;"><strong>Check For Updates</strong></a>'
+        )
+    elif blue_steel.__version__  < blue_steel.__latest_version__:
+        
         status_label = QLabel(
             f'Update available: v.{blue_steel.__latest_version__} Download '
-            f'<a href="{url}" style="color: #e7b45a;"><strong>Here</strong></a>'
+            f'<a href="{update_url}" style="color: #e7b45a;"><strong>Here</strong></a>'
         )
         status_label.setStyleSheet("color: #e7b45a;")
         status_label.setOpenExternalLinks(True)
+    else:
+        status_label = QLabel(
+            f'Blue Steel is up to date.'
+        )
+    
     WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
     WINDOW.resize(1200, max(720, WINDOW.sizeHint().height()))
     WINDOW.show(dockable=True, area="right", floating=True)
     if status_label is not None:
-        WINDOW.status_bar.addPermanentWidget(status_label)
+        WINDOW.status_bar.addPermanentWidget(_build_dismissible_status_widget(status_label))
 
     return WINDOW
 
