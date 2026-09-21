@@ -485,31 +485,6 @@ class BlueSteelEditor(object):
         cmds.setAttr(f"{base_shape[0]}.displayColors", 1)
         cmds.setAttr(f"{base_shape[0]}.materialBlend", 3)
 
-    def _create_delta_heat_map_node(self):
-        """
-        Create a single delta heat map node.
-        """
-        # make sure the plugin is loaded
-        if cmds.pluginInfo("deltaMap", query=True, loaded=True) is False:
-            cmds.loadPlugin("deltaMap")
-        # check if the node exists first
-        if self.delta_map:
-            return
-        delta_node_name = f"{self.editor_base_name}_{ENVIRONMENT.DELTA_MAP_STRING_IDENTIFIER}"
-        delta_node = cmds.deformer(self.base_mesh, type="deltaMap", name=delta_node_name)[0]
-        attrUtils.add_message_attr(self.container.name, ENVIRONMENT.DELTA_MAP_STRING_IDENTIFIER, delta_node)
-        self.container.add_member(delta_node)
-        heat_base_shapes = cmds.listRelatives(self.heat_map_mesh, shapes=True, fullPath=True) or None
-        if heat_base_shapes is None:
-            raise ValueError(f"Heat map mesh '{self.heat_map_mesh}' does not have any shapes.")
-        heat_map_base_shape = None
-        for shape in heat_base_shapes:
-            if cmds.getAttr(f"{shape}.intermediateObject"):
-                heat_map_base_shape = shape
-                break
-        cmds.connectAttr(f"{self.heat_map_mesh}.outMesh", f"{delta_node}.deformedMesh", force=True)
-        cmds.connectAttr(f"{heat_map_base_shape}.outMesh", f"{delta_node}.baseMesh", force=True)
-
     def _create_heat_map_blendshape(self):
         """
         Create the blendshape node with an empty target.

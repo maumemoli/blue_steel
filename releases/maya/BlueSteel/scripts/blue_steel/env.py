@@ -72,7 +72,6 @@ class Environment:
     HEAT_MAP_MESH_STRING_IDENTIFIER: str = "heatMapMesh"
     DGA_VISUALIZER_STRING_IDENTIFIER: str = "dgaVisualizer"
     DGA_DELTA_STRING_IDENTIFIER: str = "dgaDelta"
-    DELTA_MAP_STRING_IDENTIFIER: str = "deltaMap"
     SHAPE_NAME_STR: str = "<<SHAPE_NAME>>"
     CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER: str = "customShapesColor"
 
