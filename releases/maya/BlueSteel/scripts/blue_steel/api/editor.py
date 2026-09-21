@@ -3138,7 +3138,7 @@ class BlueSteelEditor(object):
         if not cmds.objExists(mesh_name):
             raise ValueError(f"Mesh {mesh_name} does not exist")
 
-        container_name = f"{editor_name}_blueSteelEditor"
+        container_name = f"{editor_name}_{ENVIRONMENT.EDITOR_NAME_SUFFIX}"
         container = Container.create(container_name)
         container_name = container.name
         # node network container
@@ -3247,9 +3247,9 @@ class BlueSteelEditor(object):
         Returns:
             int: The index of the directory
         Example:
-            >>> dir_index = BlueSteelEditor.get_shape_group_index("myBlueSteelShapes_GRP")
+            >>> dir_index = BlueSteelEditor.get_shape_editor_directory_index("myBlueSteelShapes_GRP")
         """
-        if container_name.endswith("_blueSteelEditor"):
+        if container_name.endswith(f"_{ENVIRONMENT.EDITOR_NAME_SUFFIX}"):
             container_name = "_".join(container_name.split("_")[:-1])
         directory_name = f"{container_name}_Blendshapes_GRP"
         # print(f"Searching for directory name: {directory_name}")
@@ -3324,7 +3324,7 @@ class BlueSteelEditor(object):
                 new_node_name = f"{new_name}_{link}"
                 cmds.rename(node_name, new_node_name)
         # renaming the container
-        new_container_name = cmds.rename(old_editor.container.name, f"{new_name}_blueSteelEditor")
+        new_container_name = cmds.rename(old_editor.container.name, f"{new_name}_{ENVIRONMENT.EDITOR_NAME_SUFFIX}")
         return new_container_name
             
             
@@ -4408,7 +4408,7 @@ class BlueSteelEditor(object):
                 raise ValueError(f"Split map {split_map} is not normalized. Please normalize it before splitting shapes.")
         # let's time it
         start_time = time.time()
-        editor_name = f"{self.name.replace('_blueSteelEditor', '')}_split"
+        editor_name = f"{self.name.replace(f'_{ENVIRONMENT.EDITOR_NAME_SUFFIX}', '')}_split"
         count = ""
         while cmds.objExists(f"{editor_name}{count}"):
             if count == "":

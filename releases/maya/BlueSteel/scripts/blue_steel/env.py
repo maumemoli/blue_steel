@@ -50,6 +50,7 @@ class Environment:
     # ENVIRONMENT VARIABLES
     SEPARATOR: str = "_"
     VERSION: str = "v1.6.5-beta1"
+    EDITOR_NAME_SUFFIX: str = "blueSteelEditor"
     ICONS_PATH: str = field(default_factory=_get_icons_path)
     MAYA_VERSION: int = field(default_factory=lambda: int(cmds.about(version=True)))
     PYTHON_VERSION: int = field(default_factory=lambda: sys.version_info.major)
