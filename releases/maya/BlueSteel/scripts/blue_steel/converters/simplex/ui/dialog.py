@@ -7,7 +7,7 @@ from ..commands import (get_available_simplex_nodes,
                         simplex_plugin_loaded,)
 import maya.OpenMayaUI as omui
 
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6 import QtCore, QtGui, QtWidgets
     from shiboken6 import wrapInstance
 else:

@@ -12,21 +12,12 @@ Example:
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Set
+from typing import Dict, List, Optional
 import os
-import sys
-import traceback
 
 from maya import cmds
-from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
 
 from ... import env
-from ...api.editor import BlueSteelEditor
-from ...api.mayaUtils import undoable
-from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker, ControllerTracker
-from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
-from ...converters.simplex import commands as simplex_commands
-from ...mmtools import ui
 from ..common.frameLayout import FrameLayout
 from ..common.icons import (
     ADD_ICON,
@@ -35,7 +26,6 @@ from ..common.icons import (
     DOWN_ARROW_ICON,
     DUPLICATE_ICON,
     MMTOOLS_ICON,
-    MUTE_ON_ICON,
     REFRESH_ICON,
     RENAME_ICON,
     MUTE_OFF_ICON,
@@ -44,129 +34,62 @@ from ..common.icons import (
     ZERO_VALUE_ICON,
     AUTO_POSE_ICON,
     ADD_AT_POSE_ICON,
-    LOCK_ON_ICON,
     LOCK_OFF_ICON,
     HEAT_MAP_ICON,
     CONTROLLER_LAYOUT_ICON,
-    CONNECTED_MESH_ENABLED_ICON,
-    CONNECTED_MESH_DISABLED_ICON,
     COMPARE_MESH_ICON,
     HUD_ICON,
-    NORMALIZE_ICON,
     MASK_ICON,
-    EDIT_ICON,
-    EDIT_SPLIT_MAP_ICON,
-    COPY_WEIGHTS_ICON,
-    PASTE_WEIGHTS_ICON,
-    PASTE_INVERTED_WEIGHTS_ICON,
-    PASTE_ADD_WEIGHTS_ICON,
-    PASTE_MINUS_WEIGHTS_ICON,
-    PASTE_MULTIPLY_WEIGHTS_ICON,
-    SOFT_MOD_ICON,
     FILTER_ACTIVE_VALUES_ICON,
-    SPLIT_ICON,
 )
 from .constants import (
-    PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_NAME_ROLE,
-    PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_CUSTOM_COLORS,
     SPLITTER_HANDLE_WIDTH,
-    TYPE_GROUP_ORDER,
-    shape_type_group_name,
 )
-from .mainWindowMixin import MainWindowMixin, target_shape_names
-from .controllerLayoutWindow import ControllerLayoutWindow
-from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate, WorkShapeItemDelegate
-from .models import (
-    PrimaryShapesProxyModel,
-    PrimarySubsetProxyModel,
-    ShapeItemsModel,
-    ShapesFilterProxyModel,
-    WorkShapeItemsModel,
-    normalized_search_terms,
-)
+from .mainWindowMixin import MainWindowMixin
+from .delegates import SliderItemDelegate, WorkShapeItemDelegate
 from .qt import (
     QAbstractItemView,
-    QAction,
     QActionGroup,
-    QAbstractListModel,
-    QCheckBox,
-    QColor,
     QComboBox,
-    QCursor,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleValidator,
-    QDrag,
-    QEvent,
-    QFileDialog,
     QGroupBox,
     QGuiApplication,
     QHBoxLayout,
-    QHeaderView,
     QIcon,
     QInputDialog,
-    QItemSelectionModel,
     QLabel,
     QLayout,
-    QLineEdit,
-    QListView,
-    QListWidget,
-    QListWidgetItem,
-    QMainWindow,
     QMenu,
-    QMenuBar,
-    QMessageBox,
-    QMimeData,
-    QModelIndex,
     QPainter,
     QPalette,
-    QPersistentModelIndex,
     QPixmap,
     QPoint,
     QPolygon,
     QPushButton,
-    QRect,
     QSize,
     QSizePolicy,
-    QSortFilterProxyModel,
     QSplitter,
     Splitter,
     QStatusBar,
-    QStyle,
-    QStyledItemDelegate,
     QTabWidget,
     QTimer,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
     Qt,
-    Signal,
-    color_swatch_icon,
-    get_maya_main_window,
-    shape_custom_color_to_qcolor,
 )
 from .views import (
     PrimaryDropTreeWidget,
-    PrimaryTreeItem,
     PrimaryTreeWidget,
     ShapeTreeWidget,
     SliderListView,
-    SplitMapWeightsList,
-    SplitPrimaryAssignmentsView,
     WorkShapesListView,
 )
 from .widgets import (
     InlineWorkshapeRenameEditor,
-    SplitGroupsTree,
-    SplitMapStatusDelegate,
-    SplitMapsTree,
     TokenSearchBar,
 )
-
-
 
 
 class _ColorFilterRow(QWidget):
@@ -317,8 +240,8 @@ class EditorUiMixin(MainWindowMixin):
         self.heat_map_switch.setFixedHeight(24)
         self.heat_map_switch.setFixedWidth(self.heat_map_switch.sizeHint().width() + 2)
         self.heat_map_switch.setToolTip("Toggle heat map visualization for selected shape targets")
-        self.heat_map_switch.setVisible(bool(env.DGA_NODES_SUPPORTED))
-        self.heat_map_switch.setEnabled(bool(env.DGA_NODES_SUPPORTED))
+        self.heat_map_switch.setVisible(bool(env.ENVIRONMENT.DGA_NODES_SUPPORTED))
+        self.heat_map_switch.setEnabled(bool(env.ENVIRONMENT.DGA_NODES_SUPPORTED))
         self.heat_map_switch.setStyleSheet(
             """
             QPushButton:checked {
@@ -751,8 +674,8 @@ class EditorUiMixin(MainWindowMixin):
 
     def _apply_primaries_branch_icons(self) -> None:
         """Use fixed-size item icons for folders; hide branch glyphs tied to indentation."""
-        closed_icon = os.path.abspath(os.path.join(env.ICONS_PATH, "tree_chevron_right.svg")).replace("\\", "/")
-        open_icon = os.path.abspath(os.path.join(env.ICONS_PATH, "tree_chevron_down.svg")).replace("\\", "/")
+        closed_icon = os.path.abspath(os.path.join(env.ENVIRONMENT.ICONS_PATH, "tree_chevron_right.svg")).replace("\\", "/")
+        open_icon = os.path.abspath(os.path.join(env.ENVIRONMENT.ICONS_PATH, "tree_chevron_down.svg")).replace("\\", "/")
         if os.path.exists(closed_icon):
             self._primary_tree_folder_closed_icon = QIcon(closed_icon)
         if os.path.exists(open_icon):

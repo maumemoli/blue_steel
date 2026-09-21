@@ -2,7 +2,7 @@
 Here go all the utility functions for the logic module.
 """
 from .. import env
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
 
 def combine_lists(lists:list, separator=SEPARATOR):

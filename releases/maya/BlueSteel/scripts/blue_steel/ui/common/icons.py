@@ -4,12 +4,12 @@ import traceback
 from ... import env
 from .iconTools import desaturate_icon, make_toggle, colorize_icon
 
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6.QtGui import QIcon
 
 else:
     from PySide2.QtGui import QIcon
-custom_icons_path = os.path.abspath(os.path.join(env.ICONS_PATH))
+custom_icons_path = os.path.abspath(os.path.join(env.ENVIRONMENT.ICONS_PATH))
 
 def join_icons_path(icon_name):
     return os.path.join(custom_icons_path, icon_name)

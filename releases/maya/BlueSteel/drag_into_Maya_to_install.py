@@ -116,7 +116,7 @@ def onMayaDroppedPythonFile(*args):
     spec = importlib.util.spec_from_file_location("env", env_path)
     env = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(env)
-    version = env.VERSION
+    version = env.ENVIRONMENT.VERSION
     template_mod_file = os.path.join(mod_dir, "blue_steel_template.mod")
     shelf_file = os.path.join(mod_dir, "shelves", "shelf_BlueSteel.mel")
     with open(template_mod_file, "r") as fp:

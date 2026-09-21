@@ -36,7 +36,14 @@ def load_ui_modules():
         module.__path__ = []
         modules[module.__name__] = module
     env = types.ModuleType(root + ".env")
-    env.MAYA_VERSION = MAYA_VERSION
+    env.ENVIRONMENT = types.SimpleNamespace(
+        VERSION="test",
+        SEPARATOR="_",
+        ICONS_PATH="",
+        MAYA_VERSION=MAYA_VERSION,
+        PYTHON_VERSION=3,
+        DGA_NODES_SUPPORTED=False,
+    )
     modules[env.__name__] = env
     api = types.ModuleType(root + ".api.editor")
     api.BlueSteelEditor = object

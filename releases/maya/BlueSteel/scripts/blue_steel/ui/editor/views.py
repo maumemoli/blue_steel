@@ -1323,8 +1323,8 @@ class SplitPrimaryAssignmentsView(SliderDragViewMixin, QTreeWidget):
             "QTreeView::branch { image: none; border-image: none; width: 0px; height: 0px; }"
             "QTreeView::item { padding-top: 2px; padding-bottom: 2px; }"
         )
-        closed_icon = os.path.join(env.ICONS_PATH, "tree_chevron_right.svg")
-        open_icon = os.path.join(env.ICONS_PATH, "tree_chevron_down.svg")
+        closed_icon = os.path.join(env.ENVIRONMENT.ICONS_PATH, "tree_chevron_right.svg")
+        open_icon = os.path.join(env.ENVIRONMENT.ICONS_PATH, "tree_chevron_down.svg")
         self._closed_group_icon = QIcon(closed_icon) if os.path.exists(closed_icon) else QIcon()
         self._open_group_icon = QIcon(open_icon) if os.path.exists(open_icon) else QIcon()
         self.itemExpanded.connect(self._update_group_icon)

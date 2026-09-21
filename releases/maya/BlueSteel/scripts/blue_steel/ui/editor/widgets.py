@@ -22,7 +22,6 @@ from .qt import (
     QLabel,
     QLineEdit,
     QMimeData,
-    QPainter,
     QPushButton,
     QRect,
     QSizePolicy,
@@ -34,7 +33,6 @@ from .qt import (
     QWidget,
     Signal,
 )
-
 
 
 class TokenSearchBar(QWidget):

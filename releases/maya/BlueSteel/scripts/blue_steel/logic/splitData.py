@@ -10,8 +10,8 @@ from itertools import product
 
 from .. import env
 
-SEPARATOR = env.SEPARATOR
-SHAPE_NAME_STR = "<<SHAPE_NAME>>"
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
+SHAPE_NAME_STR = env.ENVIRONMENT.SHAPE_NAME_STR
 NO_SPLIT_GROUP = "NoSplit"
 
 

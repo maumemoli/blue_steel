@@ -12,69 +12,16 @@ Example:
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Set
-import os
+from typing import Dict, List, Optional, Set
 import sys
 import traceback
 
 from maya import cmds
 from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
 
-from ... import env
 from ...api.editor import BlueSteelEditor
-from ...api.mayaUtils import undoable
 from ...api.trackers import BlueSteelEditorsTracker, BlendShapeNodeTracker, ControllerTracker
-from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
-from ...converters.simplex import commands as simplex_commands
-from ...mmtools import ui
 from ..common.frameLayout import FrameLayout
-from ..common.icons import (
-    ADD_ICON,
-    COMMIT_ICON,
-    DELETE_ICON,
-    DOWN_ARROW_ICON,
-    DUPLICATE_ICON,
-    MMTOOLS_ICON,
-    MUTE_ON_ICON,
-    REFRESH_ICON,
-    RENAME_ICON,
-    MUTE_OFF_ICON,
-    SELECT_ICON,
-    UP_ARROW_ICON,
-    ZERO_VALUE_ICON,
-    AUTO_POSE_ICON,
-    ADD_AT_POSE_ICON,
-    LOCK_ON_ICON,
-    LOCK_OFF_ICON,
-    HEAT_MAP_ICON,
-    CONTROLLER_LAYOUT_ICON,
-    CONNECTED_MESH_ENABLED_ICON,
-    CONNECTED_MESH_DISABLED_ICON,
-    COMPARE_MESH_ICON,
-    HUD_ICON,
-    NORMALIZE_ICON,
-    MASK_ICON,
-    EDIT_ICON,
-    EDIT_SPLIT_MAP_ICON,
-    COPY_WEIGHTS_ICON,
-    PASTE_WEIGHTS_ICON,
-    PASTE_INVERTED_WEIGHTS_ICON,
-    PASTE_ADD_WEIGHTS_ICON,
-    PASTE_MINUS_WEIGHTS_ICON,
-    PASTE_MULTIPLY_WEIGHTS_ICON,
-    SOFT_MOD_ICON,
-    FILTER_ACTIVE_VALUES_ICON,
-    SPLIT_ICON,
-)
-from .constants import (
-    PRIMARY_TREE_FOLDER_ROLE,
-    PRIMARY_TREE_NAME_ROLE,
-    PRIMARY_TREE_SORT_VALUE_ROLE,
-    SHAPE_CUSTOM_COLORS,
-    TYPE_GROUP_ORDER,
-    shape_type_group_name,
-)
-from .mainWindowMixin import target_shape_names
 from .controllerLayoutWindow import ControllerLayoutWindow
 from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate
 from .models import (
@@ -83,88 +30,32 @@ from .models import (
     ShapeItemsModel,
     ShapesFilterProxyModel,
     WorkShapeItemsModel,
-    normalized_search_terms,
 )
 from .qt import (
-    QAbstractItemView,
     QAction,
-    QActionGroup,
-    QAbstractListModel,
-    QCheckBox,
-    QColor,
-    QComboBox,
-    QCursor,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleValidator,
-    QDrag,
-    QEvent,
-    QFileDialog,
     QGroupBox,
-    QGuiApplication,
-    QHBoxLayout,
-    QHeaderView,
     QIcon,
-    QInputDialog,
-    QItemSelectionModel,
     QLabel,
-    QLayout,
     QLineEdit,
-    QListView,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
-    QMenu,
-    QMenuBar,
-    QMessageBox,
-    QMimeData,
-    QModelIndex,
-    QPainter,
-    QPalette,
-    QPersistentModelIndex,
-    QPixmap,
-    QPoint,
-    QPolygon,
     QPushButton,
-    QRect,
     QSize,
-    QSizePolicy,
-    QSortFilterProxyModel,
     QSplitter,
-    QStatusBar,
-    QStyle,
-    QStyledItemDelegate,
     QTabWidget,
     QTimer,
-    QTreeWidget,
     QTreeWidgetItem,
-    QVBoxLayout,
     QWidget,
-    Qt,
-    Signal,
-    color_swatch_icon,
     get_maya_main_window,
-    shape_custom_color_to_qcolor,
 )
 from .views import (
-    PrimaryDropTreeWidget,
-    PrimaryTreeItem,
-    PrimaryTreeWidget,
-    ShapeTreeWidget,
-    SliderListView,
     SplitMapWeightsList,
     SplitPrimaryAssignmentsView,
-    WorkShapesListView,
 )
 from .widgets import (
-    InlineWorkshapeRenameEditor,
     SplitGroupsTree,
-    SplitMapStatusDelegate,
     SplitMapsTree,
     TokenSearchBar,
 )
-
-
 
 from .editorOpsMixin import EditorOpsMixin
 from .editorSessionMixin import EditorSessionMixin

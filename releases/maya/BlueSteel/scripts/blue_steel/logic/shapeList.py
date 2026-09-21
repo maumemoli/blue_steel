@@ -2,7 +2,7 @@ from . import utilities
 from .shape import Shape
 from .. import env
 
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
 
 

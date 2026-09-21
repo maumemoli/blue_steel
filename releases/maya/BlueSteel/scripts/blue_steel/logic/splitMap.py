@@ -4,7 +4,7 @@ This will handle the naming of the split map
 from .. import env
 from . import utilities
 
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
 class SplitMap(object):
     """

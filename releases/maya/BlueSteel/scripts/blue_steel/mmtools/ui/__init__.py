@@ -8,12 +8,11 @@ from .. import connectionTools as ct
 from ... import env
 from ...ui.common.frameLayout import FrameLayout
 from ...ui.common.icons import *
-from ...env import MAYA_VERSION
 from ...api.mayaUtils import undoable
 import os
 import sys
 
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6 import QtGui, QtWidgets, QtCore
     from shiboken6 import wrapInstance
 else:
@@ -282,7 +281,7 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
         start_frame = self.start_frame_spinbox.value()
         end_frame = self.end_frame_spinbox.value()
         num_duplicates = self.duplicate_num_spinbox.value()
-        separator = env.SEPARATOR
+        separator = env.ENVIRONMENT.SEPARATOR
         duplicate_name = self.duplicate_name_line_edit.text()
         selection = cmds.ls(sl=True, long=True)
         if not selection:

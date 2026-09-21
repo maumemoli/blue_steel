@@ -7,7 +7,7 @@ from . import utilities
 from .. import env
 from itertools import product
 
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
 
 class Network(object):

@@ -1,6 +1,6 @@
 
 from ... import env
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6.QtCore import Qt, QSize
     from PySide6.QtGui import QColor, QIcon, QPixmap, QTransform, qAlpha, qGray, qRgba
 else:

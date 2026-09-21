@@ -7,7 +7,7 @@ from maya import cmds
 
 from ... import env
 
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QTimer, Signal
     from PySide6.QtGui import QColor, QDrag, QFontMetrics, QPainter
     from PySide6.QtWidgets import (
@@ -39,7 +39,6 @@ else:
         QFileDialog,
         QFormLayout,
         QFrame,
-        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,

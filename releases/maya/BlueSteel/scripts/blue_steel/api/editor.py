@@ -24,7 +24,7 @@ from . import blendshapeHUD
 from contextlib import contextmanager
 
 
-from .. import env
+from ..env import ENVIRONMENT
 import os
 import time
 import numpy as np
@@ -38,13 +38,6 @@ except ImportError:
 
 
 
-# ENVIRONMENT VARIABLES
-VERSION = env.VERSION
-ICONS_PATH = env.ICONS_PATH
-SEPARATOR = env.SEPARATOR
-MAYA_VERSION = env.MAYA_VERSION
-DGA_NODES_SUPPORTED = env.DGA_NODES_SUPPORTED
-# end globals
 
 
 # ATTR
@@ -167,37 +160,13 @@ class SplitSession(object):
 
 
 class BlueSteelEditor(object):
-    MAIN_BLENDSHAPE_STRING_IDENTIFIER = "mainBlendShape"
-    SPLIT_BLENDSHAPE_STRING_IDENTIFIER = "splitBlendShape"
-    WORK_BLENDSHAPE_STRING_IDENTIFIER = "workBlendShape"
-    HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER = "heatMapBlendShape"
-    SPLIT_ATTR_GRP_STRING_IDENTIFIER = "splitAttrGrp"
-    SPLIT_GRP_ATTR_STRING_IDENTIFIER = "splitGroups"
-    SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER = "splitMapsOrder"
-    SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER = "splitMapEditMesh"
-    SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER = "splitMapEditBlendshape"
-    SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER = "splitMapEditCurrent"
-    FACE_CTRL_STRING_IDENTIFIER = "faceCtrl"
-    NODE_NETWORK_CONTAINER_STRING_IDENTIFIER = "nodeNetwork"
-    BASE_MESH_STRING_IDENTIFIER = "baseMesh"
-    HEAT_MAP_MESH_STRING_IDENTIFIER = "heatMapMesh"
-    DGA_VISUALIZER_STRING_IDENTIFIER = "dgaVisualizer"
-    DGA_DELTA_STRING_IDENTIFIER = "dgaDelta"
-    DELTA_MAP_STRING_IDENTIFIER = "deltaMap"
-    SHAPE_NAME_STR = "<<SHAPE_NAME>>"
-    # TARGET GROUP NAMES
-    PRIMARY_SHAPES_GRP_NAME = "Primaries_GRP"
-    COMBO_SHAPES_GRP_NAME = "Combos_GRP"
-    INBETWEEN_SHAPES_GRP_NAME = "Inbetweens_GRP"
-    CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER = "customShapesColor"
-    
-    def __init__(self, container, separator=SEPARATOR):
+    def __init__(self, container, separator=ENVIRONMENT.SEPARATOR):
         if not cmds.objExists(container):
             raise ValueError(f"Container '{container}' does not exist.")
         self.network = None
         # debug network
         self.network_rebuild_count = 0
-        self.dga_nodes_supported = DGA_NODES_SUPPORTED
+        self.dga_nodes_supported = ENVIRONMENT.DGA_NODES_SUPPORTED
         self.container = Container(container)
         
         if self.dga_nodes_supported == False:
@@ -481,10 +450,10 @@ class BlueSteelEditor(object):
         # deleting the existing nodes if they exist to avoid duplicates
         self._delete_dga_heat_maps_node_network()
         # creating the dga delta node
-        delta_node_name = f"{self.editor_base_name}_{self.DGA_DELTA_STRING_IDENTIFIER}"
+        delta_node_name = f"{self.editor_base_name}_{ENVIRONMENT.DGA_DELTA_STRING_IDENTIFIER}"
         delta_node = cmds.createNode("dgaDelta", name=delta_node_name)
         # link to the message attribute for easy access
-        attrUtils.add_message_attr(self.container.name, self.DGA_DELTA_STRING_IDENTIFIER, delta_node)
+        attrUtils.add_message_attr(self.container.name, ENVIRONMENT.DGA_DELTA_STRING_IDENTIFIER, delta_node)
         self.container.add_member(delta_node)
         # now we neeed to connect the delta node to the heat map blendshape and mesh
         heat_map_shape = self.heat_map_blendshape.get_base()[0]
@@ -492,10 +461,10 @@ class BlueSteelEditor(object):
         cmds.connectAttr(f"{heat_map_shape}.outMesh", f"{delta_node}.inputGeometry", force=True)
         cmds.connectAttr(f"{heat_original_mesh}.outMesh", f"{delta_node}.originalGeometry", force=True)
         # now let's create the dga visualizer node
-        visualizer_node_name = f"{self.editor_base_name}_{self.DGA_VISUALIZER_STRING_IDENTIFIER}"
+        visualizer_node_name = f"{self.editor_base_name}_{ENVIRONMENT.DGA_VISUALIZER_STRING_IDENTIFIER}"
         visualizer_node = cmds.createNode("dgaVisualizer", name=visualizer_node_name)
         # link to the message attribute for easy access
-        attrUtils.add_message_attr(self.container.name, self.DGA_VISUALIZER_STRING_IDENTIFIER, visualizer_node)
+        attrUtils.add_message_attr(self.container.name, ENVIRONMENT.DGA_VISUALIZER_STRING_IDENTIFIER, visualizer_node)
         self.container.add_member(visualizer_node)
         # connecting the visualizer node to the delta node and to the heat map mesh
         base_shape = self.blendshape.get_base()
@@ -526,9 +495,9 @@ class BlueSteelEditor(object):
         # check if the node exists first
         if self.delta_map:
             return
-        delta_node_name = f"{self.editor_base_name}_{self.DELTA_MAP_STRING_IDENTIFIER}"
+        delta_node_name = f"{self.editor_base_name}_{ENVIRONMENT.DELTA_MAP_STRING_IDENTIFIER}"
         delta_node = cmds.deformer(self.base_mesh, type="deltaMap", name=delta_node_name)[0]
-        attrUtils.add_message_attr(self.container.name, self.DELTA_MAP_STRING_IDENTIFIER, delta_node)
+        attrUtils.add_message_attr(self.container.name, ENVIRONMENT.DELTA_MAP_STRING_IDENTIFIER, delta_node)
         self.container.add_member(delta_node)
         heat_base_shapes = cmds.listRelatives(self.heat_map_mesh, shapes=True, fullPath=True) or None
         if heat_base_shapes is None:
@@ -551,19 +520,19 @@ class BlueSteelEditor(object):
             self.heat_map_blendshape.set_weight_value(heat_weight, 1.0)
             return
         # we need to create a mesh node to connect to.
-        heat_map_geo_name = f"{self.editor_base_name}_{self.HEAT_MAP_MESH_STRING_IDENTIFIER}"
+        heat_map_geo_name = f"{self.editor_base_name}_{ENVIRONMENT.HEAT_MAP_MESH_STRING_IDENTIFIER}"
         heat_map_geo = self.duplicate_base_mesh_neutral_state(heat_map_geo_name)
         cmds.setAttr(f"{heat_map_geo}.v", 0)
         attrUtils.add_message_attr(self.container.name,
-                                   self.HEAT_MAP_MESH_STRING_IDENTIFIER,
+                                   ENVIRONMENT.HEAT_MAP_MESH_STRING_IDENTIFIER,
                                    heat_map_geo)
         self.container.add_mesh_as_member(heat_map_geo)
 
-        heat_blendshape_name = f"{self.editor_base_name}_{self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER}"
+        heat_blendshape_name = f"{self.editor_base_name}_{ENVIRONMENT.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER}"
         heat_blendshape =self.add_new_blendshape_to_container(blendshape_name=heat_blendshape_name,
                                                               mesh_name=heat_map_geo,
                                                               container=self.container,
-                                                              message_attr=self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER,
+                                                              message_attr=ENVIRONMENT.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER,
                                                               parent_directory_index=0)
 
         parent_dir_id = self.blendshape.mid_layer_parent
@@ -613,51 +582,51 @@ class BlueSteelEditor(object):
             return None
     @property
     def split_map_edit_mesh(self):
-        return attrUtils.get_message_attr(self.container.name, self.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
 
     @property
     def split_map_edit_blendshape(self):
-        return attrUtils.get_message_attr(self.container.name, self.SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER)
         
     @property
     def main_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, self.MAIN_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.MAIN_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def split_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, self.SPLIT_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.SPLIT_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def work_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, self.WORK_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.WORK_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def heat_map_blendshape_name(self):
-        return attrUtils.get_message_attr(self.container.name, self.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER)
     @property
     def split_attr_grp(self):
-        return attrUtils.get_message_attr(self.container.name, self.SPLIT_ATTR_GRP_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.SPLIT_ATTR_GRP_STRING_IDENTIFIER)
 
     @property
     def dga_visualizer(self):
-        return attrUtils.get_message_attr(self.container.name, self.DGA_VISUALIZER_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.DGA_VISUALIZER_STRING_IDENTIFIER)
     
     @property
     def dga_delta(self):
-        return attrUtils.get_message_attr(self.container.name, self.DGA_DELTA_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.DGA_DELTA_STRING_IDENTIFIER)
     
     @property
     def delta_map(self):
-        return attrUtils.get_message_attr(self.container.name, self.DELTA_MAP_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.DELTA_MAP_STRING_IDENTIFIER)
 
     @property
     def face_ctrl(self):
-        return attrUtils.get_message_attr(self.container.name, self.FACE_CTRL_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.FACE_CTRL_STRING_IDENTIFIER)
 
     @property
     def heat_map_mesh(self):
-        return attrUtils.get_message_attr(self.container.name, self.HEAT_MAP_MESH_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.HEAT_MAP_MESH_STRING_IDENTIFIER)
 
     @property
     def node_network_container(self):
-        node_network_name = attrUtils.get_message_attr(self.container.name, self.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER)
+        node_network_name = attrUtils.get_message_attr(self.container.name, ENVIRONMENT.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER)
         if node_network_name:
             return Container(node_network_name)
         return None
@@ -679,7 +648,7 @@ class BlueSteelEditor(object):
         Returns:
             str: The name of the base mesh.
         """
-        return attrUtils.get_message_attr(self.container.name, self.BASE_MESH_STRING_IDENTIFIER)
+        return attrUtils.get_message_attr(self.container.name, ENVIRONMENT.BASE_MESH_STRING_IDENTIFIER)
 
     @property
     def editor_base_name(self):
@@ -2657,7 +2626,7 @@ class BlueSteelEditor(object):
             current_dir_index = weight_parent_dir.get(weight.id)
             while current_dir_index not in (None, 0):
                 current_dir_name = target_dir_name.get(current_dir_index)
-                if current_dir_name is None or current_dir_name == self.PRIMARY_SHAPES_GRP_NAME:
+                if current_dir_name is None or current_dir_name == ENVIRONMENT.PRIMARY_SHAPES_GRP_NAME:
                     break
                 parent_dirs.append(current_dir_name)
                 current_dir_index = target_dir_parent.get(current_dir_index)
@@ -2755,9 +2724,9 @@ class BlueSteelEditor(object):
                 print(f"Adding new {shape.type} shape {shape}")
             return_value = "ADDED"
             # let's create a shape target directory under the primary shapes group
-            primary_dir = self.blendshape.get_target_dirs_by_name(self.PRIMARY_SHAPES_GRP_NAME)
+            primary_dir = self.blendshape.get_target_dirs_by_name(ENVIRONMENT.PRIMARY_SHAPES_GRP_NAME)
             if primary_dir == []: # we need to create the primary shapes group
-                primary_dir = self.blendshape.add_target_dir(self.PRIMARY_SHAPES_GRP_NAME)
+                primary_dir = self.blendshape.add_target_dir(ENVIRONMENT.PRIMARY_SHAPES_GRP_NAME)
             else:
                 primary_dir = primary_dir[0]
             primary_shape_dir = self.blendshape.add_target_dir(name=shape,
@@ -2974,9 +2943,9 @@ class BlueSteelEditor(object):
             self.create_remap_value_node(shape)
             self.update_remap_nodes_values(shape.primaries[0])
             # let's create a shape target directory under the inbetween shapes group
-            inbetween_dir = self.blendshape.get_target_dirs_by_name(self.INBETWEEN_SHAPES_GRP_NAME)
+            inbetween_dir = self.blendshape.get_target_dirs_by_name(ENVIRONMENT.INBETWEEN_SHAPES_GRP_NAME)
             if inbetween_dir == []: # we need to create the inbetween shapes group
-                inbetween_dir = self.blendshape.add_target_dir(self.INBETWEEN_SHAPES_GRP_NAME)
+                inbetween_dir = self.blendshape.add_target_dir(ENVIRONMENT.INBETWEEN_SHAPES_GRP_NAME)
             else:
                 inbetween_dir = inbetween_dir[0]
             inbetween_shape_dir = self.blendshape.add_target_dir(name=shape,
@@ -3026,9 +2995,9 @@ class BlueSteelEditor(object):
             return_value = "ADDED"
             w = self.blendshape.add_target(shape)
             # we need to create a target directory under the combo shapes group
-            combo_dir = self.blendshape.get_target_dirs_by_name(self.COMBO_SHAPES_GRP_NAME)
+            combo_dir = self.blendshape.get_target_dirs_by_name(ENVIRONMENT.COMBO_SHAPES_GRP_NAME)
             if combo_dir == []: # we need to create the combo shapes group
-                combo_dir = self.blendshape.add_target_dir(self.COMBO_SHAPES_GRP_NAME)
+                combo_dir = self.blendshape.add_target_dir(ENVIRONMENT.COMBO_SHAPES_GRP_NAME)
             else:
                 combo_dir = combo_dir[0]
             combo_shape_dir = self.blendshape.add_target_dir(name=shape,
@@ -3154,7 +3123,7 @@ class BlueSteelEditor(object):
 
     @classmethod
     @undoable
-    def create_new(cls, editor_name: str,mesh_name: str, separator: str = SEPARATOR):
+    def create_new(cls, editor_name: str,mesh_name: str, separator: str = ENVIRONMENT.SEPARATOR):
         """
         Create a new Blue Steel rig
         Parameters:
@@ -3179,20 +3148,20 @@ class BlueSteelEditor(object):
         network_container = Container.create(node_network_container_name)
         network_container.set_icon("node_network_icon.svg")
         # add a message attribute to link the base mesh to the container
-        attrUtils.add_message_attr(container.name, cls.BASE_MESH_STRING_IDENTIFIER, mesh_name)
-        attrUtils.add_message_attr(container.name, cls.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
+        attrUtils.add_message_attr(container.name, ENVIRONMENT.BASE_MESH_STRING_IDENTIFIER, mesh_name)
+        attrUtils.add_message_attr(container.name, ENVIRONMENT.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER, network_container.name)
         attrUtils.add_tag(container.name, "lockedShapes", "")
         container.add_member(network_container.name)
         # create the split map edit mesh attribute
-        attrUtils.add_message_attr(container.name, cls.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
+        attrUtils.add_message_attr(container.name, ENVIRONMENT.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER)
 
         editor_group_name = f"{editor_name}_Blendshapes_GRP"
         editor_grp_id = cls.add_shape_editor_directory(editor_group_name)
 
         blendshape_names_suffixes = ["mainBlendshape","splitBlendshape", "workBlendshape"]
-        message_attributes = [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
-                               cls.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
-                               cls.WORK_BLENDSHAPE_STRING_IDENTIFIER]
+        message_attributes = [ENVIRONMENT.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+                               ENVIRONMENT.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
+                               ENVIRONMENT.WORK_BLENDSHAPE_STRING_IDENTIFIER]
         # create the blendshape node blendshape.
         for suffix, message_attr in zip(blendshape_names_suffixes, message_attributes):
             blendshape_name = f"{editor_name}_{suffix}"
@@ -3204,9 +3173,9 @@ class BlueSteelEditor(object):
             if suffix == "mainBlendshape":
                 # adding the target groups to the blendshape editor
                 blendshape = Blendshape(blendshape_name)
-                blendshape.add_target_dir(cls.PRIMARY_SHAPES_GRP_NAME)
-                blendshape.add_target_dir(cls.INBETWEEN_SHAPES_GRP_NAME)
-                blendshape.add_target_dir(cls.COMBO_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(ENVIRONMENT.PRIMARY_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(ENVIRONMENT.INBETWEEN_SHAPES_GRP_NAME)
+                blendshape.add_target_dir(ENVIRONMENT.COMBO_SHAPES_GRP_NAME)
                 
         # create the controls group node
         face_ctrl_name = f"{editor_name}_face_CTRL"
@@ -3226,17 +3195,17 @@ class BlueSteelEditor(object):
         cmds.setAttr(f"{face_ctrl}.translateY", y)
         cmds.setAttr(f"{face_ctrl}.translateZ", z)
         container.add_member(face_ctrl)
-        attrUtils.add_message_attr(container.name, cls.FACE_CTRL_STRING_IDENTIFIER, face_ctrl)
+        attrUtils.add_message_attr(container.name, ENVIRONMENT.FACE_CTRL_STRING_IDENTIFIER, face_ctrl)
         # create the split attribute group node
         split_settings_grp_name = f"{editor_name}_splitSettings_GRP"
         split_settings_grp = attrUtils.create_attribute_grp(split_settings_grp_name)
         container.add_member(split_settings_grp)
-        attrUtils.add_message_attr(container.name, cls.SPLIT_ATTR_GRP_STRING_IDENTIFIER, split_settings_grp)
+        attrUtils.add_message_attr(container.name, ENVIRONMENT.SPLIT_ATTR_GRP_STRING_IDENTIFIER, split_settings_grp)
         # set the icon of the container
         container.set_icon("blue_steel_icon.svg")
 
         # adding the version and the tag to recognize the container as a Blue Steel rig
-        attrUtils.add_tag(container.name, "BlueSteelEditorMain", env.VERSION)
+        attrUtils.add_tag(container.name, "BlueSteelEditorMain", ENVIRONMENT.VERSION)
         # restoring the selection
         if stored_selection:
             cmds.select(stored_selection, replace=True)
@@ -3345,11 +3314,11 @@ class BlueSteelEditor(object):
                 new_driver_name = f"{new_name}_{w}_{driver_type}"
                 cmds.rename(driver, new_driver_name)
         # renaming the linked nodes
-        for link in [cls.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
-                     cls.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
-                     cls.WORK_BLENDSHAPE_STRING_IDENTIFIER,
-                     cls.SPLIT_ATTR_GRP_STRING_IDENTIFIER,
-                     cls.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER]:
+        for link in [ENVIRONMENT.MAIN_BLENDSHAPE_STRING_IDENTIFIER,
+                     ENVIRONMENT.SPLIT_BLENDSHAPE_STRING_IDENTIFIER,
+                     ENVIRONMENT.WORK_BLENDSHAPE_STRING_IDENTIFIER,
+                     ENVIRONMENT.SPLIT_ATTR_GRP_STRING_IDENTIFIER,
+                     ENVIRONMENT.NODE_NETWORK_CONTAINER_STRING_IDENTIFIER]:
             node_name = attrUtils.get_message_attr(old_editor.container.name, link)
             if node_name:
                 new_node_name = f"{new_name}_{link}"
@@ -3478,9 +3447,9 @@ class BlueSteelEditor(object):
         """Add a custom attribute to the container to store the custom shapes color.
         The attribute is a JSON string mapping shape names to colors in the format "#RRGGBB".
         """
-        if not cmds.attributeQuery(self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
-            cmds.addAttr(self.container.name, longName=self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, dataType="string")
-            cmds.setAttr(f"{self.container.name}.{self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER}", "", type="string")
+        if not cmds.attributeQuery(ENVIRONMENT.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
+            cmds.addAttr(self.container.name, longName=ENVIRONMENT.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER, dataType="string")
+            cmds.setAttr(f"{self.container.name}.{ENVIRONMENT.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER}", "", type="string")
 
     def read_custom_shapes_colors(self) -> dict:
         """ Reads the custom shapes color attribute string and returns adictionary
@@ -3488,7 +3457,7 @@ class BlueSteelEditor(object):
         Returns:
             dict: A dictionary with the name of the shape as key and the color as value in the format "#RRGGBB"
         """
-        color_attr = self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
+        color_attr = ENVIRONMENT.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
         if not cmds.attributeQuery(color_attr, node=self.container.name, exists=True):
             return {}
         color_dict = attrUtils.read_json_attr(self.container.name, color_attr) or {}
@@ -3500,7 +3469,7 @@ class BlueSteelEditor(object):
         Parameters:
             color_dict (dict): A dictionary with the name of the shape as key and the color as value in the format "#RRGGBB"
         """
-        color_attr = self.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
+        color_attr = ENVIRONMENT.CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER
         if not cmds.attributeQuery(color_attr, node=self.container.name, exists=True):
             self._add_custom_shapes_color_attribute()
         attrUtils.write_json_attr(self.container.name, color_attr, color_dict)
@@ -3612,7 +3581,7 @@ class BlueSteelEditor(object):
 
         attrs = cmds.listAttr(self.split_attr_grp, userDefined=True) or []
         for attr in attrs:
-            if attr == self.SPLIT_GRP_ATTR_STRING_IDENTIFIER:
+            if attr == ENVIRONMENT.SPLIT_GRP_ATTR_STRING_IDENTIFIER:
                 continue
 
             attr_full = f"{self.split_attr_grp}.{attr}"
@@ -3664,7 +3633,7 @@ class BlueSteelEditor(object):
             raise ValueError("Split attribute group does not exist")
         # check if the attribute already exists
         group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
-                                                    self.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER,
+                                                    ENVIRONMENT.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER,
                                                     "[]")
 
     def _add_split_group_attribute(self):
@@ -3677,7 +3646,7 @@ class BlueSteelEditor(object):
             raise ValueError("Split attribute group does not exist")
         # check if the attribute already exists
         group_attribute = attrUtils.add_string_attr(self.split_attr_grp,
-                                                    self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
+                                                    ENVIRONMENT.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
                                                     "{}")
 
     def _ensure_split_shape_name_item_in_groups(self):
@@ -3686,8 +3655,8 @@ class BlueSteelEditor(object):
         """
         fixed_attributes = self.read_split_groups_attributes()
         for group, split_maps in fixed_attributes.items():
-            if self.SHAPE_NAME_STR not in split_maps:
-                split_maps.insert(0, self.SHAPE_NAME_STR)
+            if ENVIRONMENT.SHAPE_NAME_STR not in split_maps:
+                split_maps.insert(0, ENVIRONMENT.SHAPE_NAME_STR)
                 fixed_attributes[group] = split_maps
         self.write_split_groups_attributes(fixed_attributes)
 
@@ -3699,9 +3668,9 @@ class BlueSteelEditor(object):
         """
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
-        if not cmds.attributeQuery(self.SPLIT_GRP_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
+        if not cmds.attributeQuery(ENVIRONMENT.SPLIT_GRP_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
             raise ValueError("Split groups attribute does not exist")
-        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_GRP_ATTR_STRING_IDENTIFIER) or {}
+        return attrUtils.read_json_attr(self.split_attr_grp, ENVIRONMENT.SPLIT_GRP_ATTR_STRING_IDENTIFIER) or {}
 
     def read_split_maps_order_attribute(self) -> list:
         """ read the split groups order attribute and return a list with the names of the groups in the order they should be displayed.
@@ -3710,9 +3679,9 @@ class BlueSteelEditor(object):
         """
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
-        if not cmds.attributeQuery(self.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
+        if not cmds.attributeQuery(ENVIRONMENT.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER, node=self.split_attr_grp, exists=True):
             raise ValueError("Split groups order attribute does not exist")
-        return attrUtils.read_json_attr(self.split_attr_grp, self.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER) or []
+        return attrUtils.read_json_attr(self.split_attr_grp, ENVIRONMENT.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER) or []
 
     def get_edit_split_map_weights(self) -> list:
         """ get the weights of a split map in the edit_blendshape.
@@ -3943,7 +3912,7 @@ class BlueSteelEditor(object):
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
         attrUtils.write_json_attr(self.split_attr_grp,
-                                  self.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER,
+                                  ENVIRONMENT.SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER,
                                   split_maps_order)
 
     def write_split_groups_attributes(self, split_groups: dict):
@@ -3955,7 +3924,7 @@ class BlueSteelEditor(object):
         if self.split_attr_grp is None or not cmds.objExists(self.split_attr_grp):
             raise ValueError("Split attribute group does not exist")
         attrUtils.write_json_attr(self.split_attr_grp,
-                                  self.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
+                                  ENVIRONMENT.SPLIT_GRP_ATTR_STRING_IDENTIFIER,
                                   split_groups)
 
     def get_split_maps(self,) -> list:
@@ -4045,7 +4014,7 @@ class BlueSteelEditor(object):
         # each ordered entry contributes the options that are combined into the final names
         area_options = []
         for i, split_map in enumerate(split_maps):
-            if split_map == self.SHAPE_NAME_STR:
+            if split_map == ENVIRONMENT.SHAPE_NAME_STR:
                 # the shape name is capitalized when it is used as a suffix
                 shape_token = primary_name if i == 0 else primary_name[0].upper() + primary_name[1:]
                 area_options.append([shape_token])
@@ -4123,8 +4092,8 @@ class BlueSteelEditor(object):
         """
         # we need to add shape name as a place holder to understand where the split areas are going
         # the assumption is that all the split maps are suffixes
-        if self.SHAPE_NAME_STR not in split_maps_list:
-            split_maps_list = [self.SHAPE_NAME_STR] + split_maps_list
+        if ENVIRONMENT.SHAPE_NAME_STR not in split_maps_list:
+            split_maps_list = [ENVIRONMENT.SHAPE_NAME_STR] + split_maps_list
 
         split_groups = self.read_split_groups_attributes()
         # we need to create a target directory for the split group
@@ -4168,7 +4137,7 @@ class BlueSteelEditor(object):
             None
         """
         # if the split_map_name is the shape name we need to return.
-        if split_map_name == self.SHAPE_NAME_STR:
+        if split_map_name == ENVIRONMENT.SHAPE_NAME_STR:
             return
         if split_map_name not in self.get_split_maps():
             raise ValueError(f"Split map {split_map_name} does not exist")
@@ -4522,7 +4491,7 @@ class BlueSteelEditor(object):
                          primary_split_groups=primary_split_groups,
                          split_map_areas=split_map_areas,
                          split_maps_order=self.read_split_maps_order_attribute(),
-                         shape_name_area=self.SHAPE_NAME_STR,
+                         shape_name_area=ENVIRONMENT.SHAPE_NAME_STR,
                          separator=self.separator)
     
     @pause_shape_editor
@@ -4576,7 +4545,7 @@ class BlueSteelEditor(object):
         The input mesh for each target is the base mesh.
         """
         # check if the attribute exists.
-        split_mesh_attr = self.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER
+        split_mesh_attr = ENVIRONMENT.SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER
         attrUtils.add_message_attr(self.name, split_mesh_attr)
         split_map_edit_mesh_name = f"{self.base_mesh.split('|')[-1]}_{split_mesh_attr}"
         split_map_edit_mesh = self.duplicate_base_mesh_neutral_state(split_map_edit_mesh_name)
@@ -4596,7 +4565,7 @@ class BlueSteelEditor(object):
         if self.split_map_edit_blendshape is None or not cmds.objExists(self.split_map_edit_blendshape):
             #print("Split map edit blendshape does not exist")
             return None
-        string_attr = self.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
+        string_attr = ENVIRONMENT.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
         if not cmds.attributeQuery(string_attr, node=self.split_map_edit_blendshape, exists=True):
             #print("Split map edit current attribute does not exist")
             return None
@@ -4754,13 +4723,13 @@ class BlueSteelEditor(object):
         split_map_edit_blendshape = cmds.blendShape(self.split_map_edit_mesh,
                                                     name=split_map_edit_blendshape_name)[0]
         # let's connect the split map edit blendshape to the attribute
-        split_map_edit_blend_attr = self.SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER
+        split_map_edit_blend_attr = ENVIRONMENT.SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER
         attrUtils.add_message_attr(self.name, split_map_edit_blend_attr)
         cmds.connectAttr(f"{split_map_edit_blendshape}.message",f"{self.name}.{split_map_edit_blend_attr}",
                          force=True)
         split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
         # we need to add a string attribute where to store the current split map.
-        split_map_edit_current_attr = self.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
+        split_map_edit_current_attr = ENVIRONMENT.SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER
         attrUtils.add_string_attr(split_map_edit_blendshape, split_map_edit_current_attr, split_map_name)
         for weight in self.get_split_map_weights(split_map_name):
             new_target_weight = split_map_edit_blendshape.add_target(weight)

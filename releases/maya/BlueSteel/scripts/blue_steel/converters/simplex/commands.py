@@ -21,7 +21,7 @@ import traceback
 from dataclasses import dataclass , field
 from typing import List, Optional, Dict, Tuple
 
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 SIMPLEX_SEPARATOR = "_"
 
 @dataclass

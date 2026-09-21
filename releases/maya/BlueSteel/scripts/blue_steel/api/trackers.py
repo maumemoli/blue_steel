@@ -8,7 +8,7 @@ import maya.api.OpenMaya as om2
 import maya.OpenMaya as om
 import maya.OpenMayaUI as omui
 from maya import cmds
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6.QtCore import QObject, Signal
 
 else:

@@ -2,7 +2,7 @@
 
 This module is the single place where the Maya-version-specific Qt binding is
 chosen. The rest of the editor imports Qt names from here instead of repeating
-the ``if env.MAYA_VERSION > 2024`` block in every file.
+the ``if env.ENVIRONMENT.MAYA_VERSION > 2024`` block in every file.
 
 It also hosts small helpers that remove the PySide2/PySide6 API differences
 (``exec`` vs ``exec_``) and tiny geometry/color utilities shared across views
@@ -17,13 +17,13 @@ Example:
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 import maya.OpenMayaUI as omui
 
 from ... import env
 
-if env.MAYA_VERSION > 2024:
+if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6.QtCore import (
         QAbstractListModel,
         QEvent,

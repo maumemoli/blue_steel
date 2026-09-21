@@ -10,7 +10,7 @@ except ImportError:
     from urllib import request
 
 
-if env.MAYA_VERSION < 2022 or env.PYTHON_VERSION < 3:
+if env.ENVIRONMENT.MAYA_VERSION < 2022 or env.ENVIRONMENT.PYTHON_VERSION < 3:
     raise RuntimeError("BlueSteel requires Maya 2022 or higher with Python 3.x")
 __url__ = "https://api.github.com/repos/maumemoli/blue_steel/releases/latest"
 __update_url__ = "https://github.com/maumemoli/blue_steel/releases/latest"
@@ -46,9 +46,9 @@ def get_latest_version()-> str:
         return None
 
 
-__version__ = Version(env.VERSION)
+__version__ = Version(env.ENVIRONMENT.VERSION)
 __author__ = "Maurizio Memoli"
-__latest_version__ = Version(get_latest_version() or env.VERSION)
+__latest_version__ = Version(get_latest_version() or env.ENVIRONMENT.VERSION)
 
 
 def show():

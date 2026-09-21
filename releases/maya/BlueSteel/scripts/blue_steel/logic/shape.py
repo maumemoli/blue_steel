@@ -13,7 +13,7 @@ from . import utilities
 from .. import env
 from maya import cmds
 
-SEPARATOR = env.SEPARATOR
+SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
 class Shape(str):
     """
