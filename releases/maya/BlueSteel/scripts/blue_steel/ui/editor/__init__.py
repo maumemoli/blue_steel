@@ -8,6 +8,6 @@ Example:
     >>> win = blue_steel.show()
 """
 
-from blue_steel.ui.editor.mainWindow import MainWindow, show, get_maya_main_window
+from ...ui.editor.mainWindow import MainWindow, show, get_maya_main_window
 
 __all__ = ["MainWindow", "show", "get_maya_main_window"]

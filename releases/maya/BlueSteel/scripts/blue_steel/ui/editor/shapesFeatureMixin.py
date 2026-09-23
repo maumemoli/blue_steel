@@ -397,7 +397,7 @@ class ShapesFeatureMixin(MainWindowMixin):
             return
 
         menu = QMenu(sender)
-        extract_action = menu.addAction("Extract Selected")
+        extract_action = menu.addAction("Extract Selected Shapes")
         
         set_color_menu = menu.addMenu("Set Color")
         color_actions = {}

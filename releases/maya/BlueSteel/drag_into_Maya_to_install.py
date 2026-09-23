@@ -109,14 +109,18 @@ def onMayaDroppedPythonFile(*args):
         return
 
     mod_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
-    env_path = os.path.join(mod_dir, "scripts", "blue_steel", "env.py")
-    if not os.path.exists(env_path):
-        raise RuntimeError(f"Blue Steel env.py not found at {env_path}. Please ensure the installation is complete.")
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("env", env_path)
-    env = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(env)
-    version = env.ENVIRONMENT.VERSION
+    version_file = os.path.join(mod_dir, "scripts", "blue_steel", "_version.py")
+    if not os.path.exists(version_file):
+        raise RuntimeError(f"Blue Steel version file not found at {version_file}. Please ensure the installation is complete.")
+
+    # Load the dependency-free _version.py directly. It has no imports, so it can
+    # be executed without registering the package in sys.modules or touching
+    # sys.path (which in turn avoids importing the whole package at install time).
+    version_spec = importlib.util.spec_from_file_location("blue_steel_version", version_file)
+    version_module = importlib.util.module_from_spec(version_spec)
+    version_spec.loader.exec_module(version_module)
+    version = version_module.__version__
+
     template_mod_file = os.path.join(mod_dir, "blue_steel_template.mod")
     shelf_file = os.path.join(mod_dir, "shelves", "shelf_BlueSteel.mel")
     with open(template_mod_file, "r") as fp:
@@ -124,9 +128,6 @@ def onMayaDroppedPythonFile(*args):
     mod_content = mod_template.replace("<VERSION>", version)
     mod_content = mod_content.replace("<BLUE_STEEL_MOD_PATH>", mod_dir.replace(os.sep, '/'))
     # module_name = mod_template.splitlines()[0].split(" ")[1]
-    scripts_dir = os.path.join(mod_dir, "scripts")
-    if not scripts_dir in sys.path:
-        sys.path.append(scripts_dir)
 
     user_maya_dir = os.environ.get("MAYA_APP_DIR")
     user_mods_dir = os.path.join(user_maya_dir, "modules")

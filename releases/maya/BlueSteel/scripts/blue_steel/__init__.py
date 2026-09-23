@@ -1,4 +1,5 @@
 
+from ._version import __version__ as _version_string
 from .version import Version
 from maya import cmds
 import sys
@@ -12,9 +13,10 @@ if __maya_version__ < 2022 or __python_version__ < 3:
 
 __url__ = "https://api.github.com/repos/maumemoli/blue_steel/releases/latest"
 __update_url__ = "https://github.com/maumemoli/blue_steel/releases/latest"
-__version__ = Version("v1.6.5-beta1")
+__version__ = Version(_version_string)
 __author__ = "Maurizio Memoli"
-__latest_version__ = Version(get_latest_version(__url__)) if get_latest_version(__url__) else None
+_latest_version = get_latest_version(__url__)
+__latest_version__ = Version(_latest_version) if _latest_version else None
 
 
 

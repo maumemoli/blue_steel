@@ -151,8 +151,8 @@ class EditorOpsMixin(MainWindowMixin):
         self._set_status(f"Committed {committed_count} {meshes_label} to '{self.current_editor.name}'.")
 
 
-    def add_selected_at_current_pose(self) -> None:
-        """Add the current pose of the selected mesh as a new shape.
+    def on_add_empty_at_current_pose(self) -> None:
+        """Add the current pose of as an empty shape.
 
         Creates the shape from the active editor, then selects it in the
         Shapes tree.
@@ -161,7 +161,7 @@ class EditorOpsMixin(MainWindowMixin):
             None
 
         Example:
-            >>> win.add_selected_at_current_pose()
+            >>> win.add_empty_at_current_pose()
         """
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
@@ -170,7 +170,7 @@ class EditorOpsMixin(MainWindowMixin):
         try:
             if self.blendshape_tracker is not None:
                 self.blendshape_tracker.stop()
-            committed_shape_name = self.current_editor.add_selected_at_current_pose()
+            committed_shape_name = self.current_editor.add_empty_at_current_pose()
         except Exception as exc:
             self._set_status(f"Error adding shape at current pose: {exc}", error=True)
             return
@@ -193,7 +193,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("Added shape at current pose, but no active values found to determine the name.", warning=True)
 
 
-    def _on_add_primary_clicked(self) -> None:
+    def _on_add_empty_primary_clicked(self) -> None:
         """Prompt for a name and add a new primary shape to the active editor.
 
         Returns:
@@ -215,7 +215,7 @@ class EditorOpsMixin(MainWindowMixin):
 
         try:
             self._stop_active_blendshape_trackers()
-            self.current_editor.add_new_primary_shape(shape_name)
+            self.current_editor.add_empty_primary_shape(shape_name)
         except Exception as exc:
             self._set_status(f"Error adding primary shape: {exc}", error=True)
             return

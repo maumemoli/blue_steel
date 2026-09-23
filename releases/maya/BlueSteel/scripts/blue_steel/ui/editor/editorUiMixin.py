@@ -763,7 +763,7 @@ class EditorUiMixin(MainWindowMixin):
         rename_action = menu.addAction("Rename")
         menu.addSeparator()
         add_inbetween_action = menu.addAction("Add Inbetween")
-        split_selected_action = menu.addAction("Split selected shapes")
+        split_selected_action = menu.addAction("Split Selected Primaries")
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
         if hasattr(menu, "exec"):
@@ -921,7 +921,8 @@ class EditorUiMixin(MainWindowMixin):
         self._compact_layout(main_tools_layout, margin=self.COMPACT_MARGIN)
         main_tools_layout.setSizeConstraint(QLayout.SetMinimumSize)
 
-        self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, track_enabled=False)
+        tooltip = "Open the MMTools panel."
+        self.mmtools_button = self._create_tool_button("MMTools", MMTOOLS_ICON, tooltip, track_enabled=False)
         main_tools_layout.addWidget(self.mmtools_button)
 
         editor_frame_layout = FrameLayout("Editor")
@@ -929,32 +930,47 @@ class EditorUiMixin(MainWindowMixin):
         self._tools_panel_section_labels[editor_frame_layout] = "Editor"
         self.select_editor_button = self._create_tool_button("Select Controller", SELECT_ICON)
         self.controller_layout_button = self._create_tool_button("Controller Layout", CONTROLLER_LAYOUT_ICON)
-        
-        self.zero_all_button = self._create_tool_button("Zero All", ZERO_VALUE_ICON)
-        self.rename_button = self._create_tool_button("Rename To Pose", RENAME_ICON)
-        self.duplicate_button = self._create_tool_button("Duplicate Rename", DUPLICATE_ICON)
+
+        tooltip = "Set all the control values to zero."
+        self.zero_all_button = self._create_tool_button("Zero All", ZERO_VALUE_ICON, tooltip)
+        tooltip = "Rename the selected object to match the current pose."
+        self.rename_button = self._create_tool_button("Rename To Pose", RENAME_ICON, tooltip)
+        tooltip = "Duplicate the base mesh and move to the side renaming it to the current pose."
+        self.extract_at_pose_button = self._create_tool_button("Extract At Pose", DUPLICATE_ICON, tooltip)
         editor_frame_layout.addWidget(self.select_editor_button)
         editor_frame_layout.addWidget(self.controller_layout_button)
         editor_frame_layout.addWidget(self.zero_all_button)
         editor_frame_layout.addWidget(self.rename_button)
-        editor_frame_layout.addWidget(self.duplicate_button)
+        editor_frame_layout.addWidget(self.extract_at_pose_button)
 
         edit_shapes_frame_layout = FrameLayout("Shapes Edit")
         self._tools_panel_sections.append(edit_shapes_frame_layout)
         self._tools_panel_section_labels[edit_shapes_frame_layout] = "Shapes Edit"
-        self.add_primary_button = self._create_tool_button("Add/Commit New Primary", ADD_ICON)
-        self.add_primary_button.setToolTip("Add selected mesh as a new primary shape.\n If there are no selected meshes, creates an empty primary shape that can be filled by copying values from an existing shape.")
-        self.add_selected_at_current_pose_button = self._create_tool_button("Add/Commit At Current Pose", ADD_AT_POSE_ICON)
-        self.add_selected_at_current_pose_button.setToolTip("Add the selected mesh at the current pose extrapolating the name from the active values in the controller.\nFor example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen\nIf no mesh is selected an empty shape will be added.")
-        self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON)
-        self.delete_shapes_button = self._create_tool_button("Delete Shapes", DELETE_ICON)
+        tooltip = "Commit the selected meshes to the editor.<br>" \
+        "Selected objects with invalid naming will be ignored."
+        self.commit_shapes_button = self._create_tool_button("Commit Selected", COMMIT_ICON, tooltip)
+        tooltip = "Delete the selected shapes from the focused Primaries or Shapes list"
+        self.delete_shapes_button = self._create_tool_button("Delete Shapes",
+                                                             DELETE_ICON,
+                                                             tooltip)
         self.delete_shapes_button.setFocusPolicy(Qt.NoFocus)
-        self.delete_shapes_button.setToolTip("Delete the selected shapes from the focused Primaries or Shapes list")
         edit_shapes_frame_layout.addWidget(self.commit_shapes_button)
-        edit_shapes_frame_layout.addWidget(self.add_primary_button)
-        edit_shapes_frame_layout.addWidget(self.add_selected_at_current_pose_button)
         edit_shapes_frame_layout.addWidget(self.delete_shapes_button)
 
+        placeholder_shapes_frame_layout = FrameLayout("Placeholders Shapes")
+        self._tools_panel_sections.append(placeholder_shapes_frame_layout)
+        self._tools_panel_section_labels[placeholder_shapes_frame_layout] = "Placeholders Shapes"
+        tooltip = "Create a new Primary with no deltas as a placeholder."
+        self.add_primary_button = self._create_tool_button("Add Primary Placeholder", ADD_ICON, tooltip)
+        tooltip = "Add a new shape placeholder at the current pose extrapolating the name from the active" \
+        "values in the controller." \
+        "<br>For example: (lipCornerPuller, 0.5) (jawOpen, 1.0) -> lipCornerPuller50_jawOpen"
+        self.add_pose_placeholder_button = self._create_tool_button("Add Pose Placeholder",
+                                                                    ADD_AT_POSE_ICON,
+                                                                    tooltip)
+
+        placeholder_shapes_frame_layout.addWidget(self.add_primary_button)
+        placeholder_shapes_frame_layout.addWidget(self.add_pose_placeholder_button)
 
         preview_shapes_frame_layout = FrameLayout("Shapes Preview")
         self._tools_panel_sections.append(preview_shapes_frame_layout)
@@ -974,6 +990,7 @@ class EditorUiMixin(MainWindowMixin):
         debug_shapes_frame_layout.addWidget(self.compare_shapes_button)
 
         main_tools_layout.addWidget(edit_shapes_frame_layout, 0)
+        main_tools_layout.addWidget(placeholder_shapes_frame_layout, 0)
         main_tools_layout.addWidget(editor_frame_layout, 0)
         main_tools_layout.addWidget(preview_shapes_frame_layout, 0)
         main_tools_layout.addWidget(debug_shapes_frame_layout, 0)
@@ -989,7 +1006,11 @@ class EditorUiMixin(MainWindowMixin):
         tools_group.setMinimumWidth(self._tools_panel_compact_width)
 
 
-    def _create_tool_button(self, label: str, icon: Optional[QIcon] = None, *, track_enabled: bool = True) -> QPushButton:
+    def _create_tool_button(self, label: str,
+                            icon: Optional[QIcon] = None,
+                            tooltip: Optional[str] = None,
+                            *,
+                            track_enabled: bool = True) -> QPushButton:
         button = QPushButton(label)
         button.setStyleSheet("text-align: left; padding-left: 2px;")
         if icon is not None:
@@ -999,8 +1020,12 @@ class EditorUiMixin(MainWindowMixin):
             self.tool_buttons.append(button)
         self._tools_panel_buttons.append(button)
         self._tools_panel_button_labels[button] = label
-        if not button.toolTip():
-            button.setToolTip(label)
+        
+        if tooltip is not None:
+            tooltip_text = f"<b>{label}:</b><br>{tooltip}"
+        else:
+            tooltip_text = f"<b>{label}</b>"
+        button.setToolTip(tooltip_text)
         return button
 
 
@@ -1059,10 +1084,10 @@ class EditorUiMixin(MainWindowMixin):
         self.controller_layout_button.clicked.connect(self._show_controller_layout_window)
         self.zero_all_button.clicked.connect(self.zero_all)
         self.rename_button.clicked.connect(self.rename_selected_mesh)
-        self.duplicate_button.clicked.connect(self.duplicate_at_value)
-        self.add_primary_button.clicked.connect(self._on_add_primary_clicked)
+        self.extract_at_pose_button.clicked.connect(self.duplicate_at_value)
+        self.add_primary_button.clicked.connect(self._on_add_empty_primary_clicked)
         self.commit_shapes_button.clicked.connect(self.commit_selected)
-        self.add_selected_at_current_pose_button.clicked.connect(self.add_selected_at_current_pose)
+        self.add_pose_placeholder_button.clicked.connect(self.on_add_empty_at_current_pose)
         self.delete_shapes_button.clicked.connect(self.remove_shapes_from_focused_view)
         self.unmute_all_shapes_button.clicked.connect(self.unmute_all_shapes)
         self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)

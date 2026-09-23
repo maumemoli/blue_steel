@@ -1556,73 +1556,32 @@ class BlueSteelEditor(object):
             self.add_combo_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
         return shape
 
-    def add_selected_at_current_pose(self):
+    def add_empty_at_current_pose(self):
         """
-        Define the current pose from the control and commit the selected shape to the Blue Steel rig."""
-        selection = cmds.ls(selection=True, long=True) or []
-        # let's try to find a valid mesh in the selection
-        mesh = self.base_mesh
-        for sel in selection:
-            if sel == self.base_mesh:
-                continue
-            shapes = cmds.listRelatives(sel, shapes=True, fullPath=True) or []
-            for shape in shapes:
-                if cmds.nodeType(shape) == "mesh":
-                    mesh = sel
-                    break
-            if mesh:
-                break
-        empty_delta = False
-        if mesh == self.base_mesh:
-            empty_delta = True
+        Add an empty delta shape at the current pose.
+        """
         pose_name = self.get_active_state_name()
         if not pose_name:
-            raise ValueError("No active state found on the control to commit the shape to.")
-        shape = self.network.get_shape(pose_name)
-        if shape is not None and empty_delta:
-            # we are stopping here because if the shape already exists and there is no mesh to commit we might end up with a shape with no delta that can cause issues with the remap nodes and the shape editor manager
-            raise ValueError(f"Operation cancelled: Shape '{pose_name}' already exists and there is no selected mesh to commit.")
-        elif empty_delta:
-            # adding empty delta this is not going to affect the locked shapes anyway.
-            self._commit_batch_shapes_with_progress_bar({pose_name: mesh})
-            self.reset_delta_for_shapes([pose_name])
-            return pose_name
-        else:
-            locked_related_shapes = self.get_related_shapes_downstream(pose_name)
-            locked_related_shapes = set(locked_related_shapes).intersection(self.locked_shapes)
-            extraction_group, extracted_locked_meshes = self.extract_shapes_to_mesh(locked_related_shapes)
+            raise ValueError("No active state found on the control to add the empty delta shape to.")
+        if pose_name in self.network._shapes:
+            raise ValueError(f"Shape '{pose_name}' already exists in the network.")
+        mesh = self.base_mesh
+        self._commit_batch_shapes_with_progress_bar({pose_name: mesh})
+        self.reset_delta_for_shapes([pose_name])
 
-            self._commit_batch_shapes_with_progress_bar({pose_name: mesh})
-            if extracted_locked_meshes:
-                self._commit_batch_shapes_with_progress_bar(extracted_locked_meshes,
-                                                            progress_bar_message="Restoring locked {0} shapes...")
-            cmds.delete(extraction_group)
-            return pose_name
+        return pose_name
 
-
-    def add_new_primary_shape(self, shape_name: str)->Shape:
+    def add_empty_primary_shape(self, shape_name: str)->Shape:
         """
-        Add a new primary shape to the rig.
-        If there is a mesh selected it will be used as the source for the primary shape,
-        otherwise the base mesh will be used.
+        Add an empty primary shape to the rig. An empty primary shape is a shape with no delta,
+        it will be used as a placeholder for the primary shapes that will be added later.
         Parameters:
             shape_name (str): The name of the shape to add
         Returns:
             Shape: The added primary shape
         """
-        selection = cmds.ls(selection=True, long=True) or []
         # let's try to find a valid mesh in the selection
         mesh = self.base_mesh
-        for sel in selection:
-            if sel == self.base_mesh:
-                continue
-            shapes = cmds.listRelatives(sel, shapes=True, fullPath=True) or []
-            for shape in shapes:
-                if cmds.nodeType(shape) == "mesh":
-                    mesh = sel
-                    break
-            if mesh:
-                break
         if self.blendshape is None:
             raise ValueError("Main blendshape not found.")
         if shape_name not in self.network._shapes:
@@ -1630,9 +1589,8 @@ class BlueSteelEditor(object):
             if shape.type != "PrimaryShape":
                 raise ValueError(f"Shape Name '{shape_name}' is not a valid primary shape name.")
             self.add_primary_shape(mesh, shape)
-            if mesh == self.base_mesh:
-                # if the mesh is the base mesh that means that we are adding a shape with no delta, we need to reset the delta of this shape to avoid any issues with the remap nodes
-                self.reset_delta_for_shapes([shape_name])
+            # if the mesh is the base mesh that means that we are adding a shape with no delta, we need to reset the delta of this shape to avoid any issues with the remap nodes
+            self.reset_delta_for_shapes([shape_name])
         else:
             raise ValueError(f"Shape '{shape_name}' already exists in the network.")
         return shape

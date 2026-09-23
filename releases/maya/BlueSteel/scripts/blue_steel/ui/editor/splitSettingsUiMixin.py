@@ -851,7 +851,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
             item.setSelected(True)
 
         menu = QMenu(self.split_primaries_tree)
-        split_selected_action = menu.addAction("Split selected shapes")
+        split_selected_action = menu.addAction("Split Selected Primaries")
         menu.addSeparator()
         assign_menu = menu.addMenu("Assign to:")
         try:

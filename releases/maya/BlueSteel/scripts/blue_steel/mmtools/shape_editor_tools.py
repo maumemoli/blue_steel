@@ -1,6 +1,6 @@
 from maya import cmds, mel
 import numpy as np
-from blue_steel.api.blendshape import Blendshape
+from ..api.blendshape import Blendshape
 
 def split_on_axis_selected_blendshape_targets():
     """Split the selected blendshape targets based on their axis."""
