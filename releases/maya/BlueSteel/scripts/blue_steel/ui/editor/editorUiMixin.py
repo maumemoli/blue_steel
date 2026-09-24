@@ -57,7 +57,6 @@ from .qt import (
     QGuiApplication,
     QHBoxLayout,
     QIcon,
-    QInputDialog,
     QLabel,
     QLayout,
     QMenu,
@@ -758,11 +757,9 @@ class EditorUiMixin(MainWindowMixin):
             self.primaries_view.clearSelection()
             item.setSelected(True)
 
-        primary_name = str(primary_name)
         menu = QMenu(self.primaries_view)
         rename_action = menu.addAction("Rename")
         menu.addSeparator()
-        add_inbetween_action = menu.addAction("Add Inbetween")
         split_selected_action = menu.addAction("Split Selected Primaries")
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
@@ -773,59 +770,10 @@ class EditorUiMixin(MainWindowMixin):
 
         if selected_action == rename_action:
             self._begin_inline_primary_rename(item)
-        elif selected_action == add_inbetween_action:
-            self._on_add_inbetween_requested(primary_name)
         elif selected_action == split_selected_action:
             self._split_selected_shapes(self._selected_primary_tree_names())
         elif selected_action == delete_action:
             self.remove_selected_primaries()
-
-
-    def _on_add_inbetween_requested(self, primary_name: str) -> None:
-        if self.current_editor is None:
-            self._set_status("No system selected.", warning=True)
-            return
-
-        primary_value = self._get_primary_tree_value(primary_name)
-        default_inbetween_value = 50
-        if primary_value is not None:
-            default_inbetween_value = int(float(primary_value) * 100.0)
-        default_inbetween_value = max(0, min(99, default_inbetween_value))
-
-        value, ok = QInputDialog.getInt(
-            self,
-            "Add Inbetween",
-            f"Enter 2-digit inbetween value for '{primary_name}':",
-            default_inbetween_value,
-            0,
-            99,
-        )
-        if not ok:
-            self._set_status("Add inbetween cancelled.")
-            return
-
-        inbetween_suffix = f"{int(value):02d}"
-        inbetween_name = f"{primary_name}{inbetween_suffix}"
-
-        try:
-            self._stop_active_blendshape_trackers()
-            self.current_editor.add_new_inbetween_shape(inbetween_name)
-        except Exception as exc:
-            self._set_status(f"Error adding inbetween shape: {exc}", error=True)
-            return
-        finally:
-            self._start_active_blendshape_trackers()
-
-        self._reload_shapes_from_editor()
-        self._set_shape_pose_by_name(inbetween_name)
-        selected = self._select_shape_in_shapes_tree(inbetween_name, ensure_visible=True)
-        if selected:
-            self._set_status(f"Added inbetween shape '{inbetween_name}', selected it, and set its pose.")
-        else:
-            self._set_status(
-                f"Added inbetween shape '{inbetween_name}' and set its pose, but could not select it in Shapes.",
-                warning=True,
-            )
 
 
     def _begin_inline_primary_rename(self, item: QTreeWidgetItem) -> None:

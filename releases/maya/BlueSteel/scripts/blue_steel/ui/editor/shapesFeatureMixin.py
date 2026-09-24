@@ -31,6 +31,7 @@ from .models import (
 from .qt import (
     QAbstractItemView,
     QColor,
+    QInputDialog,
     QItemSelectionModel,
     QListView,
     QMenu,
@@ -397,6 +398,13 @@ class ShapesFeatureMixin(MainWindowMixin):
             return
 
         menu = QMenu(sender)
+        add_inbetween_action = None
+        primary_shape_name = ""
+        if len(selected_shapes) == 1:
+            shape = self.current_editor.get_shape(selected_shapes[0])
+            if shape is not None and getattr(shape, "type", "") == "PrimaryShape":
+                primary_shape_name = selected_shapes[0]
+                add_inbetween_action = menu.addAction("Add Inbetween")
         extract_action = menu.addAction("Extract Selected Shapes")
         
         set_color_menu = menu.addMenu("Set Color")
@@ -419,6 +427,8 @@ class ShapesFeatureMixin(MainWindowMixin):
             self._set_shapes_custom_color(selected_shapes, color_actions[selected_action])
         elif selected_action == clear_color_action:
             self._clear_shapes_custom_color(selected_shapes)
+        elif add_inbetween_action is not None and selected_action == add_inbetween_action:
+            self._on_add_inbetween_requested(primary_shape_name)
         elif selected_action == extract_action:
             self.extract_selected(selected_shapes)
         elif selected_action == reset_deltas_action:
@@ -433,6 +443,53 @@ class ShapesFeatureMixin(MainWindowMixin):
                 if self.blendshape_tracker is not None:
                     self.blendshape_tracker.start()
             self._set_status(f"Reset deltas for {len(selected_shapes)} shape(s).")
+
+
+    def _on_add_inbetween_requested(self, primary_name: str) -> None:
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        primary_value = self._get_primary_tree_value(primary_name)
+        default_inbetween_value = 50
+        if primary_value is not None:
+            default_inbetween_value = int(float(primary_value) * 100.0)
+        default_inbetween_value = max(0, min(99, default_inbetween_value))
+
+        value, ok = QInputDialog.getInt(
+            self,
+            "Add Inbetween",
+            f"Enter 2-digit inbetween value for '{primary_name}':",
+            default_inbetween_value,
+            0,
+            99,
+        )
+        if not ok:
+            self._set_status("Add inbetween cancelled.")
+            return
+
+        inbetween_suffix = f"{int(value):02d}"
+        inbetween_name = f"{primary_name}{inbetween_suffix}"
+
+        try:
+            self._stop_active_blendshape_trackers()
+            self.current_editor.add_new_inbetween_shape(inbetween_name)
+        except Exception as exc:
+            self._set_status(f"Error adding inbetween shape: {exc}", error=True)
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+
+        self._reload_shapes_from_editor()
+        self._set_shape_pose_by_name(inbetween_name)
+        selected = self._select_shape_in_shapes_tree(inbetween_name, ensure_visible=True)
+        if selected:
+            self._set_status(f"Added inbetween shape '{inbetween_name}', selected it, and set its pose.")
+        else:
+            self._set_status(
+                f"Added inbetween shape '{inbetween_name}' and set its pose, but could not select it in Shapes.",
+                warning=True,
+            )
 
 
     def _set_shapes_custom_color(self, shape_names, color_hex: str) -> None:
