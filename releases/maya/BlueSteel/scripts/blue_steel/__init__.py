@@ -15,6 +15,7 @@ __url__ = "https://api.github.com/repos/maumemoli/blue_steel/releases/latest"
 __update_url__ = "https://github.com/maumemoli/blue_steel/releases/latest"
 __version__ = Version(_version_string)
 __author__ = "Maurizio Memoli"
+__package_name__ = __name__
 _latest_version = get_latest_version(__url__)
 __latest_version__ = Version(_latest_version) if _latest_version else None
 
@@ -36,5 +37,5 @@ def show():
         >>> import blue_steel
         >>> win = blue_steel.show()
     """
-    from blue_steel.ui.editor.mainWindow import show as _show
+    from .ui.editor.mainWindow import show as _show
     return _show()

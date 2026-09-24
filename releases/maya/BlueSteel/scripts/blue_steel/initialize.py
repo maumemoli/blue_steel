@@ -1,4 +1,5 @@
 import maya.cmds as cmds
+from .env import ENVIRONMENT
 
 def create_menu():
     menu_name = "BlueSteelMenu"
@@ -15,5 +16,5 @@ def create_menu():
 
     cmds.menuItem(
         label="Open Blue Steel",
-        command="import blue_steel; blue_steel.show()"
+        command=f"import {ENVIRONMENT.PACKAGE_NAME}; {ENVIRONMENT.PACKAGE_NAME}.show()"
     )

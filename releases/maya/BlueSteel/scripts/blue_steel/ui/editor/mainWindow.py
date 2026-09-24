@@ -341,19 +341,19 @@ def show() -> MainWindow:
         cmds.deleteUI(MainWindow.WORKSPACE_CONTROL_NAME, control=True)
 
     maya_main_window = get_maya_main_window()
-    import blue_steel
+    from ... import __update_url__, __latest_version__, __version__
 
     status_label = None
-    update_url = blue_steel.__update_url__
-    if blue_steel.__latest_version__ is None:
+    update_url = __update_url__
+    if __latest_version__ is None:
         status_label = QLabel(
             f'Unable to determine the latest version. '
             f'<a href="{update_url}" style="color: #e7b45a;"><strong>Check For Updates</strong></a>'
         )
-    elif blue_steel.__version__  < blue_steel.__latest_version__:
+    elif __version__  < __latest_version__:
         
         status_label = QLabel(
-            f'Update available: v.{blue_steel.__latest_version__} Download '
+            f'Update available: v.{__latest_version__} Download '
             f'<a href="{update_url}" style="color: #e7b45a;"><strong>Here</strong></a>'
         )
         status_label.setStyleSheet("color: #e7b45a;")
@@ -363,7 +363,7 @@ def show() -> MainWindow:
             f'Blue Steel is up to date.'
         )
     
-    WINDOW = MainWindow(parent=maya_main_window, version=blue_steel.__version__)
+    WINDOW = MainWindow(parent=maya_main_window, version=__version__)
     WINDOW.resize(1200, max(720, WINDOW.sizeHint().height()))
     WINDOW.show(dockable=True, area="right", floating=True)
     if status_label is not None:

@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from maya import cmds
-from . import __version__, __url__, __update_url__, __latest_version__, __maya_version__, __python_version__
+from . import __version__, __url__, __update_url__, __latest_version__, __maya_version__, __python_version__, __package_name__
 
 def dynamic_geometry_attributes_exists():
     """Return whether the dynamicGeometryAttributes plugin is registered."""
@@ -48,6 +48,7 @@ class Environment:
     """All the environment variables and shared constants of the project."""
 
     # ENVIRONMENT VARIABLES
+    PACKAGE_NAME: str = __package_name__
     SEPARATOR: str = "_"
     VERSION: str = __version__
     EDITOR_NAME_SUFFIX: str = "blueSteelEditor"

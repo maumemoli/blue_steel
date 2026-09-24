@@ -530,7 +530,9 @@ class EditorSessionMixin(MainWindowMixin):
             None
         """
         editor_name = self.current_editor.name if self.current_editor is not None else ""
-        title = f"Blue Steel v.{self.version}"
+        package_name_items = [x.capitalize() for x in env.ENVIRONMENT.PACKAGE_NAME.split("_")]
+        package_name = " ".join(package_name_items)
+        title = f"{package_name} v.{self.version}"
         if editor_name:
             title = f"{title} - {editor_name}"
         self.setWindowTitle(title)
