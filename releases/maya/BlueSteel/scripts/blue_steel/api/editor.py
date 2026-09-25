@@ -3172,31 +3172,6 @@ class BlueSteelEditor(object):
         return dir_id
 
     @classmethod
-    def get_shape_editor_directory_index(cls, container_name: str) -> list:
-        """
-        Get the index of a directory in the shape editor
-        Parameters:
-            group_name (str): The name of the group to get the index for
-        Returns:
-            int: The index of the directory
-        Example:
-            >>> dir_index = BlueSteelEditor.get_shape_editor_directory_index("myBlueSteelShapes_GRP")
-        """
-        if container_name.endswith(f"_{ENVIRONMENT.EDITOR_NAME_SUFFIX}"):
-            container_name = "_".join(container_name.split("_")[:-1])
-        directory_name = f"{container_name}_Blendshapes_GRP"
-        # print(f"Searching for directory name: {directory_name}")
-        indices = []
-        dir_count = cmds.getAttr("shapeEditorManager.blendShapeDirectory", size=True)
-        for i in range(dir_count):
-            dir_name = cmds.getAttr(f"shapeEditorManager.blendShapeDirectory[{i}].directoryName")
-            if dir_name == directory_name:
-                indices.append(i)
-        return indices
-
-
-
-    @classmethod
     def remove_shape_editor_directory(cls, dir_index: int):
         """
         Remove a directory from the shape editor
@@ -4314,9 +4289,14 @@ class BlueSteelEditor(object):
                         print(f"Warning: Shape '{shape_name}' not found in the network. Skipping split.")
                         continue
                     session.connect_shape(shape)
-                    for pose_name, areas in split_data.get_split_shape_poses(shape).items():
-                        session.apply_pose(areas)
-                        session.commit_pose(pose_name, destination_editor)
+                    split_shapes_poses = split_data.get_split_shape_poses(shape)
+                    if split_shapes_poses == {} and self.name != destination_editor.name:
+                        session.apply_pose([])
+                        session.commit_pose(shape, destination_editor)
+                    else:
+                        for pose_name, areas in split_shapes_poses.items():
+                            session.apply_pose(areas)
+                            session.commit_pose(pose_name, destination_editor)
         except Exception as e:
             print(f"Error while splitting shapes: {e}")
             traceback.print_exc()
