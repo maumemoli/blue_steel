@@ -10,4 +10,4 @@ The value is the PEP 440 normalized form of the human-readable release tag
 generated ``.mod`` file contents unchanged.
 """
 
-__version__ = "1.6.5-beta.1"
+__version__ = "1.6.5"
