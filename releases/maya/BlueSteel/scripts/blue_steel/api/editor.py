@@ -5041,6 +5041,21 @@ class BlueSteelEditor(object):
         
         return deltas
 
+    def get_active_shapes(self) -> dict:
+        """
+        Get the list of active shapes based on their weight values.
+
+        Returns:
+            dict: Dictionary of active shape names with weight greater than 0.0 as keys and their weight values as values.
+        """
+        active_shapes = {}
+        for weight in self.blendshape.weights:
+            weight_value = self.blendshape.get_weight_value(weight)
+            if weight_value > 0.0:
+                active_shapes[self.get_shape(weight)] = weight_value
+        return active_shapes
+
+
     def propagate_work_shape_to_active_shapes(self,
                                               work_shape: str,
                                               min_propagation_level = 2,
