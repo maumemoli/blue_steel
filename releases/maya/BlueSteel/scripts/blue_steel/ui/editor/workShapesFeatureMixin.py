@@ -21,14 +21,18 @@ from .models import (
     ShapeItemsModel,
 )
 from .qt import (
+    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGuiApplication,
     QItemSelectionModel,
+    QLabel,
     QModelIndex,
     QSpinBox,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     Qt,
 )
@@ -494,10 +498,12 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _on_work_shape_propagate_to_active_shapes_requested(self, work_shape_name: str) -> None:
-        """Propagate a work shape to the active shapes using user-set settings.
+        """Propagate a work shape to a user-selected subset of active shapes.
 
-        Opens a dialog to configure the minimum propagation level and the mask
-        blurring options, then calls the editor propagation routine.
+        Opens a dialog listing the currently active shapes grouped by level and
+        sorted by descending weight, each with a checkbox, plus the mask
+        blurring options, then calls the editor propagation routine for the
+        checked shapes.
 
         Parameters:
             work_shape_name (str): The work shape to propagate from.
@@ -509,14 +515,20 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
+        active_shapes = dict(self.current_editor.get_active_shapes() or {})
+        shapes_by_level: dict = {}
+        for shape_name in active_shapes:
+            shape = self.current_editor.get_shape(shape_name)
+            level = int(getattr(shape, "level", 0) or 0)
+            shapes_by_level.setdefault(level, []).append(shape_name)
+        if not shapes_by_level:
+            self._set_status("No active shapes to propagate.", warning=True)
+            return
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Propagate to Active Shape")
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
-        min_level_spin = QSpinBox(dialog)
-        min_level_spin.setRange(0, 999)
-        min_level_spin.setValue(2)
-        form.addRow("Minimum Propagation Level", min_level_spin)
         blur_iterations_spin = QSpinBox(dialog)
         blur_iterations_spin.setRange(0, 999)
         blur_iterations_spin.setValue(10)
@@ -528,12 +540,103 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         blur_strength_spin.setValue(1.0)
         form.addRow("Weights Blur Strength", blur_strength_spin)
         layout.addLayout(form)
+
+        layout.addWidget(QLabel("Active shapes to propagate:", dialog))
+        active_shapes_tree = QTreeWidget(dialog)
+        active_shapes_tree.setHeaderHidden(True)
+        active_shapes_tree.setRootIsDecorated(True)
+        active_shapes_tree.setUniformRowHeights(True)
+        active_shapes_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        checkable_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+        level_items: dict = {}
+        for level in sorted(shapes_by_level):
+            level_names = sorted(
+                shapes_by_level[level],
+                key=lambda name: active_shapes.get(name, 0.0),
+                reverse=True,
+            )
+            level_item = QTreeWidgetItem([f"Level {level} ({len(level_names)})"])
+            level_item.setFlags(checkable_flags)
+            level_item.setCheckState(0, Qt.Checked)
+            level_font = level_item.font(0)
+            level_font.setBold(True)
+            level_item.setFont(0, level_font)
+            active_shapes_tree.addTopLevelItem(level_item)
+            for shape_name in level_names:
+                value = float(active_shapes.get(shape_name, 0.0) or 0.0)
+                shape_item = QTreeWidgetItem([f"{shape_name}   {value:.3f}"])
+                shape_item.setFlags(checkable_flags)
+                shape_item.setCheckState(0, Qt.Checked)
+                shape_item.setData(0, Qt.UserRole, shape_name)
+                level_item.addChild(shape_item)
+            level_item.setExpanded(True)
+            level_items[level] = level_item
+        layout.addWidget(active_shapes_tree)
+
+        syncing: dict = {"active": False}
+
+        def selected_leaf_items() -> list:
+            return [
+                item
+                for item in active_shapes_tree.selectedItems()
+                if item.childCount() == 0
+            ]
+
+        def refresh_level_state(level_item: QTreeWidgetItem) -> None:
+            child_states = [
+                level_item.child(i).checkState(0)
+                for i in range(level_item.childCount())
+            ]
+            if not child_states:
+                return
+            if all(state == Qt.Checked for state in child_states):
+                level_item.setCheckState(0, Qt.Checked)
+            elif all(state == Qt.Unchecked for state in child_states):
+                level_item.setCheckState(0, Qt.Unchecked)
+            else:
+                level_item.setCheckState(0, Qt.PartiallyChecked)
+
+        def on_active_shape_item_changed(item: QTreeWidgetItem, _column: int) -> None:
+            if syncing["active"]:
+                return
+            syncing["active"] = True
+            try:
+                state = item.checkState(0)
+                if item.childCount() > 0:
+                    target_state = Qt.Unchecked if state == Qt.Unchecked else Qt.Checked
+                    for i in range(item.childCount()):
+                        item.child(i).setCheckState(0, target_state)
+                elif item.isSelected():
+                    for other_item in selected_leaf_items():
+                        other_item.setCheckState(0, state)
+                for level_item in level_items.values():
+                    refresh_level_state(level_item)
+            finally:
+                syncing["active"] = False
+
+        active_shapes_tree.itemChanged.connect(on_active_shape_item_changed)
+
+        def checked_shape_names() -> list:
+            names = []
+            for level_item in level_items.values():
+                for i in range(level_item.childCount()):
+                    child = level_item.child(i)
+                    if child.checkState(0) == Qt.Checked:
+                        names.append(str(child.data(0, Qt.UserRole) or ""))
+            return [name for name in names if name]
+
+        def accept_if_shapes_selected() -> None:
+            if not checked_shape_names():
+                self._set_status("Select at least one active shape to propagate.", warning=True)
+                return
+            dialog.accept()
+
         dialog_buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
             parent=dialog,
         )
         dialog_buttons.button(QDialogButtonBox.Ok).setText("Propagate")
-        dialog_buttons.accepted.connect(dialog.accept)
+        dialog_buttons.accepted.connect(accept_if_shapes_selected)
         dialog_buttons.rejected.connect(dialog.reject)
         layout.addWidget(dialog_buttons)
         if hasattr(dialog, "exec"):
@@ -544,14 +647,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._set_status("Propagation cancelled.")
             return
 
-        min_propagation_level = min_level_spin.value()
+        selected_active_shapes = checked_shape_names()
         blur_iterations = blur_iterations_spin.value()
         blur_strength = blur_strength_spin.value()
         try:
             self._stop_active_blendshape_trackers()
             self.current_editor.propagate_work_shape_to_active_shapes(
                 work_shape_name,
-                min_propagation_level=min_propagation_level,
+                active_shapes=selected_active_shapes,
+                normalize=True,
                 blur_iterations=blur_iterations,
                 blur_strength=blur_strength,
             )
@@ -563,7 +667,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._reload_work_shapes_from_editor()
         self._set_status(
             f"Propagated work shape '{work_shape_name}' to active shapes "
-            f"(level {min_propagation_level}, blur {blur_iterations} x {blur_strength:.2f})."
+            f"( blur {blur_iterations} x {blur_strength:.2f})."
         )
 
 

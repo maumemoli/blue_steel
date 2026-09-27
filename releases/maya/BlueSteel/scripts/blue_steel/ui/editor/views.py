@@ -852,12 +852,18 @@ class WorkShapesListView(SliderListView):
         selected_shape_names = self._selected_draggable_shape_names()
         normalize_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         duplicate_action = menu.addAction(f"Duplicate")
-        propagate_to_active_shapes_action = menu.addAction("Propagate to Active Shape")
+        duplicate_action.setToolTip("Duplicate the selected shape")
+        menu.addSeparator()
+        propagate_to_active_shapes_action = menu.addAction("Propagate to Active Shapes")
+        propagate_to_active_shapes_action.setToolTip("Propagate the selected shape down to all active shapes")
         propagate_to_active_shapes_action.setEnabled(self._propagate_to_active_shapes_callback is not None)
         extract_work_shape_mesh_action = menu.addAction("Extract Mesh")
         can_extract_mesh = self._can_extract_mesh_callback is None or self._can_extract_mesh_callback()
         extract_work_shape_mesh_action.setEnabled(can_extract_mesh)
+        if can_extract_mesh:
+            extract_work_shape_mesh_action.setToolTip("Extract the mesh of the selected work shape")
         if not can_extract_mesh:
             extract_work_shape_mesh_action.setToolTip("Extract Mesh is not supported on meshes with a skinCluster")
             menu.setToolTipsVisible(True)

@@ -5052,13 +5052,13 @@ class BlueSteelEditor(object):
         for weight in self.blendshape.weights:
             weight_value = self.blendshape.get_weight_value(weight)
             if weight_value > 0.0:
-                active_shapes[self.get_shape(weight)] = weight_value
+                active_shapes[str(weight)] = weight_value
         return active_shapes
 
 
     def propagate_work_shape_to_active_shapes(self,
                                               work_shape: str,
-                                              min_propagation_level = 2,
+                                              active_shapes: list,
                                               normalize=True,
                                               blur_iterations=10,
                                               blur_strength=1.0):
@@ -5069,7 +5069,6 @@ class BlueSteelEditor(object):
         Parameters:
             work_shape (str): The name of the work shape to propagate from.
             active_shapes (list): List of active shape names to propagate to.
-            min_propagation_level (int): The combo shape minimum propagation level.
             normalize (bool): Whether to normalize the delta masks into a partition of unity.
             blur_iterations (int): Number of Laplacian smoothing passes used to blur mask borders.
             blur_strength (float): Blend factor per blur pass (0.0..1.0).
@@ -5080,17 +5079,10 @@ class BlueSteelEditor(object):
         work_shape_weight = self.work_blendshape.get_weight_by_name(work_shape)
         if work_shape_weight is None:
             raise ValueError(f"Work shape '{work_shape}' not found in the blendshape.")
-
-        # we gonna get the active shapes.
-        active_shapes = []
-        for weight in self.blendshape.weights:
-            weight_value = self.blendshape.get_weight_value(weight)
-            if weight_value > 0.0:
-                shape = self.get_shape(weight)
-                if shape.level >= min_propagation_level:
-                    active_shapes.append(shape)
+        
         if not active_shapes:
-            raise ValueError(f"No active shapes found with the required propagation level {min_propagation_level}.")
+            raise ValueError(f"No active shapes selected.")
+        active_shapes = [self.get_shape(shape_name) for shape_name in active_shapes]
         # --- Start the progress bar ---
         gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
         # one step per delta mask plus one per propagated shape ("unpropagated" included)
