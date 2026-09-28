@@ -597,7 +597,8 @@ class WorkShapesListView(SliderListView):
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
         self.setToolTip(
             "Driver shapes: double-click to set pose. Drag outside this list and release "
-            "to remove that driver connection. Escape cancels."
+            "to remove that driver connection. Escape cancels. Alt+right-click a "
+            "disclosure triangle to expand or collapse all work shapes."
         )
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
@@ -658,6 +659,33 @@ class WorkShapesListView(SliderListView):
         else:
             self._collapsed_driver_names.discard(name)
         self.itemDelegate().sizeHintChanged.emit(index)
+        self.viewport().update()
+
+    def _set_all_drivers_expanded(self, expanded: bool) -> None:
+        """Apply one driver-expansion state to every work shape with drivers.
+
+        Parameters:
+            expanded (bool): ``True`` to expand every driver list, ``False`` to
+                collapse every driver list.
+
+        Returns:
+            None
+        """
+        model = self.model()
+        if model is None:
+            return
+        delegate = self.itemDelegate()
+        if expanded:
+            self._collapsed_driver_names.clear()
+        else:
+            for row in range(model.rowCount()):
+                index = model.index(row, 0)
+                if index.data(WorkShapeItemsModel.DriverNamesRole):
+                    self._collapsed_driver_names.add(str(index.data(ShapeItemsModel.NameRole)))
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if delegate is not None:
+                delegate.sizeHintChanged.emit(index)
         self.viewport().update()
 
     def _work_shape_hit(self, pos):
@@ -761,6 +789,14 @@ class WorkShapesListView(SliderListView):
         self._driver_press_active = False
         index, part, driver = self._work_shape_hit(event.pos())
         if part in {"driver", "disclosure"}:
+            if (
+                part == "disclosure"
+                and event.button() == Qt.RightButton
+                and bool(event.modifiers() & Qt.AltModifier)
+            ):
+                self._set_all_drivers_expanded(not self.drivers_expanded(index))
+                event.accept()
+                return
             self._driver_press_active = True
             if event.button() == Qt.LeftButton:
                 if part == "disclosure":
