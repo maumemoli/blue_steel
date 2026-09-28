@@ -67,6 +67,7 @@ class Environment:
     SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER: str = "splitMapEditMesh"
     SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER: str = "splitMapEditBlendshape"
     SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER: str = "splitMapEditCurrent"
+    FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER: str = "faceCtrlSorting"
     FACE_CTRL_STRING_IDENTIFIER: str = "faceCtrl"
     NODE_NETWORK_CONTAINER_STRING_IDENTIFIER: str = "nodeNetwork"
     BASE_MESH_STRING_IDENTIFIER: str = "baseMesh"

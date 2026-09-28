@@ -235,6 +235,7 @@ class BlueSteelEditor(object):
         self.sync_up_muted_shapes()
         self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
         self._sync_up_split_maps_attributes()
+        self.setup_face_ctrl_sorting_attribute()
         # custom coloring for the shapes
         self._add_custom_shapes_color_attribute()
         # make sure the split map edit mesh is hidden when the editor is initialized
@@ -3530,6 +3531,47 @@ class BlueSteelEditor(object):
                      enumName=enum_name,
                      defaultValue=0)
         cmds.setAttr(f"{self.split_attr_grp}.{primary}", cb=True)
+
+    def setup_face_ctrl_sorting_attribute(self):
+        if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER,
+                                   node=self.container.name, exists=True):
+            self._add_face_ctrl_sorting_attribute()
+
+
+    def read_face_ctrl_sorting_attribute(self) -> dict:
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
+            raise ValueError("Face control sorting attribute does not exist")
+        sorted_ctrl_attr = f"{self.container.name}.{ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER}"
+        read_attributes = attrUtils.read_json_attr(sorted_ctrl_attr)
+        return read_attributes
+
+    def write_face_ctrl_sorting_attribute(self, data: dict):
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
+            raise ValueError("Face control sorting attribute does not exist")
+        sorted_ctrl_attr = f"{self.container.name}.{ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER}"
+        attrUtils.write_json_attr(sorted_ctrl_attr, data) 
+
+    def _add_face_ctrl_sorting_attribute(self):
+        """ add a string attribute that contains a json format dictionary with the order of the face controls.
+        The attribute will be added to the container.
+        This attribute will store the order of the face controls in JSON format
+        [(attribute_name,attribute_path)...].
+        """
+        # check if the split group attriute node exists
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        # check if the attribute already exists
+        attr = ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER
+        face_ctrl_sorting_attribute = attrUtils.add_string_attr(node = self.container.name,
+                                                               attr_name = attr,
+                                                               default = "{}")
+
+
+        return face_ctrl_sorting_attribute
 
     def _add_split_maps_order_attribute(self):
         """ add a string attribute that contains a json format list with the order of the split groups.
