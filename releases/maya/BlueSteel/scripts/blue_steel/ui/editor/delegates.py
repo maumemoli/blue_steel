@@ -101,6 +101,7 @@ class SliderItemDelegate(QStyledItemDelegate):
     LEFT_MARGIN = 6
     RIGHT_MARGIN = 4
     TREE_INDENT = 6
+    PRIMARY_TREE_INDENT = 16
     VALUE_TO_ICON_GAP = 10
     ICON_SIZE = 22
     ICON_GAP = 3
@@ -152,7 +153,7 @@ class SliderItemDelegate(QStyledItemDelegate):
         if bool(index.model().data(index, ShapeItemsModel.IsHeaderRole)):
             return QSize(option.rect.width(), 28)
         if self._is_primary_tree_view() or bool(getattr(self.parent(), "_primary_slider_layout", False)):
-            return QSize(option.rect.width(), 20)
+            return QSize(option.rect.width(), 24)
         return QSize(option.rect.width(), 24)
 
     def __init__(self, parent=None) -> None:
@@ -240,7 +241,8 @@ class SliderItemDelegate(QStyledItemDelegate):
         while parent_index.isValid():
             depth += 1
             parent_index = parent_index.parent()
-        return depth * self.TREE_INDENT
+        indent = self.PRIMARY_TREE_INDENT if self._is_primary_tree_view() else self.TREE_INDENT
+        return depth * indent
 
     def _connected_mesh_icon_rect(self, option, index) -> QRect:
         shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")

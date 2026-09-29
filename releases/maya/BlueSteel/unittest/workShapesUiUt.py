@@ -280,7 +280,7 @@ class WorkShapesUiTests(unittest.TestCase):
         self.click(control)
         self.assertEqual(self.view.visualRect(self.index).height(), 64)
 
-    def test_alt_right_click_disclosure_sets_expansion_for_every_work_shape(self):
+    def test_alt_left_click_disclosure_sets_expansion_for_every_work_shape(self):
         driver_rows = [
             row for row in range(self.model.rowCount())
             if self.model.index(row, 0).data(Model.DriverNamesRole)
@@ -290,7 +290,7 @@ class WorkShapesUiTests(unittest.TestCase):
 
         for expected_expanded in (False, True):
             control = self.delegate.disclosure_rect(self.option(), self.index).center()
-            QtTest.QTest.mouseClick(self.view.viewport(), Qt.RightButton, Qt.AltModifier, control)
+            QtTest.QTest.mouseClick(self.view.viewport(), Qt.LeftButton, Qt.AltModifier, control)
             APP.processEvents()
             for row in driver_rows:
                 self.assertEqual(

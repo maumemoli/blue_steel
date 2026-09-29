@@ -297,6 +297,8 @@ Key behavior:
 - Double-click a WorkShape to rename it inline.
 - Alt+double-click a linked WorkShape to set and select its connected driver
   shape.
+- Alt+left-click a driver disclosure triangle to expand or collapse the driver
+  lists of every WorkShape at once.
 - The WorkShape context-menu **Extract Mesh** operation is separate from regular
   shape extraction and is currently unavailable when the editor mesh has a
   skinCluster.

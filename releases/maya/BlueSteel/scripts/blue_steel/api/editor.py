@@ -9,6 +9,7 @@ import re
 import itertools
 
 from . import attrUtils
+from .faceCtrlSorting import FaceCtrlSortingStore
 from .mayaUtils import undoable, pause_shape_editor
 from .container import Container
 from .blendshape import Blendshape, Weight
@@ -1423,6 +1424,7 @@ class BlueSteelEditor(object):
         shapes_to_remove = shapes_to_remove.sort_for_insertion()[::-1]
         # Now we can remove the shapes
         primaries_to_value_update = ShapeList([], self.separator)
+        removed_primaries = []
         for shape in shapes_to_remove:
             w = self.blendshape.get_weight_by_name(shape)
             if w is None:
@@ -1441,6 +1443,7 @@ class BlueSteelEditor(object):
                     attrUtils.remove_attribute(self.split_attr_grp, shape)
                 else:
                     raise ValueError(f"Cannot remove primary shape '{shape}' because split attribute group is missing.")
+                removed_primaries.append(str(shape))
             else:
                 # we need to remove the input connections to the remapValue or combinationShape nodes
                 # of the inbetween combo and combo inbetween shapes
@@ -1464,6 +1467,8 @@ class BlueSteelEditor(object):
         # now we need to update the remapValue nodes for the primaries that had inbetweens removed
         for primary in primaries_to_value_update:
             self.update_remap_nodes_values(primary)
+        if removed_primaries:
+            self._remove_primaries_from_face_ctrl_sorting(removed_primaries)
         return shapes_to_remove
 
 
@@ -1529,6 +1534,7 @@ class BlueSteelEditor(object):
             self.container.bind_attribute(f"{self.face_ctrl}.{new_name}")
         # finally we need to update the shape in the network
         self.sync_network()
+        self._rename_primary_in_face_ctrl_sorting(old_name, new_name)
 
 
     def commit_shape(self, shape_name: str, mesh: str, invert_shape: bool = True):
@@ -2689,6 +2695,8 @@ class BlueSteelEditor(object):
         shape.weight_id = w.id
         self.network.add_shape(shape)
         # we will set the shape now
+        if return_value == "ADDED":
+            self._add_primary_to_face_ctrl_sorting(str(shape))
         
         return return_value
 
@@ -3543,8 +3551,9 @@ class BlueSteelEditor(object):
             raise ValueError("Container does not exist")
         if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
             raise ValueError("Face control sorting attribute does not exist")
-        sorted_ctrl_attr = f"{self.container.name}.{ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER}"
-        read_attributes = attrUtils.read_json_attr(sorted_ctrl_attr)
+        read_attributes = attrUtils.read_json_attr(
+            self.container.name, ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER
+        )
         return read_attributes
 
     def write_face_ctrl_sorting_attribute(self, data: dict):
@@ -3552,8 +3561,78 @@ class BlueSteelEditor(object):
             raise ValueError("Container does not exist")
         if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
             raise ValueError("Face control sorting attribute does not exist")
-        sorted_ctrl_attr = f"{self.container.name}.{ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER}"
-        attrUtils.write_json_attr(sorted_ctrl_attr, data) 
+        attrUtils.write_json_attr(
+            self.container.name, ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, data
+        )
+
+    def _face_ctrl_sorting_store(self) -> FaceCtrlSortingStore:
+        """Return a store loaded from the container sorting attribute.
+
+        Returns:
+            FaceCtrlSortingStore: The current ordering/grouping tree.
+        """
+        store = FaceCtrlSortingStore()
+        try:
+            store.load(self)
+        except Exception:
+            store.from_dict(None)
+        return store
+
+    def _add_primary_to_face_ctrl_sorting(self, primary_name: str) -> None:
+        """Append a newly added primary to the persisted sorting tree.
+
+        Parameters:
+            primary_name (str): The primary shape name that was added.
+
+        Returns:
+            None
+        """
+        try:
+            store = self._face_ctrl_sorting_store()
+            if store.add_primary(str(primary_name)):
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update face control sorting for '{primary_name}': {exc}")
+
+    def _remove_primaries_from_face_ctrl_sorting(self, primary_names) -> None:
+        """Remove primaries from the persisted sorting tree.
+
+        Parameters:
+            primary_names (Iterable[str]): Primary names that were removed.
+
+        Returns:
+            None
+        """
+        try:
+            store = self._face_ctrl_sorting_store()
+            changed = False
+            for primary_name in primary_names:
+                if store.remove(str(primary_name)):
+                    changed = True
+            if changed:
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update face control sorting after removal: {exc}")
+
+    def _rename_primary_in_face_ctrl_sorting(self, old_name: str, new_name: str) -> None:
+        """Rename a primary entry in the persisted sorting tree.
+
+        Parameters:
+            old_name (str): Previous primary name.
+            new_name (str): New primary name.
+
+        Returns:
+            None
+        """
+        try:
+            store = self._face_ctrl_sorting_store()
+            if store.rename(str(old_name), str(new_name)):
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update face control sorting rename: {exc}")
 
     def _add_face_ctrl_sorting_attribute(self):
         """ add a string attribute that contains a json format dictionary with the order of the face controls.
@@ -3568,7 +3647,7 @@ class BlueSteelEditor(object):
         attr = ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER
         face_ctrl_sorting_attribute = attrUtils.add_string_attr(node = self.container.name,
                                                                attr_name = attr,
-                                                               default = "{}")
+                                                               default_value = "{}")
 
 
         return face_ctrl_sorting_attribute

@@ -27,6 +27,7 @@ SHAPE_CUSTOM_COLORS = {
 # Custom MIME types used for editor drag-and-drop.
 SHAPE_NAMES_MIME_TYPE = "application/x-blue-steel-shape-names"
 PRIMARY_TREE_MIME_TYPE = "application/x-qabstractitemmodeldatalist"
+PRIMARY_ORDER_MIME_TYPE = "application/x-blue-steel-primary-order"
 SPLIT_MAP_MIME_TYPE = "application/x-blue-steel-split-map"
 
 # UI sizing constants.

@@ -17,7 +17,10 @@ from typing import Callable, Dict, List, Optional, Sequence
 from ... import env
 
 from .constants import (
+    PRIMARY_ORDER_MIME_TYPE,
+    PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_MIME_TYPE,
+    PRIMARY_TREE_NAME_ROLE,
     PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_NAMES_MIME_TYPE,
 )
@@ -596,9 +599,9 @@ class WorkShapesListView(SliderListView):
         self._can_extract_mesh_callback = can_extract_mesh_callback
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
         self.setToolTip(
-            "Driver shapes: double-click to set pose. Drag outside this list and release "
-            "to remove that driver connection. Escape cancels. Alt+right-click a "
-            "disclosure triangle to expand or collapse all work shapes."
+            "<b>Driver shapes:</b><br> <b>Double-click</b> to set pose.<br>" 
+            "<b>Drag outside</b> this list and release to remove that driver connection.<br>"
+            "<b>Alt+left-click</b> a disclosure triangle to expand or collapse all work shapes."
         )
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
@@ -791,7 +794,7 @@ class WorkShapesListView(SliderListView):
         if part in {"driver", "disclosure"}:
             if (
                 part == "disclosure"
-                and event.button() == Qt.RightButton
+                and event.button() == Qt.LeftButton
                 and bool(event.modifiers() & Qt.AltModifier)
             ):
                 self._set_all_drivers_expanded(not self.drivers_expanded(index))
@@ -1092,13 +1095,17 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
     drags and Qt owns name drags, so clicks and double-clicks reach the view."""
 
     DRAG_MIME_TYPE = SHAPE_NAMES_MIME_TYPE
+    ORDER_MIME_TYPE = PRIMARY_ORDER_MIME_TYPE
     pageNavigationPoseRequested = Signal(str)
+    primaryMoveRequested = Signal(object, str, str)
+    groupRequested = Signal()
     _primary_tree_layout = True
     _tree_view_layout = True
     _shapes_tree_layout = False
     _panel_icon_slots = 0
     _uses_native_branch_indicator = False
     _enable_slider_value_edit = True
+    _enable_internal_reorder = True
 
     def __init__(self, parent=None) -> None:
         """Create the primaries tree with slider-only value editing enabled.
@@ -1110,9 +1117,18 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
             None
         """
         super().__init__(parent)
+        self._drop_target_item = None
+        self._drop_position = ""
         # Slider double-clicks are the only path that opens the value editor;
         # name double-clicks keep their pose behavior.
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        if self._enable_internal_reorder:
+            # Internal reordering is handled by the owning window through
+            # ``primaryMoveRequested``; Qt must not move the items itself.
+            self.setAcceptDrops(True)
+            self.setDragDropMode(QAbstractItemView.DragDrop)
+            self.setDropIndicatorShown(True)
+            self.setDefaultDropAction(Qt.MoveAction)
 
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
@@ -1169,14 +1185,22 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
         self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
         return True
 
+    def _selected_order_names(self) -> List[str]:
+        """Return selected primary/folder names for internal reordering."""
+        return [self._item_name(item) for item in self.selectedItems() if self._item_name(item)]
+
     def startDrag(self, supportedActions):  # noqa: N802
         shape_names = self._selected_draggable_shape_names()
-        if not shape_names:
+        order_names = self._selected_order_names() if self._enable_internal_reorder else []
+        if not shape_names and not order_names:
             return
         mime_data = QMimeData()
-        payload = "\n".join(shape_names).encode("utf-8")
-        mime_data.setData(self.DRAG_MIME_TYPE, payload)
-        mime_data.setText("\n".join(shape_names))
+        if shape_names:
+            payload = "\n".join(shape_names).encode("utf-8")
+            mime_data.setData(self.DRAG_MIME_TYPE, payload)
+            mime_data.setText("\n".join(shape_names))
+        if order_names:
+            mime_data.setData(self.ORDER_MIME_TYPE, "\n".join(order_names).encode("utf-8"))
         drag = QDrag(self)
         drag.setMimeData(mime_data)
         drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
@@ -1185,7 +1209,126 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
         else:
             drag.exec_(drop_action)
 
+    @staticmethod
+    def _event_position(event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def _item_name(self, item) -> str:
+        if item is None:
+            return ""
+        name = item.data(0, PRIMARY_TREE_NAME_ROLE)
+        if not name:
+            name = item.data(0, ShapeItemsModel.NameRole)
+        return str(name or item.text(0) or "")
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if self._is_internal_order_event(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if not self._is_internal_order_event(event):
+            event.ignore()
+            return
+        item, position = self._internal_drop_target(self._event_position(event))
+        if item is not self._drop_target_item or position != self._drop_position:
+            self._drop_target_item = item
+            self._drop_position = position
+            self.viewport().update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):  # noqa: N802
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def _is_internal_order_event(self, event) -> bool:
+        return bool(
+            self._enable_internal_reorder
+            and event.source() is self
+            and event.mimeData().hasFormat(self.ORDER_MIME_TYPE)
+        )
+
+    def _internal_drop_target(self, pos):
+        """Resolve the internal drop target for ``pos``.
+
+        Returns:
+            tuple: ``(item, position)`` where ``position`` is ``before``,
+                ``after`` or ``inside`` for an item target, or ``(None, "root")``
+                when the pointer is over empty viewport space.
+        """
+        item = self.itemAt(pos)
+        if item is None:
+            return None, "root"
+        rect = self.visualItemRect(item)
+        ratio = (pos.y() - rect.top()) / max(1, rect.height())
+        if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+            # Only the middle band nests; the edges reorder as siblings so a
+            # nested group can always be pulled back out of its parent.
+            if ratio < 0.25:
+                return item, "before"
+            if ratio > 0.75:
+                return item, "after"
+            return item, "inside"
+        return item, ("before" if ratio < 0.5 else "after")
+
+    def _clear_drop_indicator(self) -> None:
+        if self._drop_target_item is not None or self._drop_position:
+            self._drop_target_item = None
+            self._drop_position = ""
+            self.viewport().update()
+
+    def dropEvent(self, event):  # noqa: N802
+        if not self._is_internal_order_event(event):
+            event.ignore()
+            return
+        names = [
+            name for name in bytes(event.mimeData().data(self.ORDER_MIME_TYPE))
+            .decode("utf-8", errors="ignore").split("\n")
+            if name.strip()
+        ]
+        item, position = self._internal_drop_target(self._event_position(event))
+        self._clear_drop_indicator()
+        if not names:
+            event.ignore()
+            return
+        target = self._item_name(item) if item is not None else ""
+        if position != "root" and not target:
+            event.ignore()
+            return
+        self.primaryMoveRequested.emit(names, target, position)
+        event.acceptProposedAction()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        item = self._drop_target_item
+        if item is None:
+            return
+        rect = self.visualItemRect(item)
+        if not rect.isValid():
+            return
+        painter = QPainter(self.viewport())
+        try:
+            accent = QColor(90, 160, 240)
+            if self._drop_position == "inside":
+                highlight = QColor(accent)
+                highlight.setAlpha(55)
+                painter.fillRect(rect, highlight)
+                painter.setPen(accent)
+                painter.drawRect(rect.adjusted(0, 0, -1, -1))
+            else:
+                line_top = rect.top() - 1 if self._drop_position == "before" else rect.bottom() - 1
+                painter.fillRect(rect.left() + 1, line_top, max(1, rect.width() - 2), 3, accent)
+        finally:
+            painter.end()
+
     def keyPressEvent(self, event):  # noqa: N802
+        if event.key() == Qt.Key_G and (event.modifiers() & Qt.ControlModifier):
+            self.groupRequested.emit()
+            event.accept()
+            return
         if event.modifiers() == Qt.NoModifier:
             if event.key() == Qt.Key_Down and self._move_to_next_selectable_item(1):
                 event.accept()
@@ -1221,6 +1364,7 @@ class PrimaryDropTreeWidget(PrimaryTreeWidget):
 
     PRIMARY_TREE_MIME_TYPE = PRIMARY_TREE_MIME_TYPE
     _flat_mode = True
+    _enable_internal_reorder = False
 
     def __init__(
         self,

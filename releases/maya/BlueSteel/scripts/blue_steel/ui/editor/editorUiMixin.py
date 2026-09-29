@@ -43,6 +43,7 @@ from ..common.icons import (
     FILTER_ACTIVE_VALUES_ICON,
 )
 from .constants import (
+    PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_NAME_ROLE,
     SHAPE_CUSTOM_COLORS,
     SPLITTER_HANDLE_WIDTH,
@@ -336,8 +337,15 @@ class EditorUiMixin(MainWindowMixin):
         self._apply_primaries_branch_icons()
         self.primaries_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.primaries_view.setDragEnabled(True)
-        self.primaries_view.setDragDropMode(QAbstractItemView.DragOnly)
-        self.primaries_view.setToolTip("Drag the value area to adjust; click names to select; drag selected names to drag and drop them")
+        self.primaries_view.setAcceptDrops(True)
+        self.primaries_view.setDragDropMode(QAbstractItemView.DragDrop)
+        self.primaries_view.setDropIndicatorShown(True)
+        self.primaries_view.setDefaultDropAction(Qt.MoveAction)
+        self.primaries_view.setToolTip(
+            "Drag the value area to adjust; click names to select; drag names or groups onto "
+            "the middle of a group to nest, its top/bottom edge to reorder, or empty space to "
+            "move to the top level; Ctrl+G groups the selected primaries"
+        )
         self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._primaries_delegate = SliderItemDelegate(self.primaries_view)
         self.primaries_view.setItemDelegateForColumn(0, self._primaries_delegate)
@@ -699,9 +707,7 @@ class EditorUiMixin(MainWindowMixin):
     def _is_primary_tree_folder_item(self, item: Optional[QTreeWidgetItem]) -> bool:
         if item is None:
             return False
-        if item.data(0, PRIMARY_TREE_NAME_ROLE):
-            return False
-        return bool(item.childCount())
+        return bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE))
 
 
     def _update_primary_tree_folder_icon(self, item: Optional[QTreeWidgetItem]) -> None:
@@ -749,27 +755,44 @@ class EditorUiMixin(MainWindowMixin):
         item = self.primaries_view.itemAt(pos)
         if item is None:
             return
-
-        primary_name = item.data(0, PRIMARY_TREE_NAME_ROLE)
-        if not primary_name:
-            return
         if not item.isSelected():
             self.primaries_view.clearSelection()
             item.setSelected(True)
+            self.primaries_view.setCurrentItem(item)
+
+        is_folder = self._is_primary_tree_folder_item(item)
+        primary_name = item.data(0, PRIMARY_TREE_NAME_ROLE)
+        if not is_folder and not primary_name:
+            return
 
         menu = QMenu(self.primaries_view)
-        rename_action = menu.addAction("Rename")
-        menu.addSeparator()
-        split_selected_action = menu.addAction("Split Selected Primaries")
-        menu.addSeparator()
-        delete_action = menu.addAction("Delete")
+        if is_folder:
+            rename_group_action = menu.addAction("Rename Group")
+            ungroup_action = menu.addAction("Ungroup")
+        else:
+            rename_action = menu.addAction("Rename")
+            group_action = menu.addAction("Group Selected")
+            menu.addSeparator()
+            split_selected_action = menu.addAction("Split Selected Primaries")
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete")
+
         if hasattr(menu, "exec"):
             selected_action = menu.exec(self.primaries_view.viewport().mapToGlobal(pos))
         else:
             selected_action = menu.exec_(self.primaries_view.viewport().mapToGlobal(pos))
 
+        if is_folder:
+            if selected_action == rename_group_action:
+                self._rename_primary_folder(item)
+            elif selected_action == ungroup_action:
+                self._ungroup_selected_primaries()
+            return
+
         if selected_action == rename_action:
             self._begin_inline_primary_rename(item)
+        elif selected_action == group_action:
+            self._group_selected_primaries()
         elif selected_action == split_selected_action:
             self._split_selected_shapes(self._selected_primary_tree_names())
         elif selected_action == delete_action:
@@ -1070,6 +1093,8 @@ class EditorUiMixin(MainWindowMixin):
         self.primaries_view.pageNavigationPoseRequested.connect(self._set_shape_pose_by_name)
         self.primaries_view.itemDoubleClicked.connect(self._on_primaries_item_double_clicked)
         self.primaries_view.customContextMenuRequested.connect(self._show_primaries_context_menu)
+        self.primaries_view.primaryMoveRequested.connect(self._on_primaries_move_requested)
+        self.primaries_view.groupRequested.connect(self._group_selected_primaries)
         if self.split_primary_search is not None:
             self.split_primary_search.searchChanged.connect(self._on_split_primary_search_changed)
         if self.split_primaries_tree is not None:

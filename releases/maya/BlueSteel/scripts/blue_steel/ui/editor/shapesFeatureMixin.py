@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import List, Optional, Sequence, Set
 
 from ... import env
+from ...api.faceCtrlSorting import FaceCtrlSortingStore
 from .constants import (
     PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_NAME_ROLE,
@@ -37,6 +38,7 @@ from .qt import (
     QMenu,
     QModelIndex,
     QSortFilterProxyModel,
+    QTimer,
     QTreeWidget,
     QTreeWidgetItem,
     Qt,
@@ -1127,7 +1129,13 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _sort_primaries_tree(self) -> None:
-        """Sort primaries tree by current sort mode (name or value)."""
+        """Sort primaries tree by value when that explicit mode is enabled.
+
+        The stored sorting tree owns the default order, so name-based sorting
+        is intentionally skipped.
+        """
+        if not self._primary_tree_sort_by_value:
+            return
         self._refresh_primary_folder_sort_values()
         # Use ascending sort and let PrimaryTreeItem.__lt__ handle mode-specific ordering.
         self.primaries_view.sortItems(0, Qt.AscendingOrder)
@@ -1277,9 +1285,11 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _rebuild_primaries_tree(self) -> None:
-        """Build primaries hierarchy from target directories, skipping shape envelope folders."""
+        """Build the primaries hierarchy from the persisted sorting tree."""
         selected_names = {item.data(0, PRIMARY_TREE_NAME_ROLE) for item in self.primaries_view.selectedItems()}
         selected_names.discard(None)
+        selected_names = {str(name) for name in selected_names}
+        collapsed_folders = self._collapsed_primary_folder_names()
         self._syncing_primaries_tree = True
         try:
             self.primaries_view.clear()
@@ -1289,75 +1299,17 @@ class ShapesFeatureMixin(MainWindowMixin):
                 return
 
             primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
-            primaries_target_dirs = self.current_editor.get_primaries_target_dirs() or {}
-            dirs_by_name = {str(name): list(path or []) for name, path in primaries_target_dirs.items()}
+            primary_names = [str(shape) for shape in primary_shapes]
             custom_colors = self.current_editor.read_custom_shapes_colors() or {}
 
-            # Build stable grouped data: path is stored leaf->root from API, so reverse to root->leaf.
-            grouped = {}
-            for shape in primary_shapes:
-                shape_name = str(shape)
-                tokens = list(reversed(dirs_by_name.get(shape_name, [])))
-                tokens = [token for token in tokens if token != shape_name]
-                grouped.setdefault(tuple(tokens), []).append(shape_name)
+            store = self._primary_sorting_store()
+            if store.sync(primary_names):
+                self._save_primary_sorting_store(store)
 
-            nodes_by_path = {}
-            for dir_path in sorted(grouped.keys(), key=lambda path: (len(path), path)):
-                parent_item = None
-                for depth in range(len(dir_path)):
-                    partial_path = dir_path[: depth + 1]
-                    node = nodes_by_path.get(partial_path)
-                    if node is None:
-                        node = PrimaryTreeItem([dir_path[depth]])
-                        node.setData(0, PRIMARY_TREE_FOLDER_ROLE, True)
-                        node.setData(0, ShapeItemsModel.NameRole, dir_path[depth])
-                        node.setData(0, ShapeItemsModel.TypeRole, "PrimaryFolder")
-                        node.setData(0, ShapeItemsModel.ValueRole, 0.0)
-                        node.setData(0, ShapeItemsModel.EditableRole, False)
-                        node.setData(0, ShapeItemsModel.IsHeaderRole, True)
-                        node.setData(0, ShapeItemsModel.MutedRole, False)
-                        node.setData(0, ShapeItemsModel.LockedRole, False)
-                        node.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
-                        node.setData(0, ShapeItemsModel.PrimariesRole, tuple())
-                        node.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, 0.0)
-                        folder_font = node.font(0)
-                        folder_font.setBold(True)
-                        node.setFont(0, folder_font)
-                        node.setFlags(Qt.ItemIsEnabled)
-                        if parent_item is None:
-                            self.primaries_view.addTopLevelItem(node)
-                        else:
-                            parent_item.addChild(node)
-                        nodes_by_path[partial_path] = node
-                    parent_item = node
+            self._build_primary_tree(
+                store.ordered_tree(), None, custom_colors, selected_names, collapsed_folders
+            )
 
-                for shape_name in sorted(grouped[dir_path], key=str.lower):
-                    leaf = PrimaryTreeItem([shape_name])
-                    leaf.setData(0, PRIMARY_TREE_NAME_ROLE, shape_name)
-                    value = self._get_primary_tree_value(shape_name)
-                    leaf_value = 0.0 if value is None else float(value)
-                    leaf.setData(0, ShapeItemsModel.NameRole, shape_name)
-                    leaf.setData(0, ShapeItemsModel.TypeRole, "PrimaryShape")
-                    leaf.setData(0, ShapeItemsModel.ValueRole, leaf_value)
-                    leaf.setData(0, ShapeItemsModel.EditableRole, True)
-                    leaf.setData(0, ShapeItemsModel.IsHeaderRole, False)
-                    leaf.setData(0, ShapeItemsModel.MutedRole, False)
-                    leaf.setData(0, ShapeItemsModel.LockedRole, False)
-                    leaf.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
-                    leaf.setData(0, ShapeItemsModel.PrimariesRole, (shape_name,))
-                    leaf.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, leaf_value)
-                    custom_color = custom_colors.get(shape_name)
-                    leaf.setData(0, ShapeItemsModel.ColorRole, shape_custom_color_to_qcolor(custom_color))
-                    leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
-                    if parent_item is None:
-                        self.primaries_view.addTopLevelItem(leaf)
-                    else:
-                        parent_item.addChild(leaf)
-                    self._primary_tree_items[shape_name] = leaf
-                    if shape_name in selected_names:
-                        leaf.setSelected(True)
-
-            self.primaries_view.expandAll()
             for i in range(self.primaries_view.topLevelItemCount()):
                 stack = [self.primaries_view.topLevelItem(i)]
                 while stack:
@@ -1365,9 +1317,215 @@ class ShapesFeatureMixin(MainWindowMixin):
                     self._update_primary_tree_folder_icon(item)
                     for j in range(item.childCount()):
                         stack.append(item.child(j))
-            self._sort_primaries_tree()
         finally:
             self._syncing_primaries_tree = False
+
+
+    def _primary_sorting_store(self) -> FaceCtrlSortingStore:
+        """Return the ordering store loaded from the active editor."""
+        store = FaceCtrlSortingStore()
+        try:
+            store.load(self.current_editor)
+        except Exception:
+            store.from_dict(None)
+        return store
+
+
+    def _save_primary_sorting_store(self, store: FaceCtrlSortingStore) -> None:
+        """Persist the ordering store, reporting failures without raising."""
+        if self.current_editor is None:
+            return
+        try:
+            store.save(self.current_editor)
+        except Exception as exc:
+            self._set_status(f"Failed saving primary ordering: {exc}", warning=True)
+
+
+    def _collapsed_primary_folder_names(self) -> Set[str]:
+        """Collect names of currently collapsed folders so rebuilds preserve them."""
+        collapsed: Set[str] = set()
+        stack = [self.primaries_view.topLevelItem(i) for i in range(self.primaries_view.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            if item.data(0, PRIMARY_TREE_FOLDER_ROLE) and not item.isExpanded():
+                collapsed.add(str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or ""))
+            for i in range(item.childCount()):
+                stack.append(item.child(i))
+        return collapsed
+
+
+    def _build_primary_tree(
+        self,
+        nodes: Sequence[dict],
+        parent_item: Optional[QTreeWidgetItem],
+        custom_colors: dict,
+        selected_names: Set[str],
+        collapsed_folders: Set[str],
+    ) -> None:
+        """Recursively create tree items from the store's nested node list."""
+        for node in nodes:
+            name = str(node.get("name") or "")
+            if not name:
+                continue
+            if node.get("type") == "group":
+                folder = PrimaryTreeItem([name])
+                folder.setData(0, PRIMARY_TREE_FOLDER_ROLE, True)
+                folder.setData(0, ShapeItemsModel.NameRole, name)
+                folder.setData(0, ShapeItemsModel.TypeRole, "PrimaryFolder")
+                folder.setData(0, ShapeItemsModel.ValueRole, 0.0)
+                folder.setData(0, ShapeItemsModel.EditableRole, False)
+                folder.setData(0, ShapeItemsModel.IsHeaderRole, True)
+                folder.setData(0, ShapeItemsModel.MutedRole, False)
+                folder.setData(0, ShapeItemsModel.LockedRole, False)
+                folder.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+                folder.setData(0, ShapeItemsModel.PrimariesRole, tuple())
+                folder.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, 0.0)
+                folder_font = folder.font(0)
+                folder_font.setBold(True)
+                folder.setFont(0, folder_font)
+                folder.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+                if parent_item is None:
+                    self.primaries_view.addTopLevelItem(folder)
+                else:
+                    parent_item.addChild(folder)
+                folder.setExpanded(name not in collapsed_folders)
+                self._build_primary_tree(
+                    node.get("children", []), folder, custom_colors, selected_names, collapsed_folders
+                )
+                continue
+
+            leaf = PrimaryTreeItem([name])
+            leaf.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+            value = self._get_primary_tree_value(name)
+            leaf_value = 0.0 if value is None else float(value)
+            leaf.setData(0, ShapeItemsModel.NameRole, name)
+            leaf.setData(0, ShapeItemsModel.TypeRole, "PrimaryShape")
+            leaf.setData(0, ShapeItemsModel.ValueRole, leaf_value)
+            leaf.setData(0, ShapeItemsModel.EditableRole, True)
+            leaf.setData(0, ShapeItemsModel.IsHeaderRole, False)
+            leaf.setData(0, ShapeItemsModel.MutedRole, False)
+            leaf.setData(0, ShapeItemsModel.LockedRole, False)
+            leaf.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+            leaf.setData(0, ShapeItemsModel.PrimariesRole, (name,))
+            leaf.setData(0, PRIMARY_TREE_SORT_VALUE_ROLE, leaf_value)
+            custom_color = custom_colors.get(name)
+            leaf.setData(0, ShapeItemsModel.ColorRole, shape_custom_color_to_qcolor(custom_color))
+            leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+            if parent_item is None:
+                self.primaries_view.addTopLevelItem(leaf)
+            else:
+                parent_item.addChild(leaf)
+            self._primary_tree_items[name] = leaf
+            if name in selected_names:
+                leaf.setSelected(True)
+
+
+    def _on_primaries_move_requested(self, names, target: str, position: str) -> None:
+        """Apply a drag-reorder/reparent coming from the primaries tree."""
+        if self.current_editor is None:
+            return
+        store = self._primary_sorting_store()
+        if str(position) == "root" or not str(target):
+            changed = store.move_to_root(list(names))
+        else:
+            changed = store.move(list(names), str(target), str(position))
+        if not changed:
+            return
+        self._save_primary_sorting_store(store)
+        # Defer the rebuild until the drop event has fully unwound; clearing the
+        # tree synchronously inside dropEvent can leave Qt holding stale item refs.
+        QTimer.singleShot(0, self._rebuild_primaries_tree)
+
+
+    def _selected_primary_folder_name(self) -> str:
+        """Return the selected folder name, if the current item is a folder."""
+        item = self.primaries_view.currentItem()
+        if item is None or not item.data(0, PRIMARY_TREE_FOLDER_ROLE):
+            return ""
+        return str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or "")
+
+
+    def _select_primary_folder(self, folder_name: str) -> None:
+        """Select a folder item by name after a rebuild."""
+        stack = [self.primaries_view.topLevelItem(i) for i in range(self.primaries_view.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            if item.data(0, PRIMARY_TREE_FOLDER_ROLE) and str(
+                item.data(0, ShapeItemsModel.NameRole) or ""
+            ) == str(folder_name):
+                self.primaries_view.clearSelection()
+                item.setSelected(True)
+                self.primaries_view.setCurrentItem(item)
+                self.primaries_view.scrollToItem(item)
+                return
+            for i in range(item.childCount()):
+                stack.append(item.child(i))
+
+
+    def _group_selected_primaries(self) -> None:
+        """Create a new folder containing the selected primaries (Ctrl+G)."""
+        if self.current_editor is None:
+            return
+        selected = self._selected_primary_tree_names()
+        if not selected:
+            self._set_status("Select one or more primaries to group.", warning=True)
+            return
+        name, ok = QInputDialog.getText(self, "Group Primaries", "Group name:", text="Group")
+        if not ok:
+            return
+        store = self._primary_sorting_store()
+        created = store.group(selected, (name or "").strip() or "Group")
+        if not created:
+            return
+        self._save_primary_sorting_store(store)
+        self._rebuild_primaries_tree()
+        self._select_primary_folder(created)
+        self._set_status(f"Grouped {len(selected)} primary(s) into '{created}'.")
+
+
+    def _rename_primary_folder(self, item: Optional[QTreeWidgetItem]) -> None:
+        """Prompt for and apply a new name for a primaries folder."""
+        if self.current_editor is None or item is None:
+            return
+        old_name = str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or "")
+        if not old_name:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Group", "Group name:", text=old_name
+        )
+        if not ok:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name or new_name == old_name:
+            return
+        store = self._primary_sorting_store()
+        if not store.rename(old_name, new_name):
+            self._set_status(f"Could not rename group '{old_name}'.", warning=True)
+            return
+        self._save_primary_sorting_store(store)
+        self._rebuild_primaries_tree()
+        self._select_primary_folder(new_name)
+        self._set_status(f"Renamed group '{old_name}' to '{new_name}'.")
+
+
+    def _ungroup_selected_primaries(self) -> None:
+        """Dissolve the selected folder, promoting its primaries."""
+        if self.current_editor is None:
+            return
+        group_name = self._selected_primary_folder_name()
+        if not group_name:
+            self._set_status("Select a group to ungroup.", warning=True)
+            return
+        store = self._primary_sorting_store()
+        if not store.ungroup(group_name):
+            return
+        self._save_primary_sorting_store(store)
+        self._rebuild_primaries_tree()
+        self._set_status(f"Ungrouped '{group_name}'.")
 
 
     def _rebuild_primary_drop_tree(self) -> None:
