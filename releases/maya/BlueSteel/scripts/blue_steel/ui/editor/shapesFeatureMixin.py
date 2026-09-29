@@ -741,7 +741,7 @@ class ShapesFeatureMixin(MainWindowMixin):
         shapes_width = self._compute_tree_max_name_width(self.shapes_view)
         active_shapes_width = self._compute_filtered_max_name_width(self.active_shapes_view, self._active_shapes_proxy)
         primary_drop_width = self._compute_tree_max_name_width(self.primary_drop_view)
-        work_shapes_width = self._compute_filtered_max_name_width(self.work_shapes_view, self._work_shape_model)
+        work_shapes_width = self._compute_tree_max_name_width(self.work_shapes_view)
         self._primaries_delegate.set_name_column_width(primaries_width)
         self._shapes_delegate.set_name_column_width(shapes_width)
         self._active_shapes_delegate.set_name_column_width(active_shapes_width)

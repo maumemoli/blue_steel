@@ -587,7 +587,6 @@ class EditorUiMixin(MainWindowMixin):
         )
         self._allow_horizontal_collapse(self.work_shapes_view)
         self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.work_shapes_view.setModel(self._work_shape_model)
         self._work_shapes_delegate = WorkShapeItemDelegate(self.work_shapes_view)
         self.work_shapes_view.setItemDelegate(self._work_shapes_delegate)
         work_shapes_layout.addWidget(self.work_shapes_view, 1)
@@ -1010,6 +1009,8 @@ class EditorUiMixin(MainWindowMixin):
             self.heat_map_switch.toggled.connect(self._on_display_heat_map_toggled)
         if self.primaries_view.model() is not None:
             self.primaries_view.model().dataChanged.connect(self._on_primaries_tree_data_changed)
+        if self.work_shapes_view.model() is not None:
+            self.work_shapes_view.model().dataChanged.connect(self._on_work_shapes_tree_data_changed)
         if self.primary_drop_view.model() is not None:
             self.primary_drop_view.model().dataChanged.connect(self._on_primary_drop_tree_data_changed)
         self._primaries_delegate.valueDragStarted.connect(lambda: self._on_value_drag_state_changed(True))
@@ -1046,9 +1047,15 @@ class EditorUiMixin(MainWindowMixin):
         self.active_shapes_view.customContextMenuRequested.connect(self._show_shapes_context_menu)
         self.active_shapes_view.clicked.connect(self._on_active_shapes_item_clicked)
         self.active_shapes_view.doubleClicked.connect(self._on_active_shapes_double_clicked)
-        self.work_shapes_view.doubleClicked.connect(self._on_work_shapes_double_clicked)
+        self.work_shapes_view.itemDoubleClicked.connect(self._on_work_shapes_double_clicked)
+        self.work_shapes_view.itemExpanded.connect(self._update_work_shape_folder_icon)
+        self.work_shapes_view.itemCollapsed.connect(self._update_work_shape_folder_icon)
         self.work_shapes_view.driverPoseRequested.connect(self._on_work_shape_driver_pose_requested)
         self.work_shapes_view.driverRemovalRequested.connect(self._on_work_shape_driver_removal_requested)
+        self.work_shapes_view.workShapeMoveRequested.connect(self._on_work_shapes_move_requested)
+        self.work_shapes_view.groupRequested.connect(self._group_selected_work_shapes)
+        self.work_shapes_view.renameGroupRequested.connect(self._rename_work_shape_folder)
+        self.work_shapes_view.ungroupRequested.connect(self._ungroup_selected_work_shapes)
         if self.active_shapes_view.selectionModel() is not None:
             self.active_shapes_view.selectionModel().selectionChanged.connect(self._on_active_shapes_selection_changed)
         self.select_editor_button.clicked.connect(self.select_face_ctrl)
@@ -1066,7 +1073,6 @@ class EditorUiMixin(MainWindowMixin):
         self.mmtools_button.clicked.connect(self.launch_mmtools)
         self.toggle_hud_button.clicked.connect(self._on_toggle_hud_clicked)
         self._shape_model.primaryValueCommitted.connect(self._on_primary_value_committed)
-        self._work_shape_model.valueCommitted.connect(self._on_work_shape_value_committed)
         self._shape_model.modelReset.connect(self._update_info_labels)
         self._shape_model.dataChanged.connect(self._on_shape_model_data_changed)
         self._shape_model.modelReset.connect(self._update_delegate_name_columns)
@@ -1083,7 +1089,7 @@ class EditorUiMixin(MainWindowMixin):
         self.work_paint_button.clicked.connect(self._on_paint_work_shape_clicked)
         self.apply_work_shapes_button.clicked.connect(self._on_apply_work_shapes_clicked)
         if self.work_shapes_view.selectionModel() is not None:
-            self.work_shapes_view.selectionModel().selectionChanged.connect(self._on_work_shapes_selection_changed)
+            self.work_shapes_view.itemSelectionChanged.connect(self._on_work_shapes_selection_changed)
 
         self.primaries_view.itemSelectionChanged.connect(self._on_primaries_selection_changed)
         self.exclusive_filter_action.toggled.connect(self._on_exclusive_filter_toggled)

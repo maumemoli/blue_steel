@@ -46,6 +46,21 @@ class FakeEditor:
         self.writes += 1
 
 
+class GenericFakeEditor:
+    """Editor exposing the generic per-attribute sorting accessors."""
+
+    def __init__(self, data=None):
+        self.attributes = dict(data or {})
+        self.writes = 0
+
+    def read_sorting_attribute(self, attr_name):
+        return self.attributes.get(attr_name)
+
+    def write_sorting_attribute(self, attr_name, data):
+        self.attributes[attr_name] = data
+        self.writes += 1
+
+
 def make_store(items):
     store = FaceCtrlSortingStore()
     store.from_dict({"version": 1, "items": items})
@@ -250,6 +265,33 @@ class FaceCtrlSortingStoreTests(unittest.TestCase):
         snapshot[0]["children"].append(leaf("x"))
         snapshot[0]["name"] = "Changed"
         self.assertEqual(store.ordered_tree(), [group("G", [leaf("a")])])
+
+    def test_generic_accessors_keep_attribute_names_independent(self):
+        self.assertEqual(FaceCtrlSortingStore().attribute_name, "faceCtrlSorting")
+        self.assertEqual(FaceCtrlSortingStore("workShapeSorting").attribute_name, "workShapeSorting")
+
+        editor = GenericFakeEditor()
+
+        primaries = FaceCtrlSortingStore("faceCtrlSorting")
+        primaries.from_dict(None)
+        primaries.add_primary("a")
+        primaries.group(["a"], "G")
+        primaries.save(editor)
+
+        work_shapes = FaceCtrlSortingStore("workShapeSorting")
+        work_shapes.from_dict(None)
+        work_shapes.add_primary("b")
+        work_shapes.save(editor)
+
+        self.assertEqual(editor.writes, 2)
+
+        reloaded_primaries = FaceCtrlSortingStore("faceCtrlSorting")
+        reloaded_primaries.load(editor)
+        self.assertEqual(reloaded_primaries.ordered_tree(), [group("G", [leaf("a")])])
+
+        reloaded_work = FaceCtrlSortingStore("workShapeSorting")
+        reloaded_work.load(editor)
+        self.assertEqual(reloaded_work.ordered_tree(), [leaf("b")])
 
     def test_load_and_save_round_trip(self):
         editor = FakeEditor(data=None)

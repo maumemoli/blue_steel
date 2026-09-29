@@ -299,6 +299,14 @@ Key behavior:
   shape.
 - Alt+left-click a driver disclosure triangle to expand or collapse the driver
   lists of every WorkShape at once.
+- WorkShapes are shown in a tree and can be grouped and ordered. Single
+  left-click a group's custom chevron to expand or collapse it. The tree uses
+  the same 16px-per-level indentation and chevrons as the Primaries tree. Drag a
+  WorkShape onto the middle of a group to nest it, its top/bottom edge to
+  reorder, or empty space to move it to the top level. Group order and nesting
+  are saved with the system. Press **Ctrl+G** (or use the context-menu **Group
+  Selected**) to group the selected WorkShapes; folder rows offer **Rename
+  Group** and **Ungroup**.
 - The WorkShape context-menu **Extract Mesh** operation is separate from regular
   shape extraction and is currently unavailable when the editor mesh has a
   skinCluster.

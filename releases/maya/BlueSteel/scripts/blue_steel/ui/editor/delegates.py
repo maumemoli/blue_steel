@@ -24,7 +24,8 @@ from ..common.icons import (
     MUTE_OFF_ICON,
     MUTE_ON_ICON,
 )
-from .models import ShapeItemsModel, WorkShapeItemsModel
+from . import constants
+from .models import ShapeItemsModel, WorkShapeRoles
 from .qt import (
     QAbstractItemView,
     QApplication,
@@ -100,12 +101,13 @@ class SliderItemDelegate(QStyledItemDelegate):
     FALLBACK_VALUE_TEXT_WIDTH = 48
     LEFT_MARGIN = 6
     RIGHT_MARGIN = 4
-    TREE_INDENT = 6
-    PRIMARY_TREE_INDENT = 16
+    TREE_INDENT = constants.TREE_INDENT
+    PRIMARY_TREE_INDENT = constants.PRIMARY_TREE_INDENT
     VALUE_TO_ICON_GAP = 10
     ICON_SIZE = 22
     ICON_GAP = 3
     MIN_TEXT_WIDTH = 20
+    FOLDER_DISCLOSURE_SIZE = 14
 
     def _is_primary_tree_view(self) -> bool:
         parent_view = self.parent()
@@ -241,8 +243,29 @@ class SliderItemDelegate(QStyledItemDelegate):
         while parent_index.isValid():
             depth += 1
             parent_index = parent_index.parent()
-        indent = self.PRIMARY_TREE_INDENT if self._is_primary_tree_view() else self.TREE_INDENT
-        return depth * indent
+        indent = getattr(parent_view, "_tree_indent", None)
+        if indent is None:
+            indent = self.PRIMARY_TREE_INDENT if self._is_primary_tree_view() else self.TREE_INDENT
+        return depth * int(indent)
+
+    def folder_disclosure_rect(self, option, index) -> QRect:
+        """Return the delegate-painted group disclosure triangle rectangle.
+
+        Only header (folder) rows in a group tree have one; leaves and views
+        that keep the native branch indicator return a null rect. The geometry
+        matches the header branch in :meth:`paint`, so hit-testing and painting
+        cannot drift apart.
+        """
+        if not bool(index.data(ShapeItemsModel.IsHeaderRole)):
+            return QRect()
+        parent_view = self.parent()
+        is_group_tree = bool(getattr(parent_view, "_tree_view_layout", False)) or self._is_primary_tree_view()
+        if not is_group_tree or bool(getattr(parent_view, "_uses_native_branch_indicator", False)):
+            return QRect()
+        rect = option.rect
+        size = self.FOLDER_DISCLOSURE_SIZE
+        indent = self._tree_row_indent(index)
+        return QRect(rect.left() + indent + 2, rect.top() + (rect.height() - size) // 2, size, size)
 
     def _connected_mesh_icon_rect(self, option, index) -> QRect:
         shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
@@ -355,8 +378,8 @@ class SliderItemDelegate(QStyledItemDelegate):
             text_rect = rect.adjusted(6, 0, -6, 0)
             if is_group_tree and not bool(getattr(parent_view, "_uses_native_branch_indicator", False)):
                 indent = self._tree_row_indent(index)
-                icon_size = 14
-                icon_rect = QRect(rect.left() + indent + 2, rect.top() + (rect.height() - icon_size) // 2, icon_size, icon_size)
+                icon_rect = self.folder_disclosure_rect(option, index)
+                icon_size = icon_rect.width()
                 icon = index.data(Qt.DecorationRole)
                 if isinstance(icon, QIcon) and not icon.isNull():
                     self._draw_icon_pixmap(painter, icon_rect, icon)
@@ -371,12 +394,12 @@ class SliderItemDelegate(QStyledItemDelegate):
         name = model.data(index, ShapeItemsModel.NameRole) or ""
         value = float(model.data(index, ShapeItemsModel.ValueRole) or 0.0)
         muted = bool(model.data(index, ShapeItemsModel.MutedRole))
-        in_edit_mode = bool(model.data(index, WorkShapeItemsModel.InEditModeRole))
+        in_edit_mode = bool(model.data(index, WorkShapeRoles.InEditModeRole))
         editable = bool(model.data(index, ShapeItemsModel.EditableRole))
         shape_type = str(model.data(index, ShapeItemsModel.TypeRole) or "")
         is_work_shape = shape_type == "WorkShape"
-        is_connected_work_shape = bool(model.data(index, WorkShapeItemsModel.ConnectedRole)) if is_work_shape else False
-        is_driver_connected_work_shape = bool(model.data(index, WorkShapeItemsModel.DriverConnectedRole)) if is_work_shape else False
+        is_connected_work_shape = bool(model.data(index, WorkShapeRoles.ConnectedRole)) if is_work_shape else False
+        is_driver_connected_work_shape = bool(model.data(index, WorkShapeRoles.DriverConnectedRole)) if is_work_shape else False
         is_upstream_related = bool(model.data(index, ShapeItemsModel.UpstreamRelatedRole))
         is_downstream_related = bool(model.data(index, ShapeItemsModel.DownstreamRelatedRole))
 
@@ -719,14 +742,14 @@ class WorkShapeItemDelegate(SliderItemDelegate):
 
     def sizeHint(self, option, index):  # noqa: N802
         size = super().sizeHint(option, index)
-        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        drivers = index.data(WorkShapeRoles.DriverNamesRole) or ()
         if drivers and self._drivers_expanded(index):
             size.setHeight(size.height() + self.DRIVER_HEIGHT * len(drivers))
         return size
 
     def _area_rects(self, option, index):
         value_rect, text_rect = super()._area_rects(self._parent_option(option, index), index)
-        if index.data(WorkShapeItemsModel.DriverNamesRole):
+        if index.data(WorkShapeRoles.DriverNamesRole):
             text_rect.adjust(self.DISCLOSURE_WIDTH, 0, 0, 0)
         return value_rect, text_rect
 
@@ -743,7 +766,7 @@ class WorkShapeItemDelegate(SliderItemDelegate):
         return super()._edit_mode_icon_rect(self._parent_option(option, index), index)
 
     def disclosure_rect(self, option, index) -> QRect:
-        if not index.data(WorkShapeItemsModel.DriverNamesRole):
+        if not index.data(WorkShapeRoles.DriverNamesRole):
             return QRect()
         _, text_rect = self._area_rects(option, index)
         left = text_rect.left() - self.DISCLOSURE_WIDTH
@@ -754,7 +777,7 @@ class WorkShapeItemDelegate(SliderItemDelegate):
 
     def driver_at_pos(self, option, index, pos) -> Optional[str]:
         """Resolve the same child bands used by painting, never the parent."""
-        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        drivers = index.data(WorkShapeRoles.DriverNamesRole) or ()
         if not drivers or not self._drivers_expanded(index) or not option.rect.contains(pos):
             return None
         offset = pos.y() - self.parent_rect(option, index).bottom() - 1
@@ -773,7 +796,7 @@ class WorkShapeItemDelegate(SliderItemDelegate):
         finally:
             option.rect = item_rect
 
-        drivers = index.data(WorkShapeItemsModel.DriverNamesRole) or ()
+        drivers = index.data(WorkShapeRoles.DriverNamesRole) or ()
         if not drivers:
             return
         expanded = self._drivers_expanded(index)

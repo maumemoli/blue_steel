@@ -29,7 +29,6 @@ from .models import (
     PrimarySubsetProxyModel,
     ShapeItemsModel,
     ShapesFilterProxyModel,
-    WorkShapeItemsModel,
 )
 from .qt import (
     QAction,
@@ -106,7 +105,6 @@ class MainWindow(
         self._split_map_normalization_cache: Dict[str, bool] = {}
 
         self._shape_model = ShapeItemsModel(self)
-        self._work_shape_model = WorkShapeItemsModel(self)
         self._primaries_proxy = PrimaryShapesProxyModel(self)
         self._shapes_proxy = ShapesFilterProxyModel(self)
         self._primary_subset_proxy = PrimarySubsetProxyModel(self)
@@ -127,9 +125,11 @@ class MainWindow(
         self._primary_tree_items: Dict[str, QTreeWidgetItem] = {}
         self._primary_drop_tree_items: Dict[str, QTreeWidgetItem] = {}
         self._shape_tree_items: Dict[str, QTreeWidgetItem] = {}
+        self._work_shape_tree_items: Dict[str, QTreeWidgetItem] = {}
         self._syncing_primaries_tree = False
         self._syncing_primary_drop_tree = False
         self._syncing_shapes_tree = False
+        self._syncing_work_shapes_tree = False
         self._upstream_shapes_cache: Dict[str, Set[str]] = {}
         self._downstream_shapes_cache: Dict[str, Set[str]] = {}
         self._shapes_tree_expanded_headers: Dict[int, bool] = {}

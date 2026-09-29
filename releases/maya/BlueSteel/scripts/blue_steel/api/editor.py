@@ -237,6 +237,7 @@ class BlueSteelEditor(object):
         self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
         self._sync_up_split_maps_attributes()
         self.setup_face_ctrl_sorting_attribute()
+        self.setup_work_shape_sorting_attribute()
         # custom coloring for the shapes
         self._add_custom_shapes_color_attribute()
         # make sure the split map edit mesh is hidden when the editor is initialized
@@ -928,6 +929,7 @@ class BlueSteelEditor(object):
         if driver:
             cmds.delete(driver)
         self.work_blendshape.remove_target(w)
+        self._remove_work_shapes_from_sorting([work_shape_name])
 
     @undoable
     def disconnect_work_shape_drivers(self, work_shape_name: str, drivers_list: list = []):
@@ -1785,6 +1787,7 @@ class BlueSteelEditor(object):
             for driver_node in driver_nodes:
                 new_driver_node_name = driver_node.replace(old_name, new_name)
                 cmds.rename(driver_node, new_driver_node_name)
+        self._rename_work_shape_in_sorting(old_name, new_name)
 
     def set_work_shape_editable(self, shape_name: str):
         """
@@ -1814,6 +1817,7 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_weight_parent_directory(weight, parent__dir)
         self.work_blendshape.set_weight_value(weight, 1.0)
         self.set_work_shape_editable(work_shape_name)
+        self._add_work_shape_to_sorting(work_shape_name)
         return weight
 
     @undoable
@@ -3545,25 +3549,52 @@ class BlueSteelEditor(object):
                                    node=self.container.name, exists=True):
             self._add_face_ctrl_sorting_attribute()
 
+    def setup_work_shape_sorting_attribute(self):
+        """Create the persisted Work Shapes ordering attribute when missing."""
+        if not cmds.attributeQuery(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER,
+                                   node=self.container.name, exists=True):
+            self._add_work_shape_sorting_attribute()
+
+
+    def read_sorting_attribute(self, attr_name: str) -> dict:
+        """Read one JSON sorting attribute from the container.
+
+        Parameters:
+            attr_name (str): Container attribute name to decode.
+
+        Returns:
+            dict: The decoded JSON payload (or ``{}`` / ``[]`` when empty).
+        """
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        if not cmds.attributeQuery(attr_name, node=self.container.name, exists=True):
+            raise ValueError(f"Sorting attribute '{attr_name}' does not exist")
+        return attrUtils.read_json_attr(self.container.name, attr_name)
+
+    def write_sorting_attribute(self, attr_name: str, data: dict):
+        """Write one JSON sorting attribute onto the container.
+
+        Parameters:
+            attr_name (str): Container attribute name to encode.
+            data (dict): JSON-serializable payload.
+        """
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        if not cmds.attributeQuery(attr_name, node=self.container.name, exists=True):
+            raise ValueError(f"Sorting attribute '{attr_name}' does not exist")
+        attrUtils.write_json_attr(self.container.name, attr_name, data)
 
     def read_face_ctrl_sorting_attribute(self) -> dict:
-        if self.container is None or not cmds.objExists(self.container.name):
-            raise ValueError("Container does not exist")
-        if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
-            raise ValueError("Face control sorting attribute does not exist")
-        read_attributes = attrUtils.read_json_attr(
-            self.container.name, ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER
-        )
-        return read_attributes
+        return self.read_sorting_attribute(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER)
 
     def write_face_ctrl_sorting_attribute(self, data: dict):
-        if self.container is None or not cmds.objExists(self.container.name):
-            raise ValueError("Container does not exist")
-        if not cmds.attributeQuery(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, node=self.container.name, exists=True):
-            raise ValueError("Face control sorting attribute does not exist")
-        attrUtils.write_json_attr(
-            self.container.name, ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, data
-        )
+        self.write_sorting_attribute(ENVIRONMENT.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER, data)
+
+    def read_work_shape_sorting_attribute(self) -> dict:
+        return self.read_sorting_attribute(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
+
+    def write_work_shape_sorting_attribute(self, data: dict):
+        self.write_sorting_attribute(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER, data)
 
     def _face_ctrl_sorting_store(self) -> FaceCtrlSortingStore:
         """Return a store loaded from the container sorting attribute.
@@ -3577,6 +3608,66 @@ class BlueSteelEditor(object):
         except Exception:
             store.from_dict(None)
         return store
+
+    def _work_shape_sorting_store(self) -> FaceCtrlSortingStore:
+        """Return a Work Shapes ordering store loaded from its attribute.
+
+        Returns:
+            FaceCtrlSortingStore: The current Work Shapes ordering/grouping tree.
+        """
+        store = FaceCtrlSortingStore(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
+        try:
+            store.load(self)
+        except Exception:
+            store.from_dict(None)
+        return store
+
+    def _add_work_shape_to_sorting(self, work_shape_name: str) -> None:
+        """Append a newly added work shape to the persisted sorting tree.
+
+        Parameters:
+            work_shape_name (str): The work shape name that was added.
+        """
+        try:
+            store = self._work_shape_sorting_store()
+            if store.add_primary(str(work_shape_name)):
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update work shape sorting for '{work_shape_name}': {exc}")
+
+    def _remove_work_shapes_from_sorting(self, work_shape_names) -> None:
+        """Remove work shapes from the persisted sorting tree.
+
+        Parameters:
+            work_shape_names (Iterable[str]): Work shape names that were removed.
+        """
+        try:
+            store = self._work_shape_sorting_store()
+            changed = False
+            for work_shape_name in work_shape_names:
+                if store.remove(str(work_shape_name)):
+                    changed = True
+            if changed:
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update work shape sorting after removal: {exc}")
+
+    def _rename_work_shape_in_sorting(self, old_name: str, new_name: str) -> None:
+        """Rename a work shape entry in the persisted sorting tree.
+
+        Parameters:
+            old_name (str): Previous work shape name.
+            new_name (str): New work shape name.
+        """
+        try:
+            store = self._work_shape_sorting_store()
+            if store.rename(str(old_name), str(new_name)):
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not update work shape sorting rename: {exc}")
 
     def _add_primary_to_face_ctrl_sorting(self, primary_name: str) -> None:
         """Append a newly added primary to the persisted sorting tree.
@@ -3651,6 +3742,20 @@ class BlueSteelEditor(object):
 
 
         return face_ctrl_sorting_attribute
+
+    def _add_work_shape_sorting_attribute(self):
+        """Add the JSON string attribute storing Work Shapes ordering.
+
+        Mirrors :meth:`_add_face_ctrl_sorting_attribute` but targets the Work
+        Shapes tree so both panels keep independent orderings.
+        """
+        if self.container is None or not cmds.objExists(self.container.name):
+            raise ValueError("Container does not exist")
+        attr = ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER
+        work_shape_sorting_attribute = attrUtils.add_string_attr(node = self.container.name,
+                                                                attr_name = attr,
+                                                                default_value = "{}")
+        return work_shape_sorting_attribute
 
     def _add_split_maps_order_attribute(self):
         """ add a string attribute that contains a json format list with the order of the split groups.

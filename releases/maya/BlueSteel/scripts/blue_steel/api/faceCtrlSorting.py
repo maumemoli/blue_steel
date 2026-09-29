@@ -1,9 +1,12 @@
-"""Ordered group/primary tree persisted on the editor container.
+"""Ordered group/leaf tree persisted on the editor container.
 
 The primaries panel used to derive its folders from the blendshape target
 directories. It is now driven by a JSON tree stored in the container attribute
 :data:`blue_steel.env.Environment.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER`
-(``faceCtrlSorting``) and handled by :class:`FaceCtrlSortingStore`.
+(``faceCtrlSorting``) and handled by :class:`FaceCtrlSortingStore`. The same
+store also backs the Work Shapes panel through a second attribute
+(``workShapeSorting``); only the attribute name differs, so the tree logic is
+shared.
 
 The store is deliberately Qt-free: the UI translates drag/drop and keyboard
 gestures into :class:`FaceCtrlSortingStore` calls, and the store owns all
@@ -32,6 +35,7 @@ SCHEMA_VERSION = 1
 GROUP_TYPE = "group"
 PRIMARY_TYPE = "primary"
 _DEFAULT_GROUP_NAME = "Group"
+DEFAULT_ATTRIBUTE_NAME = "faceCtrlSorting"
 
 
 class FaceCtrlSortingStore:
@@ -50,12 +54,23 @@ class FaceCtrlSortingStore:
         }
 
     Nodes are indexed by name for O(1) lookups, mutations, and reparenting.
+
+    Parameters:
+        attribute_name (str): Name of the editor attribute this store reads
+            and writes. Defaults to the primaries tree (``faceCtrlSorting``);
+            pass ``workShapeSorting`` for the Work Shapes tree.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, attribute_name: str = DEFAULT_ATTRIBUTE_NAME) -> None:
+        self._attribute_name = str(attribute_name or DEFAULT_ATTRIBUTE_NAME)
         self._items: List[dict] = []
         self._index: Dict[str, dict] = {}
         self._parent: Dict[str, Optional[str]] = {}
+
+    @property
+    def attribute_name(self) -> str:
+        """Return the editor attribute name this store is bound to."""
+        return self._attribute_name
 
     # ------------------------------------------------------------------
     # Persistence
@@ -63,17 +78,25 @@ class FaceCtrlSortingStore:
     def load(self, editor) -> None:
         """Load the tree from ``editor``'s sorting attribute.
 
+        Uses the generic ``read_sorting_attribute(attribute_name)`` accessor
+        when present, falling back to the legacy dedicated
+        ``read_face_ctrl_sorting_attribute`` for the primaries attribute.
+
         Parameters:
             editor: A :class:`blue_steel.api.editor.BlueSteelEditor` exposing
-                ``read_face_ctrl_sorting_attribute``.
+                ``read_sorting_attribute`` or ``read_face_ctrl_sorting_attribute``.
 
         Returns:
             None
         """
         data = None
-        if editor is not None and hasattr(editor, "read_face_ctrl_sorting_attribute"):
+        if editor is not None:
+            reader = getattr(editor, "read_sorting_attribute", None)
             try:
-                data = editor.read_face_ctrl_sorting_attribute()
+                if callable(reader):
+                    data = reader(self._attribute_name)
+                elif hasattr(editor, "read_face_ctrl_sorting_attribute"):
+                    data = editor.read_face_ctrl_sorting_attribute()
             except Exception:
                 data = None
         self.from_dict(data)
@@ -81,16 +104,25 @@ class FaceCtrlSortingStore:
     def save(self, editor) -> None:
         """Persist the tree onto ``editor``'s sorting attribute.
 
+        Uses the generic ``write_sorting_attribute(attribute_name, data)``
+        accessor when present, falling back to the legacy dedicated
+        ``write_face_ctrl_sorting_attribute`` for the primaries attribute.
+
         Parameters:
             editor: A :class:`blue_steel.api.editor.BlueSteelEditor` exposing
-                ``write_face_ctrl_sorting_attribute``.
+                ``write_sorting_attribute`` or ``write_face_ctrl_sorting_attribute``.
 
         Returns:
             None
         """
-        if editor is None or not hasattr(editor, "write_face_ctrl_sorting_attribute"):
+        if editor is None:
             return
-        editor.write_face_ctrl_sorting_attribute(self.to_dict())
+        writer = getattr(editor, "write_sorting_attribute", None)
+        if callable(writer):
+            writer(self._attribute_name, self.to_dict())
+            return
+        if hasattr(editor, "write_face_ctrl_sorting_attribute"):
+            editor.write_face_ctrl_sorting_attribute(self.to_dict())
 
     def to_dict(self) -> dict:
         """Return a JSON-serializable snapshot of the tree.

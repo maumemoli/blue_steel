@@ -340,6 +340,14 @@ primitives in this module: `copy_edit_split_weight_map_values`,
 `locked_shapes` stays on the facade (UI reads `editor.locked_shapes`); the
 controller mutates it through the context.
 
+Ordering persistence: the container stores two JSON string attributes,
+`faceCtrlSorting` (Primaries panel) and `workShapeSorting` (Work Shapes panel),
+read/written through `read_sorting_attribute(name)` /
+`write_sorting_attribute(name, data)` and owned by `api/faceCtrlSorting.py`
+(`FaceCtrlSortingStore`, parameterized by attribute name). Work-shape
+add/remove/rename keep `workShapeSorting` current, mirroring the primary hooks
+that maintain `faceCtrlSorting`.
+
 ### `shapeBuilder.py` (lines 1433–1750, 2535–3058, 3367–3448)
 
 Pose/edit helpers: `set_shape_pose`, `set_primary_shape_value`, `zero_out`,

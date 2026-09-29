@@ -3,6 +3,12 @@
 Run: python releases/maya/BlueSteel/unittest/workShapesUiUt.py
 Requires PySide6 (or PySide2). Real UI modules/Qt widgets are loaded in an
 isolated package; only Maya, editor API, and icon dependencies are stubbed.
+
+The Work Shapes panel is an item-based ``QTreeWidget`` (see
+``WorkShapesListView``): work shapes are tree items carrying the work-shape
+roles, and drivers are painted child rows handled by ``WorkShapeItemDelegate``.
+These tests build the tree directly from a fake editor so the view/delegate
+behavior can be exercised without the full main-window bootstrap.
 """
 from __future__ import annotations
 
@@ -48,6 +54,9 @@ def load_ui_modules():
     api = types.ModuleType(root + ".api.editor")
     api.BlueSteelEditor = object
     modules[api.__name__] = api
+    sorting = types.ModuleType(root + ".api.faceCtrlSorting")
+    sorting.FaceCtrlSortingStore = object
+    modules[sorting.__name__] = sorting
     icons = types.ModuleType(root + ".ui.common.icons")
     for name in ("CONNECTED_MESH_DISABLED_ICON", "CONNECTED_MESH_ENABLED_ICON",
                  "EDIT_ICON", "LOCK_OFF_ICON", "LOCK_ON_ICON", "MUTE_OFF_ICON", "MUTE_ON_ICON"):
@@ -71,9 +80,12 @@ def load_ui_modules():
 
 UI = load_ui_modules()
 Qt = UI["qt"].Qt
-Model = UI["models"].WorkShapeItemsModel
+Shape = UI["models"].ShapeItemsModel
+Roles = UI["models"].WorkShapeRoles
 Delegate = UI["delegates"].WorkShapeItemDelegate
 View = UI["views"].WorkShapesListView
+PRIMARY_TREE_NAME_ROLE = UI["constants"].PRIMARY_TREE_NAME_ROLE
+PRIMARY_TREE_FOLDER_ROLE = UI["constants"].PRIMARY_TREE_FOLDER_ROLE
 
 
 class Weight(str):
@@ -95,6 +107,7 @@ class FakeEditor:
         self.work_blendshape.get_weight_value.return_value = 0.25
         self.work_blendshape.get_weight_value_by_name.return_value = 0.25
         self.work_blendshape.get_sculpt_target_indices.return_value = []
+        self.work_blendshape.get_weight_by_id.return_value = self.weights[0]
         self.work_blendshape.get_weight_by_name.side_effect = lambda name: next(
             (w for w in self.weights if w == name), None)
 
@@ -125,7 +138,7 @@ def feature_handlers():
                for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {
         "QModelIndex": QtCore.QModelIndex,
-        "ShapeItemsModel": UI["models"].ShapeItemsModel,
+        "ShapeItemsModel": Shape,
         "QGuiApplication": QtGui.QGuiApplication,
         "Qt": Qt,
     }
@@ -143,12 +156,95 @@ def split_handlers():
     names = {"_on_split_primaries_item_double_clicked"}
     methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
                for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    namespace = {"ShapeItemsModel": UI["models"].ShapeItemsModel}
+    namespace = {"ShapeItemsModel": Shape}
     exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
     return namespace
 
 
 SPLIT_HANDLERS = split_handlers()
+
+
+def build_tree_handler():
+    """Load the production Work Shapes tree builder without the full bootstrap."""
+    import __future__
+
+    path = UI_PATH / "workShapesFeatureMixin.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {"_build_work_shapes_tree", "_update_work_shape_folder_icon"}
+    methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
+               for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    namespace = {
+        "QTreeWidgetItem": QtWidgets.QTreeWidgetItem,
+        "ShapeItemsModel": Shape,
+        "WorkShapeRoles": Roles,
+        "PRIMARY_TREE_FOLDER_ROLE": PRIMARY_TREE_FOLDER_ROLE,
+        "PRIMARY_TREE_NAME_ROLE": PRIMARY_TREE_NAME_ROLE,
+        "Qt": Qt,
+    }
+    module = ast.Module(body=methods, type_ignores=[])
+    exec(compile(module, str(path), "exec", flags=__future__.annotations.compiler_flag), namespace)
+    return namespace
+
+
+BUILD_TREE_HANDLER = build_tree_handler()
+
+
+def build_work_shape_items(editor, view):
+    """Populate ``view`` with the same item roles the production build uses."""
+    view.clear()
+    items = {}
+    if editor is None or editor.work_blendshape is None:
+        view._sync_driver_expansion(editor)
+        return items
+    weights = sorted(editor.get_work_blendshape_weights() or [], key=lambda w: str(w).lower())
+    connected = set(editor.get_work_blendshape_connected_targets_weights() or [])
+    for weight in weights:
+        name = str(weight)
+        driver_connected = bool(editor.get_work_shape_driver_nodes(weight))
+        drivers = ()
+        if driver_connected:
+            try:
+                drivers = tuple(dict.fromkeys(
+                    str(driver) for driver in (editor.get_work_shape_driver_shapes(name) or []) if driver
+                ))
+            except (RuntimeError, ValueError):
+                drivers = ()
+        item = QtWidgets.QTreeWidgetItem([name])
+        item.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+        item.setData(0, Shape.NameRole, name)
+        item.setData(0, Shape.TypeRole, "WorkShape")
+        item.setData(0, Shape.ValueRole, float(editor.work_blendshape.get_weight_value(weight)))
+        item.setData(0, Shape.MutedRole, bool(editor.get_work_shape_muted_state(name)))
+        item.setData(0, Shape.EditableRole, True)
+        item.setData(0, Shape.IsHeaderRole, False)
+        item.setData(0, Shape.LockedRole, False)
+        item.setData(0, Shape.LockIconVisibleRole, False)
+        item.setData(0, Roles.InEditModeRole, False)
+        item.setData(0, Roles.ConnectedRole, weight in connected)
+        item.setData(0, Roles.DriverConnectedRole, driver_connected)
+        item.setData(0, Roles.DriverNamesRole, drivers)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+        view.addTopLevelItem(item)
+        items[name] = item
+    view._sync_driver_expansion(editor)
+    return items
+
+
+def add_work_shape_folder(view, name, parent=None):
+    """Add a folder item the way the production tree builder does."""
+    folder = QtWidgets.QTreeWidgetItem([name])
+    folder.setData(0, PRIMARY_TREE_FOLDER_ROLE, True)
+    folder.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+    folder.setData(0, Shape.NameRole, name)
+    folder.setData(0, Shape.TypeRole, "WorkShapeFolder")
+    folder.setData(0, Shape.IsHeaderRole, True)
+    folder.setData(0, Shape.EditableRole, False)
+    folder.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+    if parent is None:
+        view.addTopLevelItem(folder)
+    else:
+        parent.addChild(folder)
+    return folder
 
 
 class FakeTreeItem:
@@ -164,9 +260,9 @@ class FakeTreeItem:
 
     def data(self, column, role):
         del column
-        if role == Model.IsHeaderRole:
+        if role == Shape.IsHeaderRole:
             return self._is_header
-        if role == Model.NameRole:
+        if role == Shape.NameRole:
             return self._name
         return None
 
@@ -174,23 +270,36 @@ class FakeTreeItem:
 class WorkShapesUiTests(unittest.TestCase):
     def setUp(self):
         self.editor = FakeEditor()
-        self.model = Model()
-        self.model.rebuild_from_editor(self.editor)
         self.drop = Mock()
         self.view = View(self.drop, Mock(), Mock(), Mock())
         self.view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.view.setModel(self.model)
         self.delegate = Delegate(self.view)
         self.view.setItemDelegate(self.delegate)
+        self.items = build_work_shape_items(self.editor, self.view)
         self.view.resize(520, 300)
         self.view.show()
         APP.processEvents()
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.index = self.item_index("mouthFix_workShape")
 
     def tearDown(self):
         self.view.close()
         self.view.deleteLater()
         APP.processEvents()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def item_index(self, name):
+        item = self.items.get(name)
+        return self.view.indexFromItem(item, 0) if item is not None else QtCore.QModelIndex()
+
+    def reload_items(self):
+        """Rebuild the tree from the fake editor and refresh the item cache."""
+        self.items = build_work_shape_items(self.editor, self.view)
+        return self.items
+
+    def item(self, name):
+        return self.items[name]
 
     def option(self, index=None):
         index = self.index if index is None else index
@@ -215,21 +324,45 @@ class WorkShapesUiTests(unittest.TestCase):
             QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, modifiers, pos)
         APP.processEvents()
 
-    def test_flat_model_and_zero_one_multiple_drivers(self):
-        self.assertEqual(self.model.rowCount(), 3)
+    def move_mouse(self, pos, receiver=None):
+        receiver = self.view.viewport() if receiver is None else receiver
+        global_pos = receiver.mapToGlobal(pos)
+        window_pos = receiver.window().mapFromGlobal(global_pos)
+        event = QtGui.QMouseEvent(QtCore.QEvent.MouseMove, QtCore.QPointF(pos),
+                                  QtCore.QPointF(window_pos), QtCore.QPointF(global_pos),
+                                  Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        APP.sendEvent(receiver, event)
+        APP.processEvents()
+
+    def start_removal_drag(self, child=0):
+        pos = self.child_pos(child)
+        QtTest.QTest.mousePress(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, pos)
+        self.move_mouse(pos + QtCore.QPoint(40, 0))
+        return pos
+
+    def outside_pos(self):
+        return QtCore.QPoint(self.view.width() + 30, self.child_pos().y())
+
+    # ------------------------------------------------------------------
+    # Tree structure and roles
+    # ------------------------------------------------------------------
+    def test_flat_tree_and_zero_one_multiple_drivers(self):
+        self.assertEqual(self.view.topLevelItemCount(), 3)
         expected = [(), ("jawOpen",), ("lipCornerPuller", "lipCornerFunneler")]
         for row, drivers in enumerate(expected):
-            index = self.model.index(row, 0)
-            self.assertEqual(index.data(Model.DriverNamesRole), drivers)
-            self.assertFalse(index.parent().isValid())
-            self.assertEqual(self.model.rowCount(index), 0)
+            item = self.view.topLevelItem(row)
+            self.assertEqual(item.data(0, Roles.DriverNamesRole), drivers)
+            self.assertEqual(item.parent(), None)
+            self.assertEqual(item.childCount(), 0)
+            index = self.view.indexFromItem(item, 0)
             self.assertEqual(self.view.visualRect(index).height(), 24 + len(drivers) * 20)
-        self.assertTrue(self.model.index(0, 0).data(Model.ConnectedRole))
-        self.assertFalse(self.index.data(Model.ConnectedRole))
-        self.assertTrue(self.index.data(Model.DriverConnectedRole))
+        first = self.view.indexFromItem(self.view.topLevelItem(0), 0)
+        self.assertTrue(first.data(Roles.ConnectedRole))
+        self.assertFalse(self.index.data(Roles.ConnectedRole))
+        self.assertTrue(self.index.data(Roles.DriverConnectedRole))
 
     def test_zero_driver_parent_paint_and_geometry_unchanged(self):
-        index = self.model.index(0, 0)
+        index = self.view.indexFromItem(self.view.topLevelItem(0), 0)
         option = self.option(index)
         original = UI["delegates"].SliderItemDelegate(self.view)
         self.assertEqual(self.delegate.sizeHint(option, index), original.sizeHint(option, index))
@@ -260,20 +393,23 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(editor.geometry(), value)
         child_in_slider_column = QtCore.QPoint(value.center().x(), self.child_pos().y())
         self.assertFalse(self.delegate.external_drag_start(
-            self.model, self.index, child_in_slider_column, option.rect))
+            self.view.model(), self.index, child_in_slider_column, option.rect))
         editor.deleteLater()
 
+    # ------------------------------------------------------------------
+    # Drivers: disclosure, expansion, pose, drag removal
+    # ------------------------------------------------------------------
     def test_disclosure_changes_height_without_selection_or_parent_actions(self):
         pose, double = [], []
         self.view.driverPoseRequested.connect(pose.append)
-        self.view.doubleClicked.connect(double.append)
-        self.view.setCurrentIndex(self.model.index(0, 0))
-        selected = self.view.selectionModel().selectedIndexes()
+        self.view.itemDoubleClicked.connect(lambda item, col: double.append(item))
+        self.view.setCurrentItem(self.item("a_unlinked"))
+        selected = self.view.selectedItems()
         control = self.delegate.disclosure_rect(self.option(), self.index).center()
         self.click(control, double=True)
         self.assertFalse(self.view.drivers_expanded(self.index))
         self.assertEqual(self.view.visualRect(self.index).height(), 24)
-        self.assertEqual(self.view.selectionModel().selectedIndexes(), selected)
+        self.assertEqual(self.view.selectedItems(), selected)
         self.assertFalse(pose)
         self.assertFalse(double)
         self.assertIsNone(self.delegate.driver_at_pos(self.option(), self.index, self.child_pos()))
@@ -281,20 +417,19 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(self.view.visualRect(self.index).height(), 64)
 
     def test_alt_left_click_disclosure_sets_expansion_for_every_work_shape(self):
-        driver_rows = [
-            row for row in range(self.model.rowCount())
-            if self.model.index(row, 0).data(Model.DriverNamesRole)
-        ]
-        self.assertTrue(driver_rows)
-        self.assertTrue(all(self.view.drivers_expanded(self.model.index(row, 0)) for row in driver_rows))
+        driver_items = [item for item in self.items.values()
+                        if item.data(0, Roles.DriverNamesRole)]
+        self.assertTrue(driver_items)
+        self.assertTrue(all(self.view.drivers_expanded(self.view.indexFromItem(item, 0))
+                            for item in driver_items))
 
         for expected_expanded in (False, True):
             control = self.delegate.disclosure_rect(self.option(), self.index).center()
             QtTest.QTest.mouseClick(self.view.viewport(), Qt.LeftButton, Qt.AltModifier, control)
             APP.processEvents()
-            for row in driver_rows:
+            for item in driver_items:
                 self.assertEqual(
-                    self.view.drivers_expanded(self.model.index(row, 0)),
+                    self.view.drivers_expanded(self.view.indexFromItem(item, 0)),
                     expected_expanded,
                 )
 
@@ -307,29 +442,29 @@ class WorkShapesUiTests(unittest.TestCase):
     def test_each_child_double_click_requests_exact_driver_only(self):
         pose, double, mute, edit, mesh = [], [], [], [], []
         self.view.driverPoseRequested.connect(pose.append)
-        self.view.doubleClicked.connect(double.append)
+        self.view.itemDoubleClicked.connect(lambda item, col: double.append(item))
         self.delegate.muteToggleRequested.connect(lambda *args: mute.append(args))
         self.delegate.workEditModeToggleRequested.connect(lambda *args: edit.append(args))
         self.delegate.connectedMeshRequested.connect(mesh.append)
-        self.view.setCurrentIndex(self.model.index(0, 0))
-        selected = self.view.selectionModel().selectedIndexes()
+        self.view.setCurrentItem(self.item("a_unlinked"))
+        selected = self.view.selectedItems()
         for child, name in enumerate(self.editor.drivers["mouthFix_workShape"]):
             pos = self.child_pos(child)
             self.assertEqual(self.delegate.driver_at_pos(self.option(), self.index, pos), name)
             self.click(pos, double=True)
         self.assertEqual(pose, ["lipCornerPuller", "lipCornerFunneler"])
-        self.assertEqual(self.view.selectionModel().selectedIndexes(), selected)
+        self.assertEqual(self.view.selectedItems(), selected)
         self.assertFalse(double or mute or edit or mesh)
         self.assertFalse(self.delegate.is_drag_active())
         self.editor.work_blendshape.set_weight_value.assert_not_called()
 
     def test_dragging_from_child_does_not_rubber_band_select_parents(self):
-        self.view.setCurrentIndex(self.model.index(0, 0))
-        selected = self.view.selectionModel().selectedIndexes()
+        self.view.setCurrentItem(self.item("a_unlinked"))
+        selected = self.view.selectedItems()
         QtTest.QTest.mousePress(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.child_pos())
-        QtTest.QTest.mouseMove(self.view.viewport(), self.view.visualRect(self.model.index(1, 0)).center())
+        self.move_mouse(self.view.visualRect(self.item_index("b_single")).center())
         QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.child_pos())
-        self.assertEqual(self.view.selectionModel().selectedIndexes(), selected)
+        self.assertEqual(self.view.selectedItems(), selected)
         self.assertFalse(self.delegate.is_drag_active())
         self.assertFalse(self.view._driver_press_active)
 
@@ -343,7 +478,8 @@ class WorkShapesUiTests(unittest.TestCase):
     def test_parent_controls_remain_clickable_in_narrow_panel(self):
         self.view.resize(180, 300)
         APP.processEvents()
-        self.model.set_connected_state_local("mouthFix_workShape", True)
+        self.item("mouthFix_workShape").setData(0, Roles.ConnectedRole, True)
+        self.view.viewport().update()
         mesh, mute, edit = [], [], []
         self.delegate.connectedMeshRequested.connect(mesh.append)
         self.delegate.muteToggleRequested.connect(lambda *args: mute.append(args))
@@ -368,7 +504,7 @@ class WorkShapesUiTests(unittest.TestCase):
     def test_scrolled_children_use_viewport_coordinates(self):
         self.view.resize(520, 85)
         APP.processEvents()
-        self.view.scrollTo(self.index, QtWidgets.QAbstractItemView.PositionAtBottom)
+        self.view.scrollToItem(self.item("mouthFix_workShape"), QtWidgets.QAbstractItemView.PositionAtBottom)
         APP.processEvents()
         pose = []
         self.view.driverPoseRequested.connect(pose.append)
@@ -376,54 +512,51 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(pose, ["lipCornerFunneler"])
 
     def test_connection_notifications_refresh_names_and_layout_even_when_still_connected(self):
-        changes = []
-        self.model.dataChanged.connect(lambda first, last, roles: changes.append(roles))
         self.editor.drivers["mouthFix_workShape"].append("jawOpen")
-        self.model.set_driver_connected_state_local("mouthFix_workShape", True)
+        item = self.item("mouthFix_workShape")
+        item.setData(0, Roles.DriverNamesRole, tuple(self.editor.drivers["mouthFix_workShape"]))
+        self.delegate.sizeHintChanged.emit(self.index)
         APP.processEvents()
-        self.assertEqual(self.index.data(Model.DriverNamesRole)[-1], "jawOpen")
-        self.assertIn(Model.DriverNamesRole, changes[-1])
+        self.assertEqual(self.index.data(Roles.DriverNamesRole)[-1], "jawOpen")
         self.assertEqual(self.view.visualRect(self.index).height(), 84)
-        self.assertEqual(self.model.index_by_name("mouthFix_workShape"), self.index)
-        self.model.set_driver_connected_state_local("mouthFix_workShape", False)
+        item.setData(0, Roles.DriverConnectedRole, False)
+        item.setData(0, Roles.DriverNamesRole, ())
+        self.delegate.sizeHintChanged.emit(self.index)
         APP.processEvents()
-        self.assertEqual(self.index.data(Model.DriverNamesRole), ())
+        self.assertEqual(self.index.data(Roles.DriverNamesRole), ())
         self.assertEqual(self.view.visualRect(self.index).height(), 24)
         self.assertTrue(self.delegate.disclosure_rect(self.option(), self.index).isNull())
-        self.assertEqual(self.model.rowCount(), 3)
+        self.assertEqual(self.view.topLevelItemCount(), 3)
 
     def test_unresolvable_driver_graph_keeps_parent_usable(self):
         self.editor.get_work_shape_driver_shapes = Mock(side_effect=RuntimeError("Missing input1D"))
-        self.model.rebuild_from_editor(self.editor)
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.items = build_work_shape_items(self.editor, self.view)
+        self.index = self.item_index("mouthFix_workShape")
         self.assertTrue(self.index.isValid())
-        self.assertTrue(self.index.data(Model.DriverConnectedRole))
-        self.assertEqual(self.index.data(Model.DriverNamesRole), ())
+        self.assertTrue(self.index.data(Roles.DriverConnectedRole))
+        self.assertEqual(self.index.data(Roles.DriverNamesRole), ())
         self.assertEqual(self.delegate.sizeHint(self.option(), self.index).height(), 24)
-        self.model.set_value_by_name("mouthFix_workShape", 0.5)
-        self.assertEqual(self.model.get_value("mouthFix_workShape"), 0.5)
 
     def test_expansion_survives_refresh_but_not_editor_change_or_removal(self):
         self.view._toggle_drivers(self.index)
-        self.model.rebuild_from_editor(self.editor)
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.items = build_work_shape_items(self.editor, self.view)
+        self.index = self.item_index("mouthFix_workShape")
         self.assertFalse(self.view.drivers_expanded(self.index))
-        self.model.rebuild_from_editor(FakeEditor())
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.items = build_work_shape_items(FakeEditor(), self.view)
+        self.index = self.item_index("mouthFix_workShape")
         self.assertTrue(self.view.drivers_expanded(self.index))
         self.view._toggle_drivers(self.index)
-        self.model.rebuild_from_editor(None)
+        self.items = build_work_shape_items(None, self.view)
         self.assertFalse(self.view._collapsed_driver_names)
 
     def test_pose_handler_and_parent_alt_double_click(self):
         host = Mock()
         host.current_editor = self.editor
-        host._work_shape_model = self.model
         host.shapes_list_active_button.isChecked.return_value = True
         self.view.driverPoseRequested.connect(
             lambda name: HANDLERS["_on_work_shape_driver_pose_requested"](host, name))
-        self.view.doubleClicked.connect(
-            lambda index: HANDLERS["_on_work_shapes_double_clicked"](host, index))
+        self.view.itemDoubleClicked.connect(
+            lambda item, col: HANDLERS["_on_work_shapes_double_clicked"](host, item, col))
         self.click(self.child_pos(1), double=True)
         host.shapes_list_active_button.setChecked.assert_called_once_with(False)
         host._set_shape_pose_by_name.assert_called_once_with("lipCornerFunneler")
@@ -434,15 +567,14 @@ class WorkShapesUiTests(unittest.TestCase):
         self.click(name.center(), double=True, modifiers=Qt.AltModifier)
         host._set_shape_pose_by_name.assert_not_called()
         host._select_shape_and_primaries.assert_not_called()
-        host._begin_inline_workshape_rename.assert_called_once_with(self.index)
+        host._begin_inline_workshape_rename.assert_called_once()
 
     def test_value_area_double_click_starts_numeric_edit_without_rename(self):
         """Double-clicking the slider bar opens the numeric value editor."""
         host = Mock()
         host.current_editor = self.editor
-        host._work_shape_model = self.model
-        self.view.doubleClicked.connect(
-            lambda index: HANDLERS["_on_work_shapes_double_clicked"](host, index))
+        self.view.itemDoubleClicked.connect(
+            lambda item, col: HANDLERS["_on_work_shapes_double_clicked"](host, item, col))
         value_rect, _ = self.delegate._area_rects(self.option(), self.index)
         self.double_click(value_rect.center())
         self.assertEqual(self.view.state(), QtWidgets.QAbstractItemView.EditingState)
@@ -455,12 +587,11 @@ class WorkShapesUiTests(unittest.TestCase):
         """Name-area double-clicks keep the rename action and open no editor."""
         host = Mock()
         host.current_editor = self.editor
-        host._work_shape_model = self.model
-        self.view.doubleClicked.connect(
-            lambda index: HANDLERS["_on_work_shapes_double_clicked"](host, index))
+        self.view.itemDoubleClicked.connect(
+            lambda item, col: HANDLERS["_on_work_shapes_double_clicked"](host, item, col))
         _, name_rect = self.delegate._area_rects(self.option(), self.index)
         self.click(name_rect.center(), double=True)
-        host._begin_inline_workshape_rename.assert_called_once_with(self.index)
+        host._begin_inline_workshape_rename.assert_called_once()
         self.assertNotEqual(self.view.state(), QtWidgets.QAbstractItemView.EditingState)
 
     def double_click(self, pos):
@@ -479,28 +610,165 @@ class WorkShapesUiTests(unittest.TestCase):
         APP.sendEvent(self.view.viewport(), event)
         APP.processEvents()
 
+    # ------------------------------------------------------------------
+    # Tree grouping / ordering shortcuts
+    # ------------------------------------------------------------------
+    def test_production_builder_creates_folders_and_leaves(self):
+        """The mixin's tree builder stores folder/leaf roles and nesting."""
+        class BuilderHost:
+            def __init__(self, view):
+                self.work_shapes_view = view
+                self._work_shape_tree_items = {}
+
+        host = BuilderHost(self.view)
+        host._primary_tree_folder_open_icon = QtGui.QIcon(QtGui.QPixmap(4, 4))
+        host._primary_tree_folder_closed_icon = QtGui.QIcon(QtGui.QPixmap(4, 4))
+        host._build_work_shapes_tree = types.MethodType(BUILD_TREE_HANDLER["_build_work_shapes_tree"], host)
+        host._update_work_shape_folder_icon = types.MethodType(
+            BUILD_TREE_HANDLER["_update_work_shape_folder_icon"], host)
+        self.view.clear()
+        host._work_shape_tree_items.clear()
+        info = {
+            "a_unlinked": {"value": 0.25, "muted": False, "connected": False,
+                           "driver_connected": False, "driver_names": (), "tooltip": None},
+            "b_single": {"value": 0.5, "muted": False, "connected": True,
+                         "driver_connected": True, "driver_names": ("jawOpen",),
+                         "tooltip": "Connected extraction mesh"},
+        }
+        nodes = [
+            {"name": "Mouth", "type": "group", "children": [
+                {"name": "a_unlinked", "type": "primary"},
+                {"name": "b_single", "type": "primary"},
+            ]},
+        ]
+        host._build_work_shapes_tree(nodes, None, info, "b_single", {"a_unlinked"}, set())
+        self.assertEqual(self.view.topLevelItemCount(), 1)
+        folder = self.view.topLevelItem(0)
+        self.assertTrue(folder.data(0, PRIMARY_TREE_FOLDER_ROLE))
+        self.assertEqual(folder.data(0, Shape.IsHeaderRole), True)
+        self.assertEqual(folder.childCount(), 2)
+        leaf = folder.child(0)
+        self.assertEqual(leaf.data(0, PRIMARY_TREE_NAME_ROLE), "a_unlinked")
+        self.assertEqual(leaf.data(0, Shape.TypeRole), "WorkShape")
+        self.assertTrue(leaf.isSelected())
+        self.assertFalse(leaf.data(0, Roles.InEditModeRole))
+        other = folder.child(1)
+        self.assertTrue(other.data(0, Roles.ConnectedRole))
+        self.assertTrue(other.data(0, Roles.InEditModeRole))
+        self.assertEqual(other.data(0, Roles.DriverNamesRole), ("jawOpen",))
+        self.assertEqual(host._work_shape_tree_items["b_single"], other)
+        self.assertTrue(folder.isExpanded())
+        self.assertFalse(folder.icon(0).isNull())
+
+    def test_ctrl_g_emits_group_requested(self):
+        groups = []
+        self.view.groupRequested.connect(lambda: groups.append(True))
+        QtTest.QTest.keyClick(self.view, Qt.Key_G, Qt.ControlModifier)
+        APP.processEvents()
+        self.assertTrue(groups)
+
+    def test_work_shape_tree_enables_internal_reorder(self):
+        self.assertTrue(self.view._enable_internal_reorder)
+        self.assertEqual(self.view.ORDER_MIME_TYPE, UI["constants"].WORK_SHAPE_ORDER_MIME_TYPE)
+        self.assertTrue(self.view.acceptDrops())
+
+    def test_folder_item_is_not_a_driver_drop_target(self):
+        folder = add_work_shape_folder(self.view, "GroupA")
+        APP.processEvents()
+        folder_pos = self.view.visualItemRect(folder).center()
+        self.assertIsNone(self.view._receiver_name_at_pos(folder_pos))
+
+    def folder_disclosure_rect(self, folder):
+        """Return the delegate-painted group triangle rect for ``folder``."""
+        index = self.view.indexFromItem(folder, 0)
+        return self.delegate.folder_disclosure_rect(self.option(index), index)
+
+    def test_work_shape_tree_hides_native_branch_indicator(self):
+        stylesheet = self.view.styleSheet()
+        self.assertIn("QTreeView::branch", stylesheet)
+        self.assertIn("image: none", stylesheet)
+        self.assertFalse(self.view._uses_native_branch_indicator)
+
+    def test_group_triangle_single_click_toggles_expansion(self):
+        folder = add_work_shape_folder(self.view, "GroupA")
+        add_work_shape_folder(self.view, "Nested", parent=folder)
+        folder.setExpanded(False)
+        APP.processEvents()
+        rect = self.folder_disclosure_rect(folder)
+        self.assertFalse(rect.isNull())
+        self.click(rect.center())
+        self.assertTrue(folder.isExpanded())
+        self.click(rect.center())
+        self.assertFalse(folder.isExpanded())
+
+    def test_group_triangle_double_click_does_not_double_toggle(self):
+        folder = add_work_shape_folder(self.view, "GroupA")
+        add_work_shape_folder(self.view, "Nested", parent=folder)
+        folder.setExpanded(False)
+        APP.processEvents()
+        self.click(self.folder_disclosure_rect(folder).center(), double=True)
+        self.assertTrue(folder.isExpanded())
+
+    def test_group_name_click_does_not_toggle_expansion(self):
+        folder = add_work_shape_folder(self.view, "GroupA")
+        add_work_shape_folder(self.view, "Nested", parent=folder)
+        folder.setExpanded(False)
+        APP.processEvents()
+        rect = self.view.visualItemRect(folder)
+        self.click(QtCore.QPoint(rect.right() - 6, rect.center().y()))
+        self.assertFalse(folder.isExpanded())
+
+    def test_nested_folder_disclosure_indents_like_primaries(self):
+        outer = add_work_shape_folder(self.view, "Outer")
+        inner = add_work_shape_folder(self.view, "Inner", parent=outer)
+        outer.setExpanded(True)
+        APP.processEvents()
+        outer_left = self.folder_disclosure_rect(outer).left()
+        inner_left = self.folder_disclosure_rect(inner).left()
+        self.assertEqual(inner_left - outer_left, UI["constants"].PRIMARY_TREE_INDENT)
+
+    def test_internal_drop_target_resolves_before_inside_after(self):
+        folder = add_work_shape_folder(self.view, "GroupA")
+        APP.processEvents()
+        rect = self.view.visualItemRect(folder)
+        self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.top() + 1))[1], "before")
+        self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.center().y()))[1], "inside")
+        self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.bottom() - 1))[1], "after")
+
+    # ------------------------------------------------------------------
+    # Delegate opt-in behavior
+    # ------------------------------------------------------------------
     def test_slider_delegate_only_edits_when_view_opts_in(self):
-        """Views without the opt-in flag never create a value editor."""
         option = self.option()
         self.assertIsInstance(
             self.delegate.createEditor(self.view.viewport(), option, self.index),
             QtWidgets.QLineEdit,
         )
         plain_view = UI["views"].SliderListView()
+        model = self.single_row_model()
         try:
-            plain_view.setModel(self.model)
+            plain_view.setModel(model)
             plain_delegate = UI["delegates"].SliderItemDelegate(plain_view)
             plain_view.setItemDelegate(plain_delegate)
             self.assertFalse(bool(plain_delegate._slider_value_edit_enabled()))
             self.assertIsNone(
-                plain_delegate.createEditor(plain_view.viewport(), option, self.index)
+                plain_delegate.createEditor(plain_view.viewport(), option, model.index(0, 0))
             )
         finally:
             plain_view.deleteLater()
             APP.processEvents()
 
+    def single_row_model(self):
+        model = QtGui.QStandardItemModel()
+        item = QtGui.QStandardItem("shape")
+        item.setData("WorkShape", Shape.TypeRole)
+        item.setData(0.25, Shape.ValueRole)
+        item.setData(True, Shape.EditableRole)
+        item.setData(False, Shape.IsHeaderRole)
+        model.appendRow(item)
+        return model
+
     def test_opt_in_tree_views_disable_default_edit_triggers(self):
-        """Opted-in trees only allow the slider double-click to open an editor."""
         for view_cls in (UI["views"].ShapeTreeWidget, UI["views"].PrimaryTreeWidget):
             view = view_cls()
             try:
@@ -519,11 +787,11 @@ class WorkShapesUiTests(unittest.TestCase):
             delegate = UI["delegates"].SliderItemDelegate(view)
             view.setItemDelegateForColumn(0, delegate)
             item = QtWidgets.QTreeWidgetItem(["name"])
-            item.setData(0, Model.NameRole, "name")
-            item.setData(0, Model.TypeRole, "PrimaryShape")
-            item.setData(0, Model.ValueRole, 0.5)
-            item.setData(0, Model.EditableRole, True)
-            item.setData(0, Model.IsHeaderRole, False)
+            item.setData(0, Shape.NameRole, "name")
+            item.setData(0, Shape.TypeRole, "PrimaryShape")
+            item.setData(0, Shape.ValueRole, 0.5)
+            item.setData(0, Shape.EditableRole, True)
+            item.setData(0, Shape.IsHeaderRole, False)
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
             view.addTopLevelItem(item)
             view.resize(300, 100)
@@ -541,24 +809,25 @@ class WorkShapesUiTests(unittest.TestCase):
             APP.processEvents()
 
     def plain_slider_view(self):
-        """Build a standalone SliderListView with the work-shape model."""
+        """Build a standalone SliderListView over a single work-shape row."""
         view = UI["views"].SliderListView()
-        view.setModel(self.model)
+        model = self.single_row_model()
+        view.setModel(model)
         delegate = UI["delegates"].SliderItemDelegate(view)
         view.setItemDelegate(delegate)
         view.resize(520, 200)
         view.show()
         APP.processEvents()
-        return view, delegate
+        return view, delegate, model.index(0, 0)
 
     def test_read_only_slider_view_blocks_drag(self):
         """A read-only slider view does not start a value scrub on press."""
-        view, delegate = self.plain_slider_view()
+        view, delegate, index = self.plain_slider_view()
         try:
             option = QtWidgets.QStyleOptionViewItem()
-            option.rect = view.visualRect(self.index)
+            option.rect = view.visualRect(index)
             option.fontMetrics = view.fontMetrics()
-            value_rect, _ = delegate._area_rects(option, self.index)
+            value_rect, _ = delegate._area_rects(option, index)
 
             view._sliders_read_only = True
             QtTest.QTest.mousePress(
@@ -584,18 +853,24 @@ class WorkShapesUiTests(unittest.TestCase):
 
     def test_read_only_view_disables_value_edit(self):
         """Read-only wins over the value-edit opt-in and createEditor returns None."""
-        view, delegate = self.plain_slider_view()
+        view, delegate, index = self.plain_slider_view()
         try:
             view._enable_slider_value_edit = True
             view._sliders_read_only = True
+            option = QtWidgets.QStyleOptionViewItem()
+            option.rect = view.visualRect(index)
+            option.fontMetrics = view.fontMetrics()
             self.assertFalse(delegate._slider_value_edit_enabled())
             self.assertIsNone(
-                delegate.createEditor(view.viewport(), self.option(), self.index))
+                delegate.createEditor(view.viewport(), option, index))
         finally:
             view.close()
             view.deleteLater()
             APP.processEvents()
 
+    # ------------------------------------------------------------------
+    # Split assignment double-click handlers (unchanged behavior)
+    # ------------------------------------------------------------------
     def test_split_assignment_name_double_click_sets_pose(self):
         """Double-clicking a child primary name sets that shape to its pose."""
         host = Mock()
@@ -626,28 +901,9 @@ class WorkShapesUiTests(unittest.TestCase):
         handler(host, FakeTreeItem("", parent=object()), 0)
         host._set_shape_pose_by_name.assert_not_called()
 
-    def move_mouse(self, pos, receiver=None):
-        # Qt 5's offscreen QTest.mouseMove does not deliver moves outside the
-        # widget (there is no native mouse grab). Supply the real event's
-        # local/window/global coordinates and held-button state explicitly.
-        receiver = self.view.viewport() if receiver is None else receiver
-        global_pos = receiver.mapToGlobal(pos)
-        window_pos = receiver.window().mapFromGlobal(global_pos)
-        event = QtGui.QMouseEvent(QtCore.QEvent.MouseMove, QtCore.QPointF(pos),
-                                 QtCore.QPointF(window_pos), QtCore.QPointF(global_pos),
-                                 Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
-        APP.sendEvent(receiver, event)
-        APP.processEvents()
-
-    def start_removal_drag(self, child=0):
-        pos = self.child_pos(child)
-        QtTest.QTest.mousePress(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, pos)
-        self.move_mouse(pos + QtCore.QPoint(40, 0))
-        return pos
-
-    def outside_pos(self):
-        return QtCore.QPoint(self.view.width() + 30, self.child_pos().y())
-
+    # ------------------------------------------------------------------
+    # Driver painting and drag removal (unchanged behavior)
+    # ------------------------------------------------------------------
     def test_disclosure_is_a_large_filled_triangle(self):
         for expanded in (True, False):
             pixmap = QtGui.QPixmap(self.view.size())
@@ -746,14 +1002,13 @@ class WorkShapesUiTests(unittest.TestCase):
         removed = Mock()
         self.view.driverRemovalRequested.connect(removed)
         self.start_removal_drag()
-        self.model.rebuild_from_editor(FakeEditor())
+        self.items = build_work_shape_items(FakeEditor(), self.view)
         self.assertIsNone(APP.overrideCursor())
         self.assertIsNone(self.view._driver_drag_target)
         QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.outside_pos())
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.index = self.item_index("mouthFix_workShape")
         self.start_removal_drag()
-        QApplication = QtWidgets.QApplication
-        QApplication.sendEvent(APP, QtCore.QEvent(QtCore.QEvent.ApplicationDeactivate))
+        QtWidgets.QApplication.sendEvent(APP, QtCore.QEvent(QtCore.QEvent.ApplicationDeactivate))
         self.assertIsNone(APP.overrideCursor())
         self.assertIsNone(self.view._driver_drag_target)
         QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.outside_pos())
@@ -766,12 +1021,16 @@ class WorkShapesUiTests(unittest.TestCase):
     def test_removal_handler_preserves_other_drivers_and_parent(self):
         host = Mock()
         host.current_editor = self.editor
+
         def disconnect(work_shape, names):
             self.assertIsNone(APP.overrideCursor())
             self.editor.drivers[work_shape] = [
                 name for name in self.editor.drivers[work_shape] if name not in names]
+
         self.editor.disconnect_work_shape_drivers = Mock(side_effect=disconnect)
-        host._reload_work_shapes_from_editor.side_effect = lambda: self.model.rebuild_from_editor(self.editor)
+        host._reload_work_shapes_from_editor.side_effect = self.reload_items
+        self.reload_items()
+        self.index = self.item_index("mouthFix_workShape")
         self.view.driverRemovalRequested.connect(lambda work, driver:
             HANDLERS["_on_work_shape_driver_removal_requested"](host, work, driver))
         self.start_removal_drag(1)
@@ -779,18 +1038,18 @@ class WorkShapesUiTests(unittest.TestCase):
         QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.outside_pos())
         self.editor.disconnect_work_shape_drivers.assert_called_once_with(
             "mouthFix_workShape", ["lipCornerFunneler"])
-        self.index = self.model.index_by_name("mouthFix_workShape")
-        self.assertEqual(self.index.data(Model.DriverNamesRole), ("lipCornerPuller",))
+        self.index = self.item_index("mouthFix_workShape")
+        self.assertEqual(self.index.data(Roles.DriverNamesRole), ("lipCornerPuller",))
         host._stop_active_blendshape_trackers.assert_called_once()
         host._start_active_blendshape_trackers.assert_called_once()
         APP.processEvents()
         self.start_removal_drag()
         self.move_mouse(self.outside_pos())
         QtTest.QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, self.outside_pos())
-        self.index = self.model.index_by_name("mouthFix_workShape")
+        self.index = self.item_index("mouthFix_workShape")
         self.assertTrue(self.index.isValid())
-        self.assertEqual(self.index.data(Model.DriverNamesRole), ())
-        self.assertEqual(self.model.rowCount(), 3)
+        self.assertEqual(self.index.data(Roles.DriverNamesRole), ())
+        self.assertEqual(self.view.topLevelItemCount(), 3)
         self.assertEqual(self.delegate.sizeHint(self.option(), self.index).height(), 24)
 
     def test_removal_error_restores_cursor_and_restarts_trackers(self):
@@ -805,7 +1064,7 @@ class WorkShapesUiTests(unittest.TestCase):
         host._start_active_blendshape_trackers.assert_called_once()
         host._reload_work_shapes_from_editor.assert_not_called()
         self.assertTrue(host._set_status.call_args[1]["error"])
-        self.assertEqual(len(self.index.data(Model.DriverNamesRole)), 2)
+        self.assertEqual(len(self.index.data(Roles.DriverNamesRole)), 2)
 
     def test_paint_and_hit_testing_do_not_query_editor(self):
         self.editor.get_work_shape_driver_shapes = Mock(side_effect=AssertionError("uncached query"))

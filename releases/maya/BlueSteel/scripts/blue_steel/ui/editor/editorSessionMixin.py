@@ -481,7 +481,7 @@ class EditorSessionMixin(MainWindowMixin):
         for changed_name, changed_value, is_primary in changed_rows:
             if is_primary:
                 self._sync_primary_tree_slider(changed_name, changed_value)
-        self._work_shape_model.refresh_values_from_editor()
+        self._sync_work_shape_tree_values()
         self._resort_value_sorted_lists_if_needed()
 
 
@@ -498,7 +498,7 @@ class EditorSessionMixin(MainWindowMixin):
         self._clear_related_shapes_cache()
         if self.current_editor is None:
             self._shape_model.rebuild_from_editor(None)
-            self._work_shape_model.rebuild_from_editor(None)
+            self._rebuild_work_shapes_tree()
             self._primary_subset_proxy.clear_selected_names()
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
@@ -511,7 +511,7 @@ class EditorSessionMixin(MainWindowMixin):
         try:
             self.current_editor.sync_network()
             self._shape_model.rebuild_from_editor(self.current_editor)
-            self._work_shape_model.rebuild_from_editor(self.current_editor)
+            self._rebuild_work_shapes_tree()
             self._rebuild_primaries_tree()
             self._rebuild_shapes_tree()
             self._rebuild_primary_drop_tree()

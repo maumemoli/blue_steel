@@ -86,7 +86,7 @@ The UI imports these domain classes/functions and treats them as a black box:
 |---|---|---|
 | `BlueSteelEditor` | `api/editor.py` | The domain object for one editor system (shapes, splits, weights, persistence). |
 | `SplitSession` | `api/editor.py` | Helper for the split-shapes workflow. |
-| `FaceCtrlSortingStore` | `api/faceCtrlSorting.py` | Ordered group/primary tree persisted in the container's `faceCtrlSorting` attribute; drives the Primaries panel order/grouping. |
+| `FaceCtrlSortingStore` | `api/faceCtrlSorting.py` | Ordered group/leaf tree persisted in a container attribute; drives both the Primaries panel (`faceCtrlSorting`) and the Work Shapes panel (`workShapeSorting`). |
 | `BlueSteelEditorsTracker` | `api/trackers.py` | Tracks editor containers in the scene (add/remove/rename). |
 | `BlendShapeNodeTracker` | `api/trackers.py` | Tracks one blendshape node's weights/targets. |
 | `ControllerTracker` | `api/trackers.py` | Tracks a controller attribute group. |
@@ -237,18 +237,7 @@ Qt models. Roles used throughout are `Qt.UserRole + N` constants (see
   - `selected_names()`
   - `filterAcceptsRow(...)` / `lessThan(...)`
 
-- `WorkShapeItemsModel(QAbstractListModel)` — model for work-shape rows. Signal: `valueCommitted(str, float)`.
-  - Roles include `InEditModeRole`, `ConnectedRole`, `DriverConnectedRole`.
-  - `__init__(parent=None)`
-  - `rowCount(parent)`, `data(index, role)`, `flags(index)`, `setData(...)`
-  - `rebuild_from_editor(editor)`
-  - `has_connected_driver_shapes()`
-  - `set_value_by_name(shape_name, value)` / `get_value(shape_name)` / `set_value_local(...)`
-  - `set_muted_state_local(...)`
-  - `is_shape_connected(shape_name)` / `set_connected_state_local(...)` / `set_driver_connected_state_local(...)`
-  - `refresh_values_from_editor()`
-  - `index_by_name(shape_name)`
-  - `edit_shape_name()` / `set_edit_shape(shape_name)` — inline rename state.
+- `WorkShapeRoles` — Qt role ids shared by Work Shapes tree items and `WorkShapeItemDelegate` (`InEditModeRole`, `ConnectedRole`, `DriverConnectedRole`, `DriverNamesRole`). `WorkShapeItemsModel` has been retired: the Work Shapes panel is now an item-based `QTreeWidget` (see `WorkShapesListView`).
 
 ---
 
@@ -273,7 +262,8 @@ Row painting and slider-drag logic.
   - `_open_drag_undo_chunk()` / `_close_drag_undo_chunk()` — wrap a drag in one undo chunk.
   - `set_name_column_width(width)` / `value_column_width()` / `_value_text_width(option)`
   - `_area_rects(option, index)` — layout rectangles (name/value/icon areas).
-  - `_tree_row_indent(index)` — per-level indent; primaries use `PRIMARY_TREE_INDENT` (16px) while the shapes tree uses `TREE_INDENT` (6px).
+  - `_tree_row_indent(index)` — per-level indent; the primaries and Work Shapes trees use `PRIMARY_TREE_INDENT` (16px) while the shapes tree uses `TREE_INDENT` (6px).
+  - `folder_disclosure_rect(option, index)` — the delegate-painted group chevron rectangle (null for leaves/views that keep the native branch). Shared by the header painter and view hit-testing.
   - `_connected_mesh_icon_rect(option, index)` / `_mute_icon_rect(...)` / `_edit_mode_icon_rect(...)` / `_lock_icon_rect(...)` — icon hit rectangles.
   - `_is_lock_icon_visible(index)` / `_shows_mute_icon(index)` / `_is_work_edit_mode_icon_visible(index)` / `_panel_reserved_icon_slots()` / `_reserved_icon_slots(index)` — visibility helpers.
   - `_draw_icon_pixmap(painter, icon_rect, icon)`
@@ -328,17 +318,28 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
 
 - `SplitMapWeightsList(SliderDragViewMixin, QListWidget)` — weight list for split maps (delegate-driven drag only).
 
-- `SliderListView(SliderDragViewMixin, QListView)` — generic slider-style list view; used directly by Active Shapes and as the base of `WorkShapesListView`.
+- `SliderIconClickMixin` — icon hit-testing shared by slider-style list and tree views. Resolves connected-mesh / mute / lock / work edit-mode clicks.
+  - `_resolve_mute_icon_click(event_pos)` / `_resolve_connected_mesh_icon_click(event_pos)` / `_resolve_lock_icon_click(event_pos)` / `_resolve_work_edit_mode_icon_click(event_pos)` / `_resolve_icon_click(event_pos)`
+
+- `ReorderableTreeWidgetMixin` — internal drag-reorder/group behavior shared by orderable trees (`PrimaryTreeWidget`, `WorkShapesListView`). Subclasses emit their own move/group signals.
+  - `_init_internal_reorder()` / `_selected_order_names()` / `startDrag(supportedActions)`
+  - `_internal_drop_target(pos)` / `_emit_move_requested(names, target, position)` / `_emit_group_requested()`
+  - `dragEnterEvent` / `dragMoveEvent` / `dragLeaveEvent` / `dropEvent` / `paintEvent` / `_handle_group_shortcut(event)`
+
+- `SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView)` — generic slider-style list view; used directly by Active Shapes.
   - `__init__(parent=None)`
   - `_selected_draggable_shape_names()`
   - `startDrag(supportedActions)` — begin a name drag.
-  - `_resolve_mute_icon_click(event_pos)` / `_resolve_connected_mesh_icon_click(event_pos)` / `_resolve_lock_icon_click(event_pos)` / `_resolve_work_edit_mode_icon_click(event_pos)` / `_resolve_icon_click(event_pos)`
 
-- `WorkShapesListView(SliderListView)` — work-shapes list.
+- `WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget)` — item-based Work Shapes tree.
+  - Signals: `driverPoseRequested(str)`, `driverRemovalRequested(str, str)`, `workShapeMoveRequested(object, str, str)`, `groupRequested()`, `renameGroupRequested(object)`, `ungroupRequested()`.
   - `__init__(...)`
   - `_shape_names_from_mime(mime_data)` / `_receiver_name_at_pos(pos)`
-  - `dragEnterEvent` / `dragMoveEvent` / `dropEvent`
-  - `_show_context_menu(pos)`
+  - `dragEnterEvent` / `dragMoveEvent` / `dropEvent` — internal reorder first, then external shape-name drops (driver connections).
+  - `_show_context_menu(pos)` — leaf actions plus Group / Rename Group / Ungroup.
+  - `__init__(...)` hides the native Qt branch indicator and sets the folder icon size, so the delegate-painted chevron is the only disclosure control and nested rows indent by `PRIMARY_TREE_INDENT` like the Primaries tree.
+  - Driver/folder painted-child helpers: `_work_shape_hit` (also returns `"folder_disclosure"` so a single left-click on the custom group triangle toggles it), `drivers_expanded`, `_toggle_drivers`, `_set_all_drivers_expanded`, `_sync_driver_expansion`.
+  - `mousePressEvent` / `mouseDoubleClickEvent` consume the `"folder_disclosure"` part; `mouseDoubleClickEvent` does not fall through to Qt's default toggle.
 
 - `ShapeTreeWidget(SliderDragViewMixin, QTreeWidget)` — the Shapes tree.
   - Signals: `toggleUpstreamFilterRequested()`, `pageNavigationPoseRequested(str)`.
@@ -642,15 +643,18 @@ Shared base and utilities for all feature mixins.
 - `_selected_work_shape_names()` / `_first_selected_work_shape_name()` / `_select_work_shape(shape_name)`
 - `_on_work_shapes_selection_changed(...)` / `_update_work_shape_button_panel()`
 - `_stop_active_blendshape_trackers()` / `_start_active_blendshape_trackers()`
-- `_reload_work_shapes_from_editor()`
+- `_reload_work_shapes_from_editor()` — rebuild the tree and refresh dependent UI.
+- Tree/persistence: `_rebuild_work_shapes_tree()` / `_build_work_shapes_tree(...)` / `_work_shape_sorting_store()` / `_save_work_shape_sorting_store(store)` / `_collapsed_work_shape_folder_names()`.
+- Item accessors: `_work_shape_item(name)` / `_work_shape_value(name)` / `_work_shape_edit_name()` / `_set_work_shape_edit_name(name)` / `_has_connected_driver_shapes()`.
+- Group/order handlers: `_on_work_shapes_move_requested(names, target, position)` / `_group_selected_work_shapes()` / `_rename_work_shape_folder(item)` / `_ungroup_selected_work_shapes()` (Ctrl+G emits `groupRequested`).
 - `_on_add_work_shape_clicked()` / `_on_remove_work_shapes_clicked()` / `_on_paint_work_shape_clicked()` / `_on_apply_work_shapes_clicked()`
 - `_on_work_shape_edit_mode_toggle_requested(shape_name, state)` / `_on_toggle_work_shape_edit_mode(shape_name=None)`
-- `_on_work_shapes_double_clicked(model_index)`
+- `_on_work_shapes_double_clicked(item, column)`
 - `_on_work_shape_drop_received(work_shape_name, source_shape_name)` / `_on_work_shape_break_link_requested(work_shape_name)`
 - `_has_copied_work_weight_map_values()`
 - `_on_work_shape_duplicate_requested(...)` / `_on_work_shape_extract_requested(...)` / `_on_work_shape_connected_mesh_requested(...)`
 - `_on_work_shape_copy_weights_requested(...)` / `_on_work_shape_paste_weights_requested(...)` / `_on_work_shape_paste_inverted_weights_requested(...)` / `_on_work_shape_add_copied_weights_requested(...)` / `_on_work_shape_subtract_copied_weights_requested(...)` / `_on_work_shapes_normalize_weights_requested(...)` / `_on_work_shape_clear_weights_requested(...)`
-- `_begin_inline_workshape_rename(model_index)` / `_cancel_inline_workshape_rename()` / `_commit_inline_workshape_rename()`
+- `_begin_inline_workshape_rename(item)` / `_cancel_inline_workshape_rename()` / `_commit_inline_workshape_rename()`
 - `_capture_linked_drag_state()` / `_on_linked_drag_started()` / `_on_linked_drag_selection_context(can_propagate)` / `_on_linked_drag_ended()` / `_on_linked_drag_delta(delta_value)`
 - `_on_work_shape_value_committed(shape_name, value)` / `_on_work_shape_value_changed(shape_id, shape_name, value)` / `_on_work_shape_structure_changed(...)` / `_on_work_sculpt_target_changed(target_id, shape_name)`
 - `_on_work_shapes_mute_toggle_requested(shape_name, state)` / `_on_work_blendshape_target_connection_changed(target_id, connected)` / `_on_work_blendshape_driver_connection_changed(target_id, connected)` / `_on_work_blendshape_deleted(blendshape_name)`
@@ -728,25 +732,27 @@ Python linters — they carry `# noqa: N802`. `OptionRect` (in `qt.py`) is a che
 `QStyleOptionViewItem` stand-in used by delegate geometry helpers that only need
 `rect` and `fontMetrics`.
 
-### Primary ordering persistence (`api/faceCtrlSorting.py`)
+### Ordering persistence (`api/faceCtrlSorting.py`)
 
 The Primaries panel's order and grouping are persisted on the editor container
-in the `faceCtrlSorting` attribute (JSON). `FaceCtrlSortingStore` owns the
-nested tree (folders containing primaries), reconciles it against the rig's
-actual primaries, and exposes all mutations:
+in the `faceCtrlSorting` attribute (JSON). The Work Shapes panel uses the same
+store against the `workShapeSorting` attribute. `FaceCtrlSortingStore` owns the
+nested tree (folders containing leaves), reconciles it against the rig's
+actual names, and exposes all mutations:
 
-- `load(editor)` / `save(editor)` / `to_dict()` / `from_dict(data)`
-- `sync(primary_names, drop_empty_groups=True)` — prune removed primaries, drop empty groups, append new primaries at the root.
+- `FaceCtrlSortingStore(attribute_name="faceCtrlSorting")` — `load(editor)` / `save(editor)` call the editor's generic `read_sorting_attribute(name)` / `write_sorting_attribute(name, data)` accessors (with a legacy fallback for the primaries attribute). `to_dict()` / `from_dict(data)`.
+- `sync(primary_names, drop_empty_groups=True)` — prune removed leaves, drop empty groups, append new leaves at the root.
 - `add_primary(name, parent=None)` / `remove(name)` / `rename(old, new)`
 - `move(names, target, position)` — `before` / `after` / `inside` reorder and reparent.
 - `move_to_root(names)` — move nodes (with their subtrees) to the end of the top level.
 - `group(names, group_name=None)` / `ungroup(name)`
 - Queries: `contains`, `is_group`, `parent_of`, `iter_primary_names`, `ordered_tree`.
 
-`BlueSteelEditor.add_primary_shape` / `remove_shapes` / `rename_primary_shape`
-keep the attribute current, while the UI layer translates tree gestures into
+`BlueSteelEditor` keeps both attributes current (primary add/remove/rename and
+work-shape add/remove/rename), while the UI layer translates tree gestures into
 store calls and persists them. Primaries and groups can be dragged to reorder
-or nest; dropping onto a group places the dragged items inside it.
+or nest; dropping onto a group places the dragged items inside it. Work shapes
+behave the same way, and **Ctrl+G** groups the selected work shapes.
 
 ---
 
@@ -755,7 +761,7 @@ or nest; dropping onto a group places the dragged items inside it.
 | Signal | Owner | Purpose |
 |---|---|---|
 | `primaryValueCommitted(str, float)` | `ShapeItemsModel` | A primary value was committed. |
-| `valueCommitted(str, float)` | `WorkShapeItemsModel` | A work-shape value was committed. |
+| `workShapeMoveRequested(object, str, str)` / `groupRequested()` / `renameGroupRequested(object)` / `ungroupRequested()` | `WorkShapesListView` | Work Shapes tree reorder/reparent, Ctrl+G group, rename, and ungroup requests. |
 | `valueDragStarted/Ended/Delta(float)/SelectionContext(bool)` | `SliderItemDelegate` | Slider drag lifecycle. |
 | `muteToggleRequested(str, bool)` / `lockToggleRequested(str, bool)` | `SliderItemDelegate` | Icon click → mute/lock. |
 | `connectedMeshRequested(str)` | `SliderItemDelegate` | Connected-mesh icon clicked. |
@@ -781,7 +787,7 @@ or nest; dropping onto a group places the dragged items inside it.
 | Search / filter / color / active-only | `widgets.py::TokenSearchBar`, `models.py::ShapesFilterProxyModel`, `shapesFeatureMixin.py` |
 | Primaries tree | `views.py::PrimaryTreeWidget`, `shapesFeatureMixin.py::_rebuild_primaries_tree`, `api/faceCtrlSorting.py` |
 | Sliders Drop Box | `views.py::PrimaryDropTreeWidget`, `shapesFeatureMixin.py::_rebuild_primary_drop_tree` / `_apply_primary_drop_tree_filter` |
-| Work shapes | `models.py::WorkShapeItemsModel`, `workShapesFeatureMixin.py` |
+| Work shapes | `views.py::WorkShapesListView` (item-based tree), `workShapesFeatureMixin.py`, `api/faceCtrlSorting.py` |
 | Split maps/groups/weights | `splitSettingsUiMixin.py`, `widgets.py::SplitMapsTree/SplitGroupsTree` |
 | Controller layout designer | `controllerLayoutWindow.py` |
 | Scene/editor lifecycle & trackers | `editorSessionMixin.py`, `api/trackers.py` |
@@ -795,11 +801,12 @@ or nest; dropping onto a group places the dragged items inside it.
 
 ```
 SliderDragViewMixin  (views.py)
-├── SliderListView(SliderDragViewMixin, QListView)
-│   └── WorkShapesListView(SliderListView)
+├── SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView)
 ├── ShapeTreeWidget(SliderDragViewMixin, QTreeWidget)
-├── PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget)
-│   └── PrimaryDropTreeWidget(PrimaryTreeWidget)   # flat, drop-enabled
+├── ReorderableTreeWidgetMixin  (views.py)
+│   └── PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWidget)
+│       └── PrimaryDropTreeWidget(PrimaryTreeWidget)   # flat, drop-enabled
+├── WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget)
 ├── SplitPrimaryAssignmentsView(SliderDragViewMixin, QTreeWidget)
 └── SplitMapWeightsList(SliderDragViewMixin, QListWidget)
 
@@ -815,8 +822,7 @@ QStyledItemDelegate
 └── SplitMapStatusDelegate
 
 QAbstractListModel
-├── ShapeItemsModel
-└── WorkShapeItemsModel
+└── ShapeItemsModel
 
 QSortFilterProxyModel
 ├── PrimaryShapesProxyModel
@@ -879,11 +885,11 @@ MainWindow (central widget)
 | `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `FaceCtrlSortingStore` (reconciled with `BlueSteelEditor.get_primary_shapes()`) | Editor tab → Primaries panel |
 | `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
 | `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
-| `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `_work_shape_model` (`WorkShapeItemsModel`) | Editor tab → Work Shapes (third column) |
+| `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `QTreeWidget` internal model built from `FaceCtrlSortingStore` (reconciled with the work-blendshape weights) | Editor tab → Work Shapes (third column) |
 | `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
 | `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |
 | `SplitGroupsTree` (`split_groups_tree`) | default `QTreeWidget` delegate | `QTreeWidget` items | Split Settings tab → Split Groups |
 | `SplitMapsTree` (`split_maps_list`) | `SplitMapStatusDelegate` | `QTreeWidget` items | Split Settings tab → Split Maps browser |
 | `SplitMapWeightsList` (`split_map_weights_list`) | `SplitMapWeightSliderDelegate` | `QListWidget` items | Split Settings tab → Split Map Editor |
 
-Slider double-click value editing ("value set mode") is enabled only on views that set `_enable_slider_value_edit = True`: `PrimaryTreeWidget`, `PrimaryDropTreeWidget`, `ShapeTreeWidget` (primary rows only), `WorkShapesListView`, and `SplitPrimaryAssignmentsView`. These views also use `NoEditTriggers` so the only path that opens the inline numeric editor is the slider-area double-click handled by `SliderDragViewMixin.mouseDoubleClickEvent`. Name-area double-clicks keep their existing action: pose for `PrimaryTreeWidget`/`ShapeTreeWidget`, rename for `WorkShapesListView`, and pose for child primary rows of `SplitPrimaryAssignmentsView` (`_on_split_primaries_item_double_clicked`).
+Slider double-click value editing ("value set mode") is enabled only on views that set `_enable_slider_value_edit = True`: `PrimaryTreeWidget`, `PrimaryDropTreeWidget`, `ShapeTreeWidget` (primary rows only), `WorkShapesListView`, and `SplitPrimaryAssignmentsView`. These views also use `NoEditTriggers` so the only path that opens the inline numeric editor is the slider-area double-click handled by `SliderDragViewMixin.mouseDoubleClickEvent`. Name-area double-clicks keep their existing action: pose for `PrimaryTreeWidget`/`ShapeTreeWidget`, rename for `WorkShapesListView`, and pose for child primary rows of `SplitPrimaryAssignmentsView` (`_on_split_primaries_item_double_clicked`). Driver rows in `WorkShapesListView` are painted children of the work-shape leaf, so their double-click sets the driver pose and their drag-out removes that driver connection.

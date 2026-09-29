@@ -28,10 +28,17 @@ SHAPE_CUSTOM_COLORS = {
 SHAPE_NAMES_MIME_TYPE = "application/x-blue-steel-shape-names"
 PRIMARY_TREE_MIME_TYPE = "application/x-qabstractitemmodeldatalist"
 PRIMARY_ORDER_MIME_TYPE = "application/x-blue-steel-primary-order"
+WORK_SHAPE_ORDER_MIME_TYPE = "application/x-blue-steel-work-shape-order"
 SPLIT_MAP_MIME_TYPE = "application/x-blue-steel-split-map"
 
 # UI sizing constants.
 SPLITTER_HANDLE_WIDTH = 5
+
+# Pixels of indentation applied per nesting level to delegate-painted tree rows.
+# ``PRIMARY_TREE_INDENT`` is shared by the Primaries and Work Shapes trees so
+# their group/leaf indentation stays identical; other trees use ``TREE_INDENT``.
+TREE_INDENT = 6
+PRIMARY_TREE_INDENT = 16
 
 # Qt user-role ids used by the primaries tree (MainWindow + PrimaryTreeItem).
 PRIMARY_TREE_NAME_ROLE = Qt.UserRole + 200

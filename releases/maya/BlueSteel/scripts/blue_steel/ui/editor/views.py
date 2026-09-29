@@ -19,12 +19,14 @@ from ... import env
 from .constants import (
     PRIMARY_ORDER_MIME_TYPE,
     PRIMARY_TREE_FOLDER_ROLE,
+    PRIMARY_TREE_INDENT,
     PRIMARY_TREE_MIME_TYPE,
     PRIMARY_TREE_NAME_ROLE,
     PRIMARY_TREE_SORT_VALUE_ROLE,
     SHAPE_NAMES_MIME_TYPE,
+    WORK_SHAPE_ORDER_MIME_TYPE,
 )
-from .models import ShapeItemsModel, WorkShapeItemsModel
+from .models import ShapeItemsModel, WorkShapeRoles
 from .qt import (
     QAbstractItemView,
     QApplication,
@@ -362,54 +364,13 @@ class SplitMapWeightsList(SliderDragViewMixin, QListWidget):
 
 
 
-class SliderListView(SliderDragViewMixin, QListView):
-    """QListView that forwards global drag move/release to `SliderItemDelegate`.
+class SliderIconClickMixin:
+    """Icon hit-testing shared by slider-style list and tree views.
 
-    Once drag starts in the slider area, updates continue from mouse x-delta even
-    when the pointer leaves the original item rectangle.
+    Resolves clicks on the connected-mesh, mute, lock, and work edit-mode
+    icons and returns the delegate signal plus its arguments. Views that do
+    not want this behavior override :meth:`_resolve_icon_click`.
     """
-    DRAG_MIME_TYPE = SHAPE_NAMES_MIME_TYPE
-    _panel_icon_slots = 2
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._icon_click_active = False
-        self._slider_drag_delegate = None
-
-    def setItemDelegate(self, delegate) -> None:  # noqa: N802
-        self._slider_drag_delegate = delegate
-        super().setItemDelegate(delegate)
-
-    def _selected_draggable_shape_names(self) -> List[str]:
-        model = self.model()
-        selection_model = self.selectionModel()
-        if model is None or selection_model is None:
-            return []
-        shape_names: List[str] = []
-        for index in selection_model.selectedRows():
-            if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
-                continue
-            shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
-            if not shape_name:
-                continue
-            shape_names.append(shape_name)
-        return shape_names
-
-    def startDrag(self, supportedActions):  # noqa: N802
-        shape_names = self._selected_draggable_shape_names()
-        if not shape_names:
-            return
-        mime_data = QMimeData()
-        payload = "\n".join(shape_names).encode("utf-8")
-        mime_data.setData(self.DRAG_MIME_TYPE, payload)
-        mime_data.setText("\n".join(shape_names))
-        drag = QDrag(self)
-        drag.setMimeData(mime_data)
-        drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
-        if hasattr(drag, "exec"):
-            drag.exec(drop_action)
-        else:
-            drag.exec_(drop_action)
 
     def _resolve_mute_icon_click(self, event_pos) -> Optional[tuple]:
         """Return (shape_name, next_state) if event is on mute icon, else None."""
@@ -456,7 +417,7 @@ class SliderListView(SliderDragViewMixin, QListView):
         if icon_rect.isNull() or not icon_rect.contains(event_pos):
             return None
 
-        if not bool(index.data(WorkShapeItemsModel.ConnectedRole)):
+        if not bool(index.data(WorkShapeRoles.ConnectedRole)):
             return None
 
         shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
@@ -513,7 +474,7 @@ class SliderListView(SliderDragViewMixin, QListView):
         if not shape_name:
             return None
 
-        in_edit_mode = bool(index.data(WorkShapeItemsModel.InEditModeRole))
+        in_edit_mode = bool(index.data(WorkShapeRoles.InEditModeRole))
         return shape_name, (not in_edit_mode)
 
     def _resolve_icon_click(self, event_pos):
@@ -542,13 +503,262 @@ class SliderListView(SliderDragViewMixin, QListView):
         return None
 
 
+class ReorderableTreeWidgetMixin:
+    """Internal drag-reorder/group behavior shared by orderable trees.
 
-class WorkShapesListView(SliderListView):
-    """Work shapes with parent controls and collapsible, pose-activating drivers."""
+    Concrete views declare their own ``...MoveRequested`` / ``groupRequested``
+    signals and translate the mixin's abstract emitters, so the mixin stays
+    independent of any particular tree widget and its signal names.
+    """
 
+    ORDER_MIME_TYPE = PRIMARY_ORDER_MIME_TYPE
+    _enable_internal_reorder = False
+
+    def _init_internal_reorder(self) -> None:
+        """Initialise drop-indicator state and Qt drag/drop flags."""
+        self._drop_target_item = None
+        self._drop_position = ""
+        if self._enable_internal_reorder:
+            # Internal reordering is handled by the owning window through the
+            # move-requested signal; Qt must not move the items itself.
+            self.setDragEnabled(True)
+            self.setAcceptDrops(True)
+            self.setDragDropMode(QAbstractItemView.DragDrop)
+            self.setDropIndicatorShown(True)
+            self.setDefaultDropAction(Qt.MoveAction)
+
+    def _emit_move_requested(self, names, target, position) -> None:
+        """Emit the view's own move-requested signal."""
+        raise NotImplementedError
+
+    def _emit_group_requested(self) -> None:
+        """Emit the view's own group-requested signal."""
+        raise NotImplementedError
+
+    def _selected_order_names(self) -> List[str]:
+        """Return selected leaf/folder names for internal reordering."""
+        return [self._item_name(item) for item in self.selectedItems() if self._item_name(item)]
+
+    def startDrag(self, supportedActions):  # noqa: N802
+        shape_names = self._selected_draggable_shape_names()
+        order_names = self._selected_order_names() if self._enable_internal_reorder else []
+        if not shape_names and not order_names:
+            return
+        mime_data = QMimeData()
+        if shape_names:
+            payload = "\n".join(shape_names).encode("utf-8")
+            mime_data.setData(self.DRAG_MIME_TYPE, payload)
+            mime_data.setText("\n".join(shape_names))
+        if order_names:
+            mime_data.setData(self.ORDER_MIME_TYPE, "\n".join(order_names).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
+        if hasattr(drag, "exec"):
+            drag.exec(drop_action)
+        else:
+            drag.exec_(drop_action)
+
+    @staticmethod
+    def _event_position(event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def _item_name(self, item) -> str:
+        if item is None:
+            return ""
+        name = item.data(0, PRIMARY_TREE_NAME_ROLE)
+        if not name:
+            name = item.data(0, ShapeItemsModel.NameRole)
+        return str(name or item.text(0) or "")
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if self._is_internal_order_event(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if not self._is_internal_order_event(event):
+            event.ignore()
+            return
+        item, position = self._internal_drop_target(self._event_position(event))
+        if item is not self._drop_target_item or position != self._drop_position:
+            self._drop_target_item = item
+            self._drop_position = position
+            self.viewport().update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):  # noqa: N802
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def _is_internal_order_event(self, event) -> bool:
+        return bool(
+            self._enable_internal_reorder
+            and event.source() is self
+            and event.mimeData().hasFormat(self.ORDER_MIME_TYPE)
+        )
+
+    def _internal_drop_target(self, pos):
+        """Resolve the internal drop target for ``pos``.
+
+        Returns:
+            tuple: ``(item, position)`` where ``position`` is ``before``,
+                ``after`` or ``inside`` for an item target, or ``(None, "root")``
+                when the pointer is over empty viewport space.
+        """
+        item = self.itemAt(pos)
+        if item is None:
+            return None, "root"
+        rect = self.visualItemRect(item)
+        ratio = (pos.y() - rect.top()) / max(1, rect.height())
+        if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+            # Only the middle band nests; the edges reorder as siblings so a
+            # nested group can always be pulled back out of its parent.
+            if ratio < 0.25:
+                return item, "before"
+            if ratio > 0.75:
+                return item, "after"
+            return item, "inside"
+        return item, ("before" if ratio < 0.5 else "after")
+
+    def _clear_drop_indicator(self) -> None:
+        if self._drop_target_item is not None or self._drop_position:
+            self._drop_target_item = None
+            self._drop_position = ""
+            self.viewport().update()
+
+    def dropEvent(self, event):  # noqa: N802
+        if not self._is_internal_order_event(event):
+            event.ignore()
+            return
+        names = [
+            name for name in bytes(event.mimeData().data(self.ORDER_MIME_TYPE))
+            .decode("utf-8", errors="ignore").split("\n")
+            if name.strip()
+        ]
+        item, position = self._internal_drop_target(self._event_position(event))
+        self._clear_drop_indicator()
+        if not names:
+            event.ignore()
+            return
+        target = self._item_name(item) if item is not None else ""
+        if position != "root" and not target:
+            event.ignore()
+            return
+        self._emit_move_requested(names, target, position)
+        event.acceptProposedAction()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        item = self._drop_target_item
+        if item is None:
+            return
+        rect = self.visualItemRect(item)
+        if not rect.isValid():
+            return
+        painter = QPainter(self.viewport())
+        try:
+            accent = QColor(90, 160, 240)
+            if self._drop_position == "inside":
+                highlight = QColor(accent)
+                highlight.setAlpha(55)
+                painter.fillRect(rect, highlight)
+                painter.setPen(accent)
+                painter.drawRect(rect.adjusted(0, 0, -1, -1))
+            else:
+                line_top = rect.top() - 1 if self._drop_position == "before" else rect.bottom() - 1
+                painter.fillRect(rect.left() + 1, line_top, max(1, rect.width() - 2), 3, accent)
+        finally:
+            painter.end()
+
+    def _handle_group_shortcut(self, event) -> bool:
+        """Handle Ctrl+G and emit the group request when pressed."""
+        if event.key() == Qt.Key_G and (event.modifiers() & Qt.ControlModifier):
+            self._emit_group_requested()
+            event.accept()
+            return True
+        return False
+
+
+class SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView):
+    """QListView that forwards global drag move/release to `SliderItemDelegate`.
+
+    Once drag starts in the slider area, updates continue from mouse x-delta even
+    when the pointer leaves the original item rectangle.
+    """
+    DRAG_MIME_TYPE = SHAPE_NAMES_MIME_TYPE
+    _panel_icon_slots = 2
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._icon_click_active = False
+        self._slider_drag_delegate = None
+
+    def setItemDelegate(self, delegate) -> None:  # noqa: N802
+        self._slider_drag_delegate = delegate
+        super().setItemDelegate(delegate)
+
+    def _selected_draggable_shape_names(self) -> List[str]:
+        model = self.model()
+        selection_model = self.selectionModel()
+        if model is None or selection_model is None:
+            return []
+        shape_names: List[str] = []
+        for index in selection_model.selectedRows():
+            if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
+                continue
+            shape_name = str(model.data(index, ShapeItemsModel.NameRole) or "")
+            if not shape_name:
+                continue
+            shape_names.append(shape_name)
+        return shape_names
+
+    def startDrag(self, supportedActions):  # noqa: N802
+        shape_names = self._selected_draggable_shape_names()
+        if not shape_names:
+            return
+        mime_data = QMimeData()
+        payload = "\n".join(shape_names).encode("utf-8")
+        mime_data.setData(self.DRAG_MIME_TYPE, payload)
+        mime_data.setText("\n".join(shape_names))
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
+        if hasattr(drag, "exec"):
+            drag.exec(drop_action)
+        else:
+            drag.exec_(drop_action)
+
+
+
+class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget):
+    """Work shapes tree with parent controls and collapsible, pose-activating drivers.
+
+    Work shapes can be grouped and reordered; the order/grouping is persisted
+    through the owning window (see ``FaceCtrlSortingStore``). Driver shapes are
+    painted child rows of a work-shape leaf, not tree nodes.
+    """
+
+    DRAG_MIME_TYPE = SHAPE_NAMES_MIME_TYPE
+    ORDER_MIME_TYPE = WORK_SHAPE_ORDER_MIME_TYPE
     driverPoseRequested = Signal(str)
     driverRemovalRequested = Signal(str, str)
+    workShapeMoveRequested = Signal(object, str, str)
+    groupRequested = Signal()
+    renameGroupRequested = Signal(object)
+    ungroupRequested = Signal()
     _enable_slider_value_edit = True
+    _tree_view_layout = True
+    _primary_tree_layout = False
+    _shapes_tree_layout = False
+    # Match the Primaries tree's per-level group/leaf indentation.
+    _tree_indent = PRIMARY_TREE_INDENT
+    _panel_icon_slots = 2
+    _uses_native_branch_indicator = False
+    _enable_internal_reorder = True
 
     def __init__(
         self,
@@ -569,13 +779,32 @@ class WorkShapesListView(SliderListView):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        # Keep items sized to the viewport so the right-pinned work-shape edit
-        # button follows panel width changes instead of staying at the initial
-        # item width (QListView defaults to Fixed resize mode).
-        self.setResizeMode(QListView.Adjust)
+        self._init_internal_reorder()
         # Slider double-clicks are the only path that opens the value editor;
         # name double-clicks keep their rename behavior.
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setIndentation(0)
+        self.setRootIsDecorated(False)
+        # Group disclosure is delegate-painted (see SliderItemDelegate.paint).
+        # Hide Qt's native branch glyph so it cannot draw a second, barely
+        # indented triangle next to the custom one.
+        self.setIconSize(QSize(14, 14))
+        self.setStyleSheet(
+            """
+            QTreeView::branch {
+                image: none;
+                border-image: none;
+                width: 0px;
+                height: 0px;
+            }
+            QTreeView::item {
+                padding-top: 1px;
+                padding-bottom: 1px;
+            }
+            """
+        )
         self._collapsed_driver_names = set()
         self._driver_editor = None
         self._driver_press_active = False
@@ -599,57 +828,62 @@ class WorkShapesListView(SliderListView):
         self._can_extract_mesh_callback = can_extract_mesh_callback
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
         self.setToolTip(
-            "<b>Driver shapes:</b><br> <b>Double-click</b> to set pose.<br>" 
-            "<b>Drag outside</b> this list and release to remove that driver connection.<br>"
-            "<b>Alt+left-click</b> a disclosure triangle to expand or collapse all work shapes."
+            "<b>Work shapes:</b><br>"
+            "<b>Double-click</b> a work shape to rename it.<br>"
+            "<b>Double-click</b> a driver to set its pose.<br>"
+            "<b>Drag</b> a work shape onto the middle of a group to nest it, its top/bottom "
+            "edge to reorder, or empty space to move it to the top level.<br>"
+            "<b>Drag outside</b> a driver row and release to remove that driver connection.<br>"
+            "<b>Alt+left-click</b> a disclosure triangle to expand or collapse all work shapes.<br>"
+            "<b>Ctrl+G</b> groups the selected work shapes."
         )
-        self.setAcceptDrops(True)
-        self.setDragDropMode(QAbstractItemView.DropOnly)
-        self.setDefaultDropAction(Qt.CopyAction)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-
-    def setModel(self, model) -> None:  # noqa: N802
-        self._cancel_driver_drag()
-        previous = self.model()
-        if previous is not None:
-            previous.modelAboutToBeReset.disconnect(self._cancel_driver_drag)
-            previous.modelReset.disconnect(self._sync_driver_expansion)
-            previous.dataChanged.disconnect(self._driver_data_changed)
-        if previous is not model:
-            self._collapsed_driver_names.clear()
-        super().setModel(model)
-        if model is not None:
-            model.modelAboutToBeReset.connect(self._cancel_driver_drag)
-            model.modelReset.connect(self._sync_driver_expansion)
-            model.dataChanged.connect(self._driver_data_changed)
-        self._sync_driver_expansion()
-
-    def _sync_driver_expansion(self) -> None:
         model = self.model()
-        editor = getattr(model, "_editor", None)
-        if editor is not self._driver_editor:
+        if model is not None:
+            model.dataChanged.connect(self._driver_data_changed)
+            model.modelAboutToBeReset.connect(self._cancel_driver_drag)
+
+    def _emit_move_requested(self, names, target, position) -> None:
+        self.workShapeMoveRequested.emit(names, target, position)
+
+    def _emit_group_requested(self) -> None:
+        self.groupRequested.emit()
+
+    def _selected_draggable_shape_names(self) -> List[str]:
+        # Work shapes are reordered internally; they are not dragged out as
+        # shape names the way primaries are.
+        return []
+
+    def _iter_leaf_items(self):
+        """Yield every work-shape leaf item depth first."""
+        stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            if not bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+                yield item
+            for i in range(item.childCount()):
+                stack.append(item.child(i))
+
+    def _sync_driver_expansion(self, editor=None) -> None:
+        """Drop collapsed-driver names that no longer exist in the tree."""
+        if editor is not None and editor is not self._driver_editor:
             self._collapsed_driver_names.clear()
             self._driver_editor = editor
         surviving_names = set()
-        if model is not None:
-            for row in range(model.rowCount()):
-                index = model.index(row, 0)
-                if index.data(WorkShapeItemsModel.DriverNamesRole):
-                    surviving_names.add(str(index.data(ShapeItemsModel.NameRole)))
+        for item in self._iter_leaf_items():
+            if item.data(0, WorkShapeRoles.DriverNamesRole):
+                surviving_names.add(str(item.data(0, ShapeItemsModel.NameRole) or ""))
         self._collapsed_driver_names.intersection_update(surviving_names)
 
+
     def _driver_data_changed(self, first, last, roles=()) -> None:
-        if roles and WorkShapeItemsModel.DriverNamesRole not in roles:
-            return
         self._cancel_driver_drag()
         delegate = self.itemDelegate()
-        for row in range(first.row(), last.row() + 1):
-            index = self.model().index(row, 0)
-            if not index.data(WorkShapeItemsModel.DriverNamesRole):
-                self._collapsed_driver_names.discard(str(index.data(ShapeItemsModel.NameRole)))
-            if delegate is not None:
-                delegate.sizeHintChanged.emit(index)
+        if delegate is not None and first.isValid():
+            delegate.sizeHintChanged.emit(first)
         self.viewport().update()
 
     def drivers_expanded(self, index) -> bool:
@@ -674,22 +908,24 @@ class WorkShapesListView(SliderListView):
         Returns:
             None
         """
-        model = self.model()
-        if model is None:
-            return
         delegate = self.itemDelegate()
         if expanded:
             self._collapsed_driver_names.clear()
         else:
-            for row in range(model.rowCount()):
-                index = model.index(row, 0)
-                if index.data(WorkShapeItemsModel.DriverNamesRole):
-                    self._collapsed_driver_names.add(str(index.data(ShapeItemsModel.NameRole)))
-        for row in range(model.rowCount()):
-            index = model.index(row, 0)
-            if delegate is not None:
+            for item in self._iter_leaf_items():
+                if item.data(0, WorkShapeRoles.DriverNamesRole):
+                    self._collapsed_driver_names.add(str(item.data(0, ShapeItemsModel.NameRole) or ""))
+        for item in self._iter_leaf_items():
+            index = self.indexFromItem(item, 0)
+            if delegate is not None and index.isValid():
                 delegate.sizeHintChanged.emit(index)
         self.viewport().update()
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if self._handle_group_shortcut(event):
+            return
+        super().keyPressEvent(event)
+
 
     def _work_shape_hit(self, pos):
         """Return (parent index, part, driver name) using delegate geometry."""
@@ -700,6 +936,9 @@ class WorkShapesListView(SliderListView):
         if not hasattr(delegate, "driver_at_pos"):
             return index, "parent", None
         option = OptionRect(self.visualRect(index), self.fontMetrics())
+        folder_disclosure = getattr(delegate, "folder_disclosure_rect", None)
+        if callable(folder_disclosure) and folder_disclosure(option, index).contains(pos):
+            return index, "folder_disclosure", None
         if delegate.disclosure_rect(option, index).contains(pos):
             return index, "disclosure", None
         driver = delegate.driver_at_pos(option, index, pos)
@@ -791,6 +1030,15 @@ class WorkShapesListView(SliderListView):
         self._cancel_driver_drag()
         self._driver_press_active = False
         index, part, driver = self._work_shape_hit(event.pos())
+        if part == "folder_disclosure":
+            # The group chevron is delegate-painted, so Qt's native branch no
+            # longer toggles it; a single left-click on the triangle must.
+            if event.button() == Qt.LeftButton and index.isValid():
+                item = self.itemFromIndex(index)
+                if item is not None:
+                    item.setExpanded(not item.isExpanded())
+            event.accept()
+            return
         if part in {"driver", "disclosure"}:
             if (
                 part == "disclosure"
@@ -829,7 +1077,7 @@ class WorkShapesListView(SliderListView):
     def mouseDoubleClickEvent(self, event):  # noqa: N802
         self._cancel_driver_drag()
         _, part, driver = self._work_shape_hit(event.pos())
-        if part in {"driver", "disclosure"}:
+        if part in {"driver", "disclosure", "folder_disclosure"}:
             self._driver_press_active = True
             if event.button() == Qt.LeftButton and part == "driver":
                 self.driverPoseRequested.emit(driver)
@@ -849,34 +1097,43 @@ class WorkShapesListView(SliderListView):
         return [name.strip() for name in raw_names if name and name.strip()]
 
     def _receiver_name_at_pos(self, pos) -> Optional[str]:
-        model = self.model()
-        if model is None:
-            return None
         index, part, _ = self._work_shape_hit(pos)
         if not index.isValid() or part != "parent":
             return None
-        if bool(model.data(index, ShapeItemsModel.IsHeaderRole)):
+        if bool(index.data(ShapeItemsModel.IsHeaderRole)):
             return None
-        receiver = str(model.data(index, ShapeItemsModel.NameRole) or "")
+        receiver = str(index.data(ShapeItemsModel.NameRole) or "")
         return receiver or None
 
     def dragEnterEvent(self, event):  # noqa: N802
-        shape_names = self._shape_names_from_mime(event.mimeData())
-        if shape_names:
+        if self._is_internal_order_event(event):
+            event.acceptProposedAction()
+            return
+        if self._shape_names_from_mime(event.mimeData()):
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dragMoveEvent(self, event):  # noqa: N802
-        receiver_name = self._receiver_name_at_pos(event.pos())
-        shape_names = self._shape_names_from_mime(event.mimeData())
-        if receiver_name and shape_names:
+        if self._is_internal_order_event(event):
+            pos = self._event_position(event)
+            item, position = self._internal_drop_target(pos)
+            if item is not self._drop_target_item or position != self._drop_position:
+                self._drop_target_item = item
+                self._drop_position = position
+                self.viewport().update()
+            event.acceptProposedAction()
+            return
+        if self._receiver_name_at_pos(self._event_position(event)) and self._shape_names_from_mime(event.mimeData()):
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dropEvent(self, event):  # noqa: N802
-        receiver_name = self._receiver_name_at_pos(event.pos())
+        if self._is_internal_order_event(event):
+            super().dropEvent(event)
+            return
+        receiver_name = self._receiver_name_at_pos(self._event_position(event))
         shape_names = self._shape_names_from_mime(event.mimeData())
         if not receiver_name or not shape_names:
             event.ignore()
@@ -885,13 +1142,41 @@ class WorkShapesListView(SliderListView):
         event.acceptProposedAction()
 
     def _show_context_menu(self, pos) -> None:
+        item = self.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.clearSelection()
+            item.setSelected(True)
+            self.setCurrentItem(item)
+
+        if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+            menu = QMenu(self)
+            rename_group_action = menu.addAction("Rename Group")
+            ungroup_action = menu.addAction("Ungroup")
+            if hasattr(menu, "exec"):
+                selected_action = menu.exec(self.viewport().mapToGlobal(pos))
+            else:
+                selected_action = menu.exec_(self.viewport().mapToGlobal(pos))
+            if selected_action == rename_group_action:
+                self.renameGroupRequested.emit(item)
+            elif selected_action == ungroup_action:
+                self.ungroupRequested.emit()
+            return
+
         receiver_name = self._receiver_name_at_pos(pos)
         if not receiver_name:
             return
-        selected_shape_names = self._selected_draggable_shape_names()
+        selected_shape_names = [str(it.data(0, ShapeItemsModel.NameRole) or "")
+                                for it in self.selectedItems()
+                                if not bool(it.data(0, ShapeItemsModel.IsHeaderRole))]
         normalize_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
+        group_action = menu.addAction("Group Selected")
+        group_action.setShortcut("Ctrl+G")
+        group_action.setToolTip("Group the selected work shapes (Ctrl+G)")
+        menu.addSeparator()
         duplicate_action = menu.addAction(f"Duplicate")
         duplicate_action.setToolTip("Duplicate the selected shape")
         menu.addSeparator()
@@ -933,7 +1218,9 @@ class WorkShapesListView(SliderListView):
             selected_action = menu.exec(self.viewport().mapToGlobal(pos))
         else:
             selected_action = menu.exec_(self.viewport().mapToGlobal(pos))
-        if selected_action == duplicate_action:
+        if selected_action == group_action:
+            self.groupRequested.emit()
+        elif selected_action == duplicate_action:
             self.duplicate_callback(receiver_name)
         elif selected_action == extract_work_shape_mesh_action:
             self.extract_work_shape_mesh_callback(receiver_name)
@@ -1090,7 +1377,7 @@ class ShapeTreeWidget(SliderDragViewMixin, QTreeWidget):
 
 
 
-class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
+class PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWidget):
     """Primary tree that mirrors the shapes tree: the delegate owns slider value
     drags and Qt owns name drags, so clicks and double-clicks reach the view."""
 
@@ -1102,6 +1389,7 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
     _primary_tree_layout = True
     _tree_view_layout = True
     _shapes_tree_layout = False
+    _tree_indent = PRIMARY_TREE_INDENT
     _panel_icon_slots = 0
     _uses_native_branch_indicator = False
     _enable_slider_value_edit = True
@@ -1117,18 +1405,16 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
             None
         """
         super().__init__(parent)
-        self._drop_target_item = None
-        self._drop_position = ""
+        self._init_internal_reorder()
         # Slider double-clicks are the only path that opens the value editor;
         # name double-clicks keep their pose behavior.
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        if self._enable_internal_reorder:
-            # Internal reordering is handled by the owning window through
-            # ``primaryMoveRequested``; Qt must not move the items itself.
-            self.setAcceptDrops(True)
-            self.setDragDropMode(QAbstractItemView.DragDrop)
-            self.setDropIndicatorShown(True)
-            self.setDefaultDropAction(Qt.MoveAction)
+
+    def _emit_move_requested(self, names, target, position) -> None:
+        self.primaryMoveRequested.emit(names, target, position)
+
+    def _emit_group_requested(self) -> None:
+        self.groupRequested.emit()
 
     def _resolve_icon_click(self, event_pos) -> Optional[tuple]:
         index = self.indexAt(event_pos)
@@ -1185,149 +1471,8 @@ class PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget):
         self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
         return True
 
-    def _selected_order_names(self) -> List[str]:
-        """Return selected primary/folder names for internal reordering."""
-        return [self._item_name(item) for item in self.selectedItems() if self._item_name(item)]
-
-    def startDrag(self, supportedActions):  # noqa: N802
-        shape_names = self._selected_draggable_shape_names()
-        order_names = self._selected_order_names() if self._enable_internal_reorder else []
-        if not shape_names and not order_names:
-            return
-        mime_data = QMimeData()
-        if shape_names:
-            payload = "\n".join(shape_names).encode("utf-8")
-            mime_data.setData(self.DRAG_MIME_TYPE, payload)
-            mime_data.setText("\n".join(shape_names))
-        if order_names:
-            mime_data.setData(self.ORDER_MIME_TYPE, "\n".join(order_names).encode("utf-8"))
-        drag = QDrag(self)
-        drag.setMimeData(mime_data)
-        drop_action = Qt.CopyAction if (supportedActions & Qt.CopyAction) else Qt.MoveAction
-        if hasattr(drag, "exec"):
-            drag.exec(drop_action)
-        else:
-            drag.exec_(drop_action)
-
-    @staticmethod
-    def _event_position(event):
-        if hasattr(event, "position"):
-            return event.position().toPoint()
-        return event.pos()
-
-    def _item_name(self, item) -> str:
-        if item is None:
-            return ""
-        name = item.data(0, PRIMARY_TREE_NAME_ROLE)
-        if not name:
-            name = item.data(0, ShapeItemsModel.NameRole)
-        return str(name or item.text(0) or "")
-
-    def dragEnterEvent(self, event):  # noqa: N802
-        if self._is_internal_order_event(event):
-            event.acceptProposedAction()
-            return
-        event.ignore()
-
-    def dragMoveEvent(self, event):  # noqa: N802
-        if not self._is_internal_order_event(event):
-            event.ignore()
-            return
-        item, position = self._internal_drop_target(self._event_position(event))
-        if item is not self._drop_target_item or position != self._drop_position:
-            self._drop_target_item = item
-            self._drop_position = position
-            self.viewport().update()
-        event.acceptProposedAction()
-
-    def dragLeaveEvent(self, event):  # noqa: N802
-        self._clear_drop_indicator()
-        super().dragLeaveEvent(event)
-
-    def _is_internal_order_event(self, event) -> bool:
-        return bool(
-            self._enable_internal_reorder
-            and event.source() is self
-            and event.mimeData().hasFormat(self.ORDER_MIME_TYPE)
-        )
-
-    def _internal_drop_target(self, pos):
-        """Resolve the internal drop target for ``pos``.
-
-        Returns:
-            tuple: ``(item, position)`` where ``position`` is ``before``,
-                ``after`` or ``inside`` for an item target, or ``(None, "root")``
-                when the pointer is over empty viewport space.
-        """
-        item = self.itemAt(pos)
-        if item is None:
-            return None, "root"
-        rect = self.visualItemRect(item)
-        ratio = (pos.y() - rect.top()) / max(1, rect.height())
-        if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
-            # Only the middle band nests; the edges reorder as siblings so a
-            # nested group can always be pulled back out of its parent.
-            if ratio < 0.25:
-                return item, "before"
-            if ratio > 0.75:
-                return item, "after"
-            return item, "inside"
-        return item, ("before" if ratio < 0.5 else "after")
-
-    def _clear_drop_indicator(self) -> None:
-        if self._drop_target_item is not None or self._drop_position:
-            self._drop_target_item = None
-            self._drop_position = ""
-            self.viewport().update()
-
-    def dropEvent(self, event):  # noqa: N802
-        if not self._is_internal_order_event(event):
-            event.ignore()
-            return
-        names = [
-            name for name in bytes(event.mimeData().data(self.ORDER_MIME_TYPE))
-            .decode("utf-8", errors="ignore").split("\n")
-            if name.strip()
-        ]
-        item, position = self._internal_drop_target(self._event_position(event))
-        self._clear_drop_indicator()
-        if not names:
-            event.ignore()
-            return
-        target = self._item_name(item) if item is not None else ""
-        if position != "root" and not target:
-            event.ignore()
-            return
-        self.primaryMoveRequested.emit(names, target, position)
-        event.acceptProposedAction()
-
-    def paintEvent(self, event):  # noqa: N802
-        super().paintEvent(event)
-        item = self._drop_target_item
-        if item is None:
-            return
-        rect = self.visualItemRect(item)
-        if not rect.isValid():
-            return
-        painter = QPainter(self.viewport())
-        try:
-            accent = QColor(90, 160, 240)
-            if self._drop_position == "inside":
-                highlight = QColor(accent)
-                highlight.setAlpha(55)
-                painter.fillRect(rect, highlight)
-                painter.setPen(accent)
-                painter.drawRect(rect.adjusted(0, 0, -1, -1))
-            else:
-                line_top = rect.top() - 1 if self._drop_position == "before" else rect.bottom() - 1
-                painter.fillRect(rect.left() + 1, line_top, max(1, rect.width() - 2), 3, accent)
-        finally:
-            painter.end()
-
     def keyPressEvent(self, event):  # noqa: N802
-        if event.key() == Qt.Key_G and (event.modifiers() & Qt.ControlModifier):
-            self.groupRequested.emit()
-            event.accept()
+        if self._handle_group_shortcut(event):
             return
         if event.modifiers() == Qt.NoModifier:
             if event.key() == Qt.Key_Down and self._move_to_next_selectable_item(1):

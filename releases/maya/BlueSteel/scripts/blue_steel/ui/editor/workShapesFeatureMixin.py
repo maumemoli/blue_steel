@@ -16,9 +16,16 @@ from typing import List, Optional, Sequence
 
 from maya import cmds
 
+from ... import env
+from ...api.faceCtrlSorting import FaceCtrlSortingStore
+from .constants import (
+    PRIMARY_TREE_FOLDER_ROLE,
+    PRIMARY_TREE_NAME_ROLE,
+)
 from .mainWindowMixin import MainWindowMixin, target_shape_names
 from .models import (
     ShapeItemsModel,
+    WorkShapeRoles,
 )
 from .qt import (
     QAbstractItemView,
@@ -27,10 +34,11 @@ from .qt import (
     QDoubleSpinBox,
     QFormLayout,
     QGuiApplication,
-    QItemSelectionModel,
+    QInputDialog,
     QLabel,
     QModelIndex,
     QSpinBox,
+    QTimer,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -48,7 +56,14 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         Returns:
             List[str]: The selected work-shape names.
         """
-        return self._selected_names_from_list_view(self.work_shapes_view, self._work_shape_model)
+        names: List[str] = []
+        for item in self.work_shapes_view.selectedItems():
+            if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+                continue
+            name = str(item.data(0, PRIMARY_TREE_NAME_ROLE) or item.data(0, ShapeItemsModel.NameRole) or "")
+            if name:
+                names.append(name)
+        return names
 
 
     def _first_selected_work_shape_name(self) -> Optional[str]:
@@ -73,12 +88,13 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         Returns:
             None
         """
-        index = self._work_shape_model.index_by_name(shape_name)
-        if not index.isValid() or self.work_shapes_view.selectionModel() is None:
+        item = self._work_shape_item(shape_name)
+        if item is None:
             return
-        self.work_shapes_view.selectionModel().clearSelection()
-        self.work_shapes_view.selectionModel().select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-        self.work_shapes_view.setCurrentIndex(index)
+        view = self.work_shapes_view
+        view.clearSelection()
+        item.setSelected(True)
+        view.setCurrentItem(item)
 
 
     def _on_work_shapes_selection_changed(self, *_args) -> None:
@@ -103,7 +119,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self.work_add_button.setEnabled(has_editor)
         self.work_remove_button.setEnabled(has_editor and has_selection)
         self.work_paint_button.setEnabled(has_editor and has_selection)
-        self.apply_work_shapes_button.setEnabled(has_editor and bool(self._work_shape_model.has_connected_driver_shapes()))
+        self.apply_work_shapes_button.setEnabled(has_editor and self._has_connected_driver_shapes())
 
 
     def _stop_active_blendshape_trackers(self) -> None:
@@ -139,17 +155,435 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
 
     def _reload_work_shapes_from_editor(self) -> None:
-        """Rebuild the work-shape model and refresh dependent UI.
+        """Rebuild the work-shape tree and refresh dependent UI.
 
         Returns:
             None
         """
-        if self.current_editor is None:
-            self._work_shape_model.rebuild_from_editor(None)
-        else:
-            self._work_shape_model.rebuild_from_editor(self.current_editor)
+        self._rebuild_work_shapes_tree()
         self._update_delegate_name_columns()
         self._update_work_shape_button_panel()
+
+
+    # ------------------------------------------------------------------
+    # Work-shapes tree: build, persist, and mutate through the shared store
+    # ------------------------------------------------------------------
+    def _rebuild_work_shapes_tree(self) -> None:
+        """Build the Work Shapes tree from the persisted sorting store."""
+        selected = set(self._selected_work_shape_names())
+        collapsed_folders = self._collapsed_work_shape_folder_names()
+        self.work_shapes_view.clear()
+        self._work_shape_tree_items.clear()
+
+        editor = self.current_editor
+        if editor is None or editor.work_blendshape is None:
+            self.work_shapes_view._sync_driver_expansion(None)
+            return
+
+        weights = sorted(editor.get_work_blendshape_weights() or [], key=lambda w: str(w).lower())
+        names = [str(weight) for weight in weights]
+        store = self._work_shape_sorting_store()
+        if store.sync(names):
+            self._save_work_shape_sorting_store(store)
+
+        connected_weights = set(editor.get_work_blendshape_connected_targets_weights() or [])
+        sculpt_indices = set(editor.work_blendshape.get_sculpt_target_indices() or [])
+        info_by_name = {}
+        edit_name = None
+        for weight in weights:
+            name = str(weight)
+            connected = weight in connected_weights
+            driver_connected = bool(editor.get_work_shape_driver_nodes(weight))
+            drivers = ()
+            if driver_connected:
+                try:
+                    drivers = tuple(dict.fromkeys(
+                        str(driver) for driver in (editor.get_work_shape_driver_shapes(name) or []) if driver
+                    ))
+                except (RuntimeError, ValueError):
+                    # A custom or partially disconnected graph may expose driver
+                    # nodes without resolvable shape inputs; keep the parent usable.
+                    drivers = ()
+            info_by_name[name] = {
+                "value": float(editor.work_blendshape.get_weight_value(weight)),
+                "muted": bool(editor.get_work_shape_muted_state(name)),
+                "connected": connected,
+                "driver_connected": driver_connected,
+                "driver_names": drivers,
+                "tooltip": "Connected extraction mesh" if connected else None,
+            }
+            if edit_name is None and int(weight.id) in sculpt_indices:
+                edit_name = name
+
+        self._build_work_shapes_tree(
+            store.ordered_tree(), None, info_by_name, edit_name, selected, collapsed_folders
+        )
+        self.work_shapes_view._sync_driver_expansion(editor)
+
+
+    def _build_work_shapes_tree(
+        self,
+        nodes: Sequence[dict],
+        parent_item: Optional[QTreeWidgetItem],
+        info_by_name: dict,
+        edit_name: Optional[str],
+        selected_names: set,
+        collapsed_folders: set,
+    ) -> None:
+        """Recursively create Work Shapes tree items from the store's nodes."""
+        for node in nodes:
+            name = str(node.get("name") or "")
+            if not name:
+                continue
+            if node.get("type") == "group":
+                folder = QTreeWidgetItem([name])
+                folder.setData(0, PRIMARY_TREE_FOLDER_ROLE, True)
+                folder.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+                folder.setData(0, ShapeItemsModel.NameRole, name)
+                folder.setData(0, ShapeItemsModel.TypeRole, "WorkShapeFolder")
+                folder.setData(0, ShapeItemsModel.ValueRole, 0.0)
+                folder.setData(0, ShapeItemsModel.EditableRole, False)
+                folder.setData(0, ShapeItemsModel.IsHeaderRole, True)
+                folder.setData(0, ShapeItemsModel.MutedRole, False)
+                folder.setData(0, ShapeItemsModel.LockedRole, False)
+                folder.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+                folder_font = folder.font(0)
+                folder_font.setBold(True)
+                folder.setFont(0, folder_font)
+                folder.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+                if parent_item is None:
+                    self.work_shapes_view.addTopLevelItem(folder)
+                else:
+                    parent_item.addChild(folder)
+                folder.setExpanded(name not in collapsed_folders)
+                self._update_work_shape_folder_icon(folder)
+                self._build_work_shapes_tree(
+                    node.get("children", []), folder, info_by_name, edit_name, selected_names, collapsed_folders
+                )
+                continue
+
+            info = info_by_name.get(name)
+            if info is None:
+                # A stale persisted name that is not in the rig; sync removes it.
+                continue
+            leaf = QTreeWidgetItem([name])
+            leaf.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+            leaf.setData(0, ShapeItemsModel.NameRole, name)
+            leaf.setData(0, ShapeItemsModel.TypeRole, "WorkShape")
+            leaf.setData(0, ShapeItemsModel.ValueRole, info["value"])
+            leaf.setData(0, ShapeItemsModel.MutedRole, info["muted"])
+            leaf.setData(0, ShapeItemsModel.EditableRole, True)
+            leaf.setData(0, ShapeItemsModel.IsHeaderRole, False)
+            leaf.setData(0, ShapeItemsModel.LockedRole, False)
+            leaf.setData(0, ShapeItemsModel.LockIconVisibleRole, False)
+            leaf.setData(0, WorkShapeRoles.InEditModeRole, name == edit_name)
+            leaf.setData(0, WorkShapeRoles.ConnectedRole, info["connected"])
+            leaf.setData(0, WorkShapeRoles.DriverConnectedRole, info["driver_connected"])
+            leaf.setData(0, WorkShapeRoles.DriverNamesRole, info["driver_names"])
+            if info.get("tooltip"):
+                leaf.setData(0, Qt.ToolTipRole, info["tooltip"])
+            leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+            if parent_item is None:
+                self.work_shapes_view.addTopLevelItem(leaf)
+            else:
+                parent_item.addChild(leaf)
+            self._work_shape_tree_items[name] = leaf
+            if name in selected_names:
+                leaf.setSelected(True)
+
+
+    def _update_work_shape_folder_icon(self, item: Optional[QTreeWidgetItem]) -> None:
+        """Match a Work Shapes folder's chevron to its expansion state.
+
+        Mirrors ``_update_primary_tree_folder_icon`` so the delegate-painted
+        group disclosure uses the same open/closed icon as the Primaries tree.
+        """
+        if item is None or not bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+            return
+        open_icon = getattr(self, "_primary_tree_folder_open_icon", None)
+        closed_icon = getattr(self, "_primary_tree_folder_closed_icon", None)
+        if item.isExpanded() and open_icon is not None and not open_icon.isNull():
+            item.setIcon(0, open_icon)
+        elif closed_icon is not None and not closed_icon.isNull():
+            item.setIcon(0, closed_icon)
+
+
+    def _work_shape_sorting_store(self) -> FaceCtrlSortingStore:
+        """Return a Work Shapes store loaded from the active editor."""
+        store = FaceCtrlSortingStore(env.ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
+        try:
+            store.load(self.current_editor)
+        except Exception:
+            store.from_dict(None)
+        return store
+
+
+    def _save_work_shape_sorting_store(self, store: FaceCtrlSortingStore) -> None:
+        """Persist the Work Shapes ordering, reporting failures without raising."""
+        if self.current_editor is None:
+            return
+        try:
+            store.save(self.current_editor)
+        except Exception as exc:
+            self._set_status(f"Failed saving work shape ordering: {exc}", warning=True)
+
+
+    def _collapsed_work_shape_folder_names(self) -> set:
+        """Collect names of currently collapsed Work Shapes folders."""
+        collapsed = set()
+        stack = [self.work_shapes_view.topLevelItem(i) for i in range(self.work_shapes_view.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            if item.data(0, PRIMARY_TREE_FOLDER_ROLE) and not item.isExpanded():
+                collapsed.add(str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or ""))
+            for i in range(item.childCount()):
+                stack.append(item.child(i))
+        return collapsed
+
+
+    def _work_shape_item(self, shape_name: str) -> Optional[QTreeWidgetItem]:
+        """Return the tree item for ``shape_name`` (``None`` when absent)."""
+        return self._work_shape_tree_items.get(str(shape_name))
+
+
+    def _work_shape_edit_name(self) -> Optional[str]:
+        """Return the work shape currently in sculpt/edit mode, if any."""
+        for name, item in self._work_shape_tree_items.items():
+            if bool(item.data(0, WorkShapeRoles.InEditModeRole)):
+                return name
+        return None
+
+
+    def _set_work_shape_edit_name(self, shape_name: Optional[str]) -> None:
+        """Update InEditModeRole on every work-shape item."""
+        target = str(shape_name) if shape_name else None
+        for name, item in self._work_shape_tree_items.items():
+            should_edit = name == target
+            if bool(item.data(0, WorkShapeRoles.InEditModeRole)) != should_edit:
+                item.setData(0, WorkShapeRoles.InEditModeRole, should_edit)
+        self.work_shapes_view.viewport().update()
+
+
+    def _has_connected_driver_shapes(self) -> bool:
+        """Return whether any work shape has a connected driver."""
+        for item in self._work_shape_tree_items.values():
+            if bool(item.data(0, WorkShapeRoles.DriverConnectedRole)):
+                return True
+        return False
+
+
+    def _work_shape_value(self, shape_name: str) -> Optional[float]:
+        """Return the cached tree value for ``shape_name``."""
+        item = self._work_shape_item(shape_name)
+        if item is None:
+            return None
+        return float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)
+
+
+    def _set_work_shape_value_local(self, shape_name: str, value: float) -> None:
+        """Update one tree value from tracker callbacks without writing to Maya."""
+        item = self._work_shape_item(shape_name)
+        if item is None:
+            return
+        clamped = max(0.0, min(1.0, float(value)))
+        if abs(float(item.data(0, ShapeItemsModel.ValueRole) or 0.0) - clamped) <= 1e-6:
+            return
+        self._syncing_work_shapes_tree = True
+        try:
+            item.setData(0, ShapeItemsModel.ValueRole, clamped)
+        finally:
+            self._syncing_work_shapes_tree = False
+
+
+    def _set_work_shape_muted_local(self, shape_name: str, muted: bool) -> None:
+        """Update one tree muted state without forcing a rebuild."""
+        item = self._work_shape_item(shape_name)
+        if item is None:
+            return
+        target = bool(muted)
+        if bool(item.data(0, ShapeItemsModel.MutedRole)) == target:
+            return
+        self._syncing_work_shapes_tree = True
+        try:
+            item.setData(0, ShapeItemsModel.MutedRole, target)
+        finally:
+            self._syncing_work_shapes_tree = False
+        self.work_shapes_view.viewport().update()
+
+
+    def _set_work_shape_connected_local(self, shape_name: str, connected: bool) -> None:
+        """Update one tree connected-mesh state without forcing a rebuild."""
+        item = self._work_shape_item(shape_name)
+        if item is None:
+            return
+        target = bool(connected)
+        if bool(item.data(0, WorkShapeRoles.ConnectedRole)) == target:
+            return
+        self._syncing_work_shapes_tree = True
+        try:
+            item.setData(0, WorkShapeRoles.ConnectedRole, target)
+            if target:
+                item.setData(0, Qt.ToolTipRole, "Connected extraction mesh")
+            else:
+                item.setData(0, Qt.ToolTipRole, None)
+        finally:
+            self._syncing_work_shapes_tree = False
+        self.work_shapes_view.viewport().update()
+
+
+    def _set_work_shape_driver_connected_local(self, shape_name: str, connected: bool) -> None:
+        """Update one tree driver state, refreshing cached driver names."""
+        item = self._work_shape_item(shape_name)
+        if item is None or self.current_editor is None or self.current_editor.work_blendshape is None:
+            return
+        target = bool(connected)
+        drivers = ()
+        if target:
+            try:
+                drivers = tuple(dict.fromkeys(
+                    str(driver) for driver in (self.current_editor.get_work_shape_driver_shapes(shape_name) or []) if driver
+                ))
+            except (RuntimeError, ValueError):
+                drivers = ()
+        if (
+            bool(item.data(0, WorkShapeRoles.DriverConnectedRole)) == target
+            and item.data(0, WorkShapeRoles.DriverNamesRole) == drivers
+        ):
+            return
+        self._syncing_work_shapes_tree = True
+        try:
+            item.setData(0, WorkShapeRoles.DriverConnectedRole, target)
+            item.setData(0, WorkShapeRoles.DriverNamesRole, drivers)
+        finally:
+            self._syncing_work_shapes_tree = False
+        index = self.work_shapes_view.indexFromItem(item, 0)
+        if index.isValid() and self._work_shapes_delegate is not None:
+            self._work_shapes_delegate.sizeHintChanged.emit(index)
+        self.work_shapes_view.viewport().update()
+
+
+    def _commit_work_shape_value(self, shape_name: str, value: float) -> None:
+        """Write a work-shape value to Maya and report it."""
+        if self.current_editor is None or self.current_editor.work_blendshape is None:
+            return
+        weight = self.current_editor.work_blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            return
+        self.current_editor.work_blendshape.set_weight_value(weight, max(0.0, min(1.0, float(value))))
+        self._on_work_shape_value_committed(shape_name, max(0.0, min(1.0, float(value))))
+
+
+    def _on_work_shapes_tree_data_changed(self, top_left: QModelIndex, _bottom_right: QModelIndex, roles=None) -> None:
+        """Commit work-shape value edits coming from the tree's sliders."""
+        if self._syncing_work_shapes_tree:
+            return
+        if self.current_editor is None or self.current_editor.work_blendshape is None:
+            return
+        if roles and ShapeItemsModel.ValueRole not in roles:
+            return
+        item = self.work_shapes_view.itemFromIndex(top_left)
+        if item is None or bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+            return
+        if not bool(item.data(0, ShapeItemsModel.EditableRole)):
+            return
+        shape_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
+        if not shape_name:
+            return
+        value = max(0.0, min(1.0, float(item.data(0, ShapeItemsModel.ValueRole) or 0.0)))
+        self._commit_work_shape_value(shape_name, value)
+
+
+    def _sync_work_shape_tree_values(self) -> List[tuple]:
+        """Pull current work-blendshape values and update tree items in place."""
+        if self.current_editor is None or self.current_editor.work_blendshape is None:
+            return []
+        changed: List[tuple] = []
+        for name, item in self._work_shape_tree_items.items():
+            new_value = self.current_editor.work_blendshape.get_weight_value_by_name(name)
+            clamped = max(0.0, min(1.0, float(new_value or 0.0)))
+            if abs(float(item.data(0, ShapeItemsModel.ValueRole) or 0.0) - clamped) <= 1e-6:
+                continue
+            self._set_work_shape_value_local(name, clamped)
+            changed.append((name, clamped))
+        return changed
+
+
+    def _on_work_shapes_move_requested(self, names, target: str, position: str) -> None:
+        """Apply a drag-reorder/reparent coming from the Work Shapes tree."""
+        if self.current_editor is None:
+            return
+        store = self._work_shape_sorting_store()
+        if str(position) == "root" or not str(target):
+            changed = store.move_to_root(list(names))
+        else:
+            changed = store.move(list(names), str(target), str(position))
+        if not changed:
+            return
+        self._save_work_shape_sorting_store(store)
+        # Defer the rebuild until the drop event has fully unwound; clearing the
+        # tree synchronously inside dropEvent can leave Qt holding stale items.
+        QTimer.singleShot(0, self._rebuild_work_shapes_tree)
+
+
+    def _group_selected_work_shapes(self) -> None:
+        """Create a new folder containing the selected work shapes (Ctrl+G)."""
+        if self.current_editor is None:
+            return
+        selected = self._selected_work_shape_names()
+        if not selected:
+            self._set_status("Select one or more work shapes to group.", warning=True)
+            return
+        name, ok = QInputDialog.getText(self, "Group Work Shapes", "Group name:", text="Group")
+        if not ok:
+            return
+        store = self._work_shape_sorting_store()
+        created = store.group(selected, (name or "").strip() or "Group")
+        if not created:
+            return
+        self._save_work_shape_sorting_store(store)
+        self._rebuild_work_shapes_tree()
+        self._set_status(f"Grouped {len(selected)} work shape(s) into '{created}'.")
+
+
+    def _rename_work_shape_folder(self, item: Optional[QTreeWidgetItem]) -> None:
+        """Prompt for and apply a new name for a Work Shapes folder."""
+        if self.current_editor is None or item is None:
+            return
+        old_name = str(item.data(0, ShapeItemsModel.NameRole) or item.text(0) or "")
+        if not old_name:
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Group", "Group name:", text=old_name)
+        if not ok:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name or new_name == old_name:
+            return
+        store = self._work_shape_sorting_store()
+        if not store.rename(old_name, new_name):
+            self._set_status(f"Could not rename group '{old_name}'.", warning=True)
+            return
+        self._save_work_shape_sorting_store(store)
+        self._rebuild_work_shapes_tree()
+        self._set_status(f"Renamed group '{old_name}' to '{new_name}'.")
+
+
+    def _ungroup_selected_work_shapes(self) -> None:
+        """Dissolve the selected Work Shapes folder, promoting its children."""
+        if self.current_editor is None:
+            return
+        item = self.work_shapes_view.currentItem()
+        if item is None or not bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+            self._set_status("Select a group to ungroup.", warning=True)
+            return
+        group_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
+        store = self._work_shape_sorting_store()
+        if not store.ungroup(group_name):
+            return
+        self._save_work_shape_sorting_store(store)
+        self._rebuild_work_shapes_tree()
+        self._set_status(f"Ungrouped '{group_name}'.")
 
 
     def _on_add_work_shape_clicked(self) -> None:
@@ -188,13 +622,13 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._set_status("No work shapes selected.", warning=True)
             return
 
-        active_edit_shape = self._work_shape_model.edit_shape_name()
+        active_edit_shape = self._work_shape_edit_name()
         if active_edit_shape in shape_names:
             try:
                 cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
             except Exception:
                 pass
-            self._work_shape_model.set_edit_shape(None)
+            self._set_work_shape_edit_name(None)
 
         removed_count = 0
         try:
@@ -290,7 +724,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             return
 
         shape_name = shape_name or self._first_selected_work_shape_name()
-        active_shape_name = self._work_shape_model.edit_shape_name()
+        active_shape_name = self._work_shape_edit_name()
         if not shape_name:
             if active_shape_name:
                 try:
@@ -298,7 +732,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
                 except Exception as exc:
                     self._set_status(f"Error disabling edit mode: {exc}", error=True)
                     return
-                self._work_shape_model.set_edit_shape(None)
+                self._set_work_shape_edit_name(None)
                 self._set_status("Work shape edit mode disabled.")
                 self._update_work_shape_button_panel()
                 return
@@ -311,12 +745,13 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             except Exception as exc:
                 self._set_status(f"Error disabling edit mode: {exc}", error=True)
                 return
-            self._work_shape_model.set_edit_shape(None)
+            self._set_work_shape_edit_name(None)
             self._set_status("Work shape edit mode disabled.")
             self._update_work_shape_button_panel()
             return
 
-        if self._work_shape_model.is_shape_connected(shape_name):
+        item = self._work_shape_item(shape_name)
+        if item is not None and bool(item.data(0, WorkShapeRoles.ConnectedRole)):
             self._set_status(f"Cannot enable edit mode for '{shape_name}' because it has a connected mesh.", warning=True)
             self._update_work_shape_button_panel()
             return
@@ -326,29 +761,32 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         except Exception as exc:
             self._set_status(f"Error enabling edit mode: {exc}", error=True)
             return
-        self._work_shape_model.set_edit_shape(shape_name)
+        self._set_work_shape_edit_name(shape_name)
         self._set_status(f"Edit mode enabled for '{shape_name}'.")
 
         self._update_work_shape_button_panel()
 
 
-    def _on_work_shapes_double_clicked(self, model_index: QModelIndex) -> None:
+    def _on_work_shapes_double_clicked(self, item, column: int = 0) -> None:
         """Begin inline rename on a parent work shape.
 
         Driver-label double-clicks are handled separately by the view.
 
         Parameters:
-            model_index (QModelIndex): The clicked model index.
+            item (QTreeWidgetItem): The clicked tree item.
+            column (int): The clicked column.
 
         Returns:
             None
         """
-        if self.current_editor is None or not model_index.isValid():
+        if self.current_editor is None or item is None or column != 0:
             return
-        shape_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
+        if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+            return
+        shape_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
         if not shape_name:
             return
-        self._begin_inline_workshape_rename(model_index)
+        self._begin_inline_workshape_rename(item)
 
 
     def _on_work_shape_driver_pose_requested(self, driver_name: str) -> None:
@@ -401,7 +839,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         finally:
             self._start_active_blendshape_trackers()
         self._reload_work_shapes_from_editor()
-        self._work_shape_model.set_driver_connected_state_local(work_shape_name, True)
+        self._set_work_shape_driver_connected_local(work_shape_name, True)
         self._select_work_shape(work_shape_name)
         self._set_status(f"Connected work shape '{work_shape_name}' to '{source_shape_name}'.")
 
@@ -427,7 +865,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         finally:
             self._start_active_blendshape_trackers()
         self._reload_work_shapes_from_editor()
-        self._work_shape_model.set_driver_connected_state_local(work_shape_name, False)
+        self._set_work_shape_driver_connected_local(work_shape_name, False)
         self._select_work_shape(work_shape_name)
         self._set_status(f"Broke link for work shape '{work_shape_name}'.")
 
@@ -492,7 +930,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         if self.current_editor is not None and self.current_editor.work_blendshape is not None:
             weight = self.current_editor.work_blendshape.get_weight_by_name(work_shape_name)
             if weight is not None:
-                self._work_shape_model.set_connected_state_local(work_shape_name, bool(weight in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])))
+                self._set_work_shape_connected_local(work_shape_name, bool(weight in (self.current_editor.get_work_blendshape_connected_targets_weights() or [])))
         self._select_work_shape(work_shape_name)
         self._set_status(f"Extracted shape '{new_shape_name}' from work shape '{work_shape_name}'.")
 
@@ -848,18 +1286,18 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Cleared weight map values for '{work_shape_name}'.")
 
 
-    def _begin_inline_workshape_rename(self, model_index: QModelIndex) -> None:
+    def _begin_inline_workshape_rename(self, item: Optional[QTreeWidgetItem]) -> None:
         """Begin inline renaming of a work shape.
 
         Parameters:
-            model_index (QModelIndex): The model index of the work shape.
+            item (QTreeWidgetItem): The tree item of the work shape.
 
         Returns:
             None
         """
-        if self.current_editor is None or not model_index.isValid():
+        if self.current_editor is None or item is None:
             return
-        old_name = str(self._work_shape_model.data(model_index, ShapeItemsModel.NameRole) or "")
+        old_name = str(item.data(0, ShapeItemsModel.NameRole) or "")
         if not old_name:
             return
 
@@ -869,9 +1307,10 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         class _OptionRect:
             pass
 
+        index = self.work_shapes_view.indexFromItem(item, 0)
         option = _OptionRect()
-        option.rect = self.work_shapes_view.visualRect(model_index)
-        _, text_rect = self._work_shapes_delegate._area_rects(option, model_index)
+        option.rect = self.work_shapes_view.visualRect(index)
+        _, text_rect = self._work_shapes_delegate._area_rects(option, index)
 
         editor = InlineWorkshapeRenameEditor(self.work_shapes_view.viewport())
         editor.setText(old_name)
@@ -929,8 +1368,8 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         finally:
             self._start_active_blendshape_trackers()
 
-        if self._work_shape_model.edit_shape_name() == old_name:
-            self._work_shape_model.set_edit_shape(new_name)
+        if self._work_shape_edit_name() == old_name:
+            self._set_work_shape_edit_name(new_name)
         self._reload_work_shapes_from_editor()
         self._select_work_shape(new_name)
         self._set_status(f"Renamed work shape '{old_name}' to '{new_name}'.")
@@ -949,8 +1388,8 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             if value is None:
                 continue
             self._linked_primary_start_values[shape_name] = value
-        for shape_name in self._selected_names_from_list_view(self.work_shapes_view, self._work_shape_model):
-            value = self._work_shape_model.get_value(shape_name)
+        for shape_name in self._selected_work_shape_names():
+            value = self._work_shape_value(shape_name)
             if value is None:
                 continue
             self._linked_work_start_values[shape_name] = float(value)
@@ -1012,7 +1451,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._shape_model.set_shape_value_by_name(shape_name, target_value)
         for shape_name, start_value in self._linked_work_start_values.items():
             target_value = max(0.0, min(1.0, start_value + float(delta_value)))
-            self._work_shape_model.set_value_by_name(shape_name, target_value)
+            self._commit_work_shape_value(shape_name, target_value)
 
 
     def _on_work_shape_value_committed(self, shape_name: str, value: float) -> None:
@@ -1042,7 +1481,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             None
         """
         del shape_id
-        self._work_shape_model.set_value_local(shape_name, value)
+        self._set_work_shape_value_local(shape_name, value)
 
 
     def _on_work_shape_structure_changed(self, *_args) -> None:
@@ -1068,15 +1507,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             None
         """
         if self.current_editor is None or self.current_editor.work_blendshape is None:
-            self._work_shape_model.set_edit_shape(None)
+            self._set_work_shape_edit_name(None)
             self._update_work_shape_button_panel()
             return
         if target_id < 0:
-            self._work_shape_model.set_edit_shape(None)
+            self._set_work_shape_edit_name(None)
             self._update_work_shape_button_panel()
             return
         weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
-        self._work_shape_model.set_edit_shape(str(weight) if weight is not None else None)
+        self._set_work_shape_edit_name(str(weight) if weight is not None else None)
         self._update_work_shape_button_panel()
 
 
@@ -1100,7 +1539,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
                 self.work_blendshape_tracker.stop()
             for target_name in target_names:
                 self.current_editor.set_work_shape_mute_state(target_name, bool(state))
-                self._work_shape_model.set_muted_state_local(target_name, bool(state))
+                self._set_work_shape_muted_local(target_name, bool(state))
             if len(target_names) == 1:
                 self._set_status(f"{'Muted' if state else 'Unmuted'} work shape '{target_names[0]}'.")
             else:
@@ -1128,13 +1567,13 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         if work_weight is None:
             return
         work_shape_name = str(work_weight)
-        self._work_shape_model.set_connected_state_local(work_shape_name, bool(connected))
-        if connected and self._work_shape_model.edit_shape_name() == work_shape_name:
+        self._set_work_shape_connected_local(work_shape_name, bool(connected))
+        if connected and self._work_shape_edit_name() == work_shape_name:
             try:
                 cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
             except Exception:
                 pass
-            self._work_shape_model.set_edit_shape(None)
+            self._set_work_shape_edit_name(None)
         self._update_work_shape_button_panel()
 
 
@@ -1153,7 +1592,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         work_weight = self.current_editor.work_blendshape.get_weight_by_id(target_id)
         if work_weight is None:
             return
-        self._work_shape_model.set_driver_connected_state_local(str(work_weight), bool(connected))
+        self._set_work_shape_driver_connected_local(str(work_weight), bool(connected))
         
 
 
