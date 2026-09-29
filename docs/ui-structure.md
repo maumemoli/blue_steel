@@ -86,7 +86,7 @@ The UI imports these domain classes/functions and treats them as a black box:
 |---|---|---|
 | `BlueSteelEditor` | `api/editor.py` | The domain object for one editor system (shapes, splits, weights, persistence). |
 | `SplitSession` | `api/editor.py` | Helper for the split-shapes workflow. |
-| `FaceCtrlSortingStore` | `api/faceCtrlSorting.py` | Ordered group/leaf tree persisted in a container attribute; drives both the Primaries panel (`faceCtrlSorting`) and the Work Shapes panel (`workShapeSorting`). |
+| `TreeViewOrderingManager` | `api/treeViewOrderingManager.py` | Ordered group/leaf tree persisted in a container attribute; drives both the Primaries panel (`faceCtrlSorting`) and the Work Shapes panel (`workShapeSorting`). |
 | `BlueSteelEditorsTracker` | `api/trackers.py` | Tracks editor containers in the scene (add/remove/rename). |
 | `BlendShapeNodeTracker` | `api/trackers.py` | Tracks one blendshape node's weights/targets. |
 | `ControllerTracker` | `api/trackers.py` | Tracks a controller attribute group. |
@@ -597,7 +597,7 @@ Shared base and utilities for all feature mixins.
 - `_on_display_heat_map_toggled(checked)` / `_is_heat_map_switch_active()` / `_set_heat_map_target_for_editor(...)` / `_clear_heat_map_target_for_editor()` / `_update_heat_map_target_from_shapes_selection()` / `_update_heat_map_target_from_active_shapes_selection()` / `_update_heat_map_target_from_work_shapes_selection()`
 - `_refresh_primary_folder_sort_values()` / `_sort_primaries_tree()` / `_iter_primary_tree_leaves()` / `_get_primary_tree_value(shape_name)`
 - `_on_primary_tree_slider_changed(shape_name, value)` / `_on_primaries_tree_data_changed(...)` / `_sync_primary_tree_slider(shape_name, value)` / `_sync_primary_drop_tree_slider(shape_name, value)` / `_on_primary_drop_tree_data_changed(...)` / `_apply_primaries_tree_filter(terms)`
-- `_rebuild_primaries_tree()` / `_primary_sorting_store()` / `_save_primary_sorting_store(store)` / `_collapsed_primary_folder_names()` / `_build_primary_tree(...)` — build the Primaries tree from `FaceCtrlSortingStore` (reconciled against the rig's primaries).
+- `_rebuild_primaries_tree()` / `_primary_sorting_store()` / `_save_primary_sorting_store(store)` / `_collapsed_primary_folder_names()` / `_build_primary_tree(...)` — build the Primaries tree from `TreeViewOrderingManager` (reconciled against the rig's primaries).
 - `_on_primaries_move_requested(names, target, position)` / `_group_selected_primaries()` / `_ungroup_selected_primaries()` / `_rename_primary_folder(item)` / `_selected_primary_folder_name()` / `_select_primary_folder(name)` — persist user ordering/grouping.
 - `_on_primaries_selection_changed(...)` / `_on_exclusive_filter_toggled(checked)` / `_apply_primary_selection_shapes_filter(selected_names)`
 - `_on_primary_value_committed(shape_name, value)` / `_on_shape_value_changed(shape_id, shape_name, value)` / `_on_shape_structure_changed(...)`
@@ -732,15 +732,15 @@ Python linters — they carry `# noqa: N802`. `OptionRect` (in `qt.py`) is a che
 `QStyleOptionViewItem` stand-in used by delegate geometry helpers that only need
 `rect` and `fontMetrics`.
 
-### Ordering persistence (`api/faceCtrlSorting.py`)
+### Ordering persistence (`api/treeViewOrderingManager.py`)
 
 The Primaries panel's order and grouping are persisted on the editor container
 in the `faceCtrlSorting` attribute (JSON). The Work Shapes panel uses the same
-store against the `workShapeSorting` attribute. `FaceCtrlSortingStore` owns the
+store against the `workShapeSorting` attribute. `TreeViewOrderingManager` owns the
 nested tree (folders containing leaves), reconciles it against the rig's
 actual names, and exposes all mutations:
 
-- `FaceCtrlSortingStore(attribute_name="faceCtrlSorting")` — `load(editor)` / `save(editor)` call the editor's generic `read_sorting_attribute(name)` / `write_sorting_attribute(name, data)` accessors (with a legacy fallback for the primaries attribute). `to_dict()` / `from_dict(data)`.
+- `TreeViewOrderingManager(attribute_name="faceCtrlSorting")` — `load(editor)` / `save(editor)` call the editor's generic `read_sorting_attribute(name)` / `write_sorting_attribute(name, data)` accessors (with a legacy fallback for the primaries attribute). `to_dict()` / `from_dict(data)`.
 - `sync(primary_names, drop_empty_groups=True)` — prune removed leaves, drop empty groups, append new leaves at the root.
 - `add_primary(name, parent=None)` / `remove(name)` / `rename(old, new)`
 - `move(names, target, position)` — `before` / `after` / `inside` reorder and reparent.
@@ -785,9 +785,9 @@ behave the same way, and **Ctrl+G** groups the selected work shapes.
 | Slider drag (value scrub) | `delegates.py::SliderItemDelegate` (`external_drag_*`, `_start_drag`, `_end_drag`), `views.py::SliderDragViewMixin` |
 | Icon clicks (mute/lock/connected/edit) | `delegates.py` icon-rect helpers + signals, `views.py::_resolve_icon_click` |
 | Search / filter / color / active-only | `widgets.py::TokenSearchBar`, `models.py::ShapesFilterProxyModel`, `shapesFeatureMixin.py` |
-| Primaries tree | `views.py::PrimaryTreeWidget`, `shapesFeatureMixin.py::_rebuild_primaries_tree`, `api/faceCtrlSorting.py` |
+| Primaries tree | `views.py::PrimaryTreeWidget`, `shapesFeatureMixin.py::_rebuild_primaries_tree`, `api/treeViewOrderingManager.py` |
 | Sliders Drop Box | `views.py::PrimaryDropTreeWidget`, `shapesFeatureMixin.py::_rebuild_primary_drop_tree` / `_apply_primary_drop_tree_filter` |
-| Work shapes | `views.py::WorkShapesListView` (item-based tree), `workShapesFeatureMixin.py`, `api/faceCtrlSorting.py` |
+| Work shapes | `views.py::WorkShapesListView` (item-based tree), `workShapesFeatureMixin.py`, `api/treeViewOrderingManager.py` |
 | Split maps/groups/weights | `splitSettingsUiMixin.py`, `widgets.py::SplitMapsTree/SplitGroupsTree` |
 | Controller layout designer | `controllerLayoutWindow.py` |
 | Scene/editor lifecycle & trackers | `editorSessionMixin.py`, `api/trackers.py` |
@@ -882,10 +882,10 @@ MainWindow (central widget)
 
 | View class | Delegate | Model / backing store | Layout location |
 |---|---|---|---|
-| `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `FaceCtrlSortingStore` (reconciled with `BlueSteelEditor.get_primary_shapes()`) | Editor tab → Primaries panel |
+| `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `TreeViewOrderingManager` (reconciled with `BlueSteelEditor.get_primary_shapes()`) | Editor tab → Primaries panel |
 | `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
 | `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
-| `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `QTreeWidget` internal model built from `FaceCtrlSortingStore` (reconciled with the work-blendshape weights) | Editor tab → Work Shapes (third column) |
+| `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `QTreeWidget` internal model built from `TreeViewOrderingManager` (reconciled with the work-blendshape weights) | Editor tab → Work Shapes (third column) |
 | `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
 | `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |
 | `SplitGroupsTree` (`split_groups_tree`) | default `QTreeWidget` delegate | `QTreeWidget` items | Split Settings tab → Split Groups |

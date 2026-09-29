@@ -17,7 +17,7 @@ from typing import List, Optional, Sequence
 from maya import cmds
 
 from ... import env
-from ...api.faceCtrlSorting import FaceCtrlSortingStore
+from ...api.treeViewOrderingManager import TreeViewOrderingManager
 from .constants import (
     PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_NAME_ROLE,
@@ -308,9 +308,9 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             item.setIcon(0, closed_icon)
 
 
-    def _work_shape_sorting_store(self) -> FaceCtrlSortingStore:
+    def _work_shape_sorting_store(self) -> TreeViewOrderingManager:
         """Return a Work Shapes store loaded from the active editor."""
-        store = FaceCtrlSortingStore(env.ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
+        store = TreeViewOrderingManager(env.ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
         try:
             store.load(self.current_editor)
         except Exception:
@@ -318,7 +318,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         return store
 
 
-    def _save_work_shape_sorting_store(self, store: FaceCtrlSortingStore) -> None:
+    def _save_work_shape_sorting_store(self, store: TreeViewOrderingManager) -> None:
         """Persist the Work Shapes ordering, reporting failures without raising."""
         if self.current_editor is None:
             return

@@ -3,18 +3,18 @@
 The primaries panel used to derive its folders from the blendshape target
 directories. It is now driven by a JSON tree stored in the container attribute
 :data:`blue_steel.env.Environment.FACE_CTRL_SORTING_ATTR_STRING_IDENTIFIER`
-(``faceCtrlSorting``) and handled by :class:`FaceCtrlSortingStore`. The same
+(``faceCtrlSorting``) and handled by :class:`TreeViewOrderingManager`. The same
 store also backs the Work Shapes panel through a second attribute
 (``workShapeSorting``); only the attribute name differs, so the tree logic is
 shared.
 
 The store is deliberately Qt-free: the UI translates drag/drop and keyboard
-gestures into :class:`FaceCtrlSortingStore` calls, and the store owns all
+gestures into :class:`TreeViewOrderingManager` calls, and the store owns all
 ordering, grouping, reparenting, and reconciliation logic. That keeps the tree
 data unit-testable without Maya or a Qt event loop.
 
 Example:
-    >>> store = FaceCtrlSortingStore()
+    >>> store = TreeViewOrderingManager()
     >>> store.from_dict({"version": 1, "items": [
     ...     {"name": "GroupA", "type": "group",
     ...      "children": [{"name": "jawOpen", "type": "primary"}]},
@@ -38,8 +38,8 @@ _DEFAULT_GROUP_NAME = "Group"
 DEFAULT_ATTRIBUTE_NAME = "faceCtrlSorting"
 
 
-class FaceCtrlSortingStore:
-    """In-memory ordered tree of primary folders and leaves.
+class TreeViewOrderingManager:
+    """In-memory ordered tree of group folders and leaves.
 
     The persisted payload is a nested tree that maps directly onto the Qt
     tree widget, so loading is a single depth-first pass::
@@ -521,14 +521,14 @@ class FaceCtrlSortingStore:
             index[name] = node
             parents[name] = parent_name
             if node.get("type") == GROUP_TYPE:
-                FaceCtrlSortingStore._walk(node.get("children", []), name, index, parents)
+                TreeViewOrderingManager._walk(node.get("children", []), name, index, parents)
 
     @staticmethod
     def _iter_nodes(nodes: List[dict]) -> Iterator[dict]:
         for node in nodes:
             yield node
             if node.get("type") == GROUP_TYPE:
-                yield from FaceCtrlSortingStore._iter_nodes(node.get("children", []))
+                yield from TreeViewOrderingManager._iter_nodes(node.get("children", []))
 
     def _ordered_names(self, names: Sequence[str]) -> List[str]:
         wanted = {str(name) for name in names}

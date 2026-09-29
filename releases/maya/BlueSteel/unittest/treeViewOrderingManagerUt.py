@@ -1,6 +1,6 @@
-"""Unit tests for :class:`FaceCtrlSortingStore`.
+"""Unit tests for :class:`TreeViewOrderingManager`.
 
-Run: python releases/maya/BlueSteel/unittest/faceCtrlSortingUt.py
+Run: python releases/maya/BlueSteel/unittest/treeViewOrderingManagerUt.py
 
 The store is pure Python, so these tests run without Maya or Qt. The module is
 loaded directly from its file path to avoid importing the ``blue_steel``
@@ -14,13 +14,13 @@ import sys
 import unittest
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/blue_steel/api/faceCtrlSorting.py"
-SPEC = importlib.util.spec_from_file_location("faceCtrlSorting", MODULE_PATH)
-face_ctrl_sorting = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = face_ctrl_sorting
-SPEC.loader.exec_module(face_ctrl_sorting)
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/blue_steel/api/treeViewOrderingManager.py"
+SPEC = importlib.util.spec_from_file_location("treeViewOrderingManager", MODULE_PATH)
+tree_view_ordering_manager = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = tree_view_ordering_manager
+SPEC.loader.exec_module(tree_view_ordering_manager)
 
-FaceCtrlSortingStore = face_ctrl_sorting.FaceCtrlSortingStore
+TreeViewOrderingManager = tree_view_ordering_manager.TreeViewOrderingManager
 
 
 def leaf(name):
@@ -62,21 +62,21 @@ class GenericFakeEditor:
 
 
 def make_store(items):
-    store = FaceCtrlSortingStore()
+    store = TreeViewOrderingManager()
     store.from_dict({"version": 1, "items": items})
     return store
 
 
-class FaceCtrlSortingStoreTests(unittest.TestCase):
+class TreeViewOrderingManagerTests(unittest.TestCase):
     def test_empty_payload_starts_clean(self):
         for payload in (None, {}, {"version": 1}, ""):
-            store = FaceCtrlSortingStore()
+            store = TreeViewOrderingManager()
             store.from_dict(payload)
             self.assertEqual(store.ordered_tree(), [])
             self.assertEqual(list(store.iter_primary_names()), [])
 
     def test_legacy_flat_mapping_is_loaded(self):
-        store = FaceCtrlSortingStore()
+        store = TreeViewOrderingManager()
         store.from_dict({"Face": ["jawOpen", "mouthSmile"]})
         self.assertTrue(store.is_group("Face"))
         self.assertEqual(store.parent_of("jawOpen"), "Face")
@@ -267,42 +267,42 @@ class FaceCtrlSortingStoreTests(unittest.TestCase):
         self.assertEqual(store.ordered_tree(), [group("G", [leaf("a")])])
 
     def test_generic_accessors_keep_attribute_names_independent(self):
-        self.assertEqual(FaceCtrlSortingStore().attribute_name, "faceCtrlSorting")
-        self.assertEqual(FaceCtrlSortingStore("workShapeSorting").attribute_name, "workShapeSorting")
+        self.assertEqual(TreeViewOrderingManager().attribute_name, "faceCtrlSorting")
+        self.assertEqual(TreeViewOrderingManager("workShapeSorting").attribute_name, "workShapeSorting")
 
         editor = GenericFakeEditor()
 
-        primaries = FaceCtrlSortingStore("faceCtrlSorting")
+        primaries = TreeViewOrderingManager("faceCtrlSorting")
         primaries.from_dict(None)
         primaries.add_primary("a")
         primaries.group(["a"], "G")
         primaries.save(editor)
 
-        work_shapes = FaceCtrlSortingStore("workShapeSorting")
+        work_shapes = TreeViewOrderingManager("workShapeSorting")
         work_shapes.from_dict(None)
         work_shapes.add_primary("b")
         work_shapes.save(editor)
 
         self.assertEqual(editor.writes, 2)
 
-        reloaded_primaries = FaceCtrlSortingStore("faceCtrlSorting")
+        reloaded_primaries = TreeViewOrderingManager("faceCtrlSorting")
         reloaded_primaries.load(editor)
         self.assertEqual(reloaded_primaries.ordered_tree(), [group("G", [leaf("a")])])
 
-        reloaded_work = FaceCtrlSortingStore("workShapeSorting")
+        reloaded_work = TreeViewOrderingManager("workShapeSorting")
         reloaded_work.load(editor)
         self.assertEqual(reloaded_work.ordered_tree(), [leaf("b")])
 
     def test_load_and_save_round_trip(self):
         editor = FakeEditor(data=None)
-        store = FaceCtrlSortingStore()
+        store = TreeViewOrderingManager()
         store.load(editor)
         store.add_primary("a")
         store.group(["a"], "G")
         store.save(editor)
         self.assertEqual(editor.writes, 1)
 
-        reloaded = FaceCtrlSortingStore()
+        reloaded = TreeViewOrderingManager()
         reloaded.load(editor)
         self.assertEqual(reloaded.ordered_tree(), [group("G", [leaf("a")])])
 
@@ -311,7 +311,7 @@ class FaceCtrlSortingStoreTests(unittest.TestCase):
             def read_face_ctrl_sorting_attribute(self):
                 raise RuntimeError("boom")
 
-        store = FaceCtrlSortingStore()
+        store = TreeViewOrderingManager()
         store.load(BrokenEditor())
         self.assertEqual(store.ordered_tree(), [])
 

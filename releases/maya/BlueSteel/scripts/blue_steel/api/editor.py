@@ -9,7 +9,7 @@ import re
 import itertools
 
 from . import attrUtils
-from .faceCtrlSorting import FaceCtrlSortingStore
+from .treeViewOrderingManager import TreeViewOrderingManager
 from .mayaUtils import undoable, pause_shape_editor
 from .container import Container
 from .blendshape import Blendshape, Weight
@@ -3596,26 +3596,26 @@ class BlueSteelEditor(object):
     def write_work_shape_sorting_attribute(self, data: dict):
         self.write_sorting_attribute(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER, data)
 
-    def _face_ctrl_sorting_store(self) -> FaceCtrlSortingStore:
+    def _face_ctrl_sorting_store(self) -> TreeViewOrderingManager:
         """Return a store loaded from the container sorting attribute.
 
         Returns:
-            FaceCtrlSortingStore: The current ordering/grouping tree.
+            TreeViewOrderingManager: The current ordering/grouping tree.
         """
-        store = FaceCtrlSortingStore()
+        store = TreeViewOrderingManager()
         try:
             store.load(self)
         except Exception:
             store.from_dict(None)
         return store
 
-    def _work_shape_sorting_store(self) -> FaceCtrlSortingStore:
+    def _work_shape_sorting_store(self) -> TreeViewOrderingManager:
         """Return a Work Shapes ordering store loaded from its attribute.
 
         Returns:
-            FaceCtrlSortingStore: The current Work Shapes ordering/grouping tree.
+            TreeViewOrderingManager: The current Work Shapes ordering/grouping tree.
         """
-        store = FaceCtrlSortingStore(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
+        store = TreeViewOrderingManager(ENVIRONMENT.WORK_SHAPE_SORTING_ATTR_STRING_IDENTIFIER)
         try:
             store.load(self)
         except Exception:

@@ -54,9 +54,9 @@ def load_ui_modules():
     api = types.ModuleType(root + ".api.editor")
     api.BlueSteelEditor = object
     modules[api.__name__] = api
-    sorting = types.ModuleType(root + ".api.faceCtrlSorting")
-    sorting.FaceCtrlSortingStore = object
-    modules[sorting.__name__] = sorting
+    ordering = types.ModuleType(root + ".api.treeViewOrderingManager")
+    ordering.TreeViewOrderingManager = object
+    modules[ordering.__name__] = ordering
     icons = types.ModuleType(root + ".ui.common.icons")
     for name in ("CONNECTED_MESH_DISABLED_ICON", "CONNECTED_MESH_ENABLED_ICON",
                  "EDIT_ICON", "LOCK_OFF_ICON", "LOCK_ON_ICON", "MUTE_OFF_ICON", "MUTE_ON_ICON"):

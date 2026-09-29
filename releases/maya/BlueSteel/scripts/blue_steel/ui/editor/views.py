@@ -738,7 +738,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
     """Work shapes tree with parent controls and collapsible, pose-activating drivers.
 
     Work shapes can be grouped and reordered; the order/grouping is persisted
-    through the owning window (see ``FaceCtrlSortingStore``). Driver shapes are
+    through the owning window (see ``TreeViewOrderingManager``). Driver shapes are
     painted child rows of a work-shape leaf, not tree nodes.
     """
 

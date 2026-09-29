@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import List, Optional, Sequence, Set
 
 from ... import env
-from ...api.faceCtrlSorting import FaceCtrlSortingStore
+from ...api.treeViewOrderingManager import TreeViewOrderingManager
 from .constants import (
     PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_NAME_ROLE,
@@ -1321,9 +1321,9 @@ class ShapesFeatureMixin(MainWindowMixin):
             self._syncing_primaries_tree = False
 
 
-    def _primary_sorting_store(self) -> FaceCtrlSortingStore:
+    def _primary_sorting_store(self) -> TreeViewOrderingManager:
         """Return the ordering store loaded from the active editor."""
-        store = FaceCtrlSortingStore()
+        store = TreeViewOrderingManager()
         try:
             store.load(self.current_editor)
         except Exception:
@@ -1331,7 +1331,7 @@ class ShapesFeatureMixin(MainWindowMixin):
         return store
 
 
-    def _save_primary_sorting_store(self, store: FaceCtrlSortingStore) -> None:
+    def _save_primary_sorting_store(self, store: TreeViewOrderingManager) -> None:
         """Persist the ordering store, reporting failures without raising."""
         if self.current_editor is None:
             return

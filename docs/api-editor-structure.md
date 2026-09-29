@@ -343,8 +343,8 @@ controller mutates it through the context.
 Ordering persistence: the container stores two JSON string attributes,
 `faceCtrlSorting` (Primaries panel) and `workShapeSorting` (Work Shapes panel),
 read/written through `read_sorting_attribute(name)` /
-`write_sorting_attribute(name, data)` and owned by `api/faceCtrlSorting.py`
-(`FaceCtrlSortingStore`, parameterized by attribute name). Work-shape
+`write_sorting_attribute(name, data)` and owned by `api/treeViewOrderingManager.py`
+(`TreeViewOrderingManager`, parameterized by attribute name). Work-shape
 add/remove/rename keep `workShapeSorting` current, mirroring the primary hooks
 that maintain `faceCtrlSorting`.
 
