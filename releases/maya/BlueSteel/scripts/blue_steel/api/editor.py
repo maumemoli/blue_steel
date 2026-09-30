@@ -5379,11 +5379,13 @@ class BlueSteelEditor(object):
             self.work_blendshape.set_weight_value(unpropagated_work_shape, 1.0)
             self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
             # gather every propagated work shape under a dedicated folder
-            self._group_propagated_work_shapes(work_shape, created_work_shapes)
+            group_name = f"{work_shape}_Propagation"
+            self._group_work_shapes(group_name, created_work_shapes)
         except _PropagationCancelled:
             print(f"Propagation of work shape '{work_shape}' cancelled.")
             # still group whatever was created before the cancellation
-            self._group_propagated_work_shapes(work_shape, created_work_shapes)
+            group_name = f"{work_shape}_Propagation"
+            self._group_work_shapes(group_name, created_work_shapes)
         finally:
             # --- End the progress bar ---
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
@@ -5394,18 +5396,11 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
-    def _group_propagated_work_shapes(self, work_shape: str, work_shape_names: list) -> str:
+    def _group_work_shapes(self, group_name: str, work_shape_names: list) -> str:
         """
-        Move propagated work shapes into a dedicated Work Shapes tree folder.
-
-        The folder is named ``<work_shape>_Propagation`` and is created through
-        the persisted Work Shapes ordering store, so it behaves exactly like the
-        folders created by the UI 'Group Work Shapes' action. The store
-        auto-uniquifies the name when a folder with that name already exists.
-
+        Group a list of work shapes into a dedicated folder.
         Parameters:
-            work_shape (str): The source work shape whose propagation created the
-                work shapes.
+            group_name (str): The name of the folder to create.
             work_shape_names (list): Names of the work shapes to move into the
                 folder.
 
@@ -5416,7 +5411,6 @@ class BlueSteelEditor(object):
         work_shape_names = [str(name) for name in (work_shape_names or []) if name]
         if not work_shape_names:
             return ""
-        group_name = f"{work_shape}_Propagation"
         try:
             store = self._work_shape_sorting_store()
             created = store.group(work_shape_names, group_name)
