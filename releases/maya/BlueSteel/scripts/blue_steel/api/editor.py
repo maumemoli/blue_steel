@@ -132,20 +132,27 @@ class SplitSession(object):
                     split_blendshape.set_weight_value(weight, 1.0 if area == target_area else 0.0)
             self.active_areas[split_map_name] = target_area
 
-    def commit_pose(self, pose_name: str, destination_editor: BlueSteelEditor) -> None:
+    def commit_pose(self,
+                    pose_name: str,
+                    destination_editor: BlueSteelEditor,
+                    invert_shape: bool = False) -> None:
         """
         Commits the current split pose to the destination editor and bakes the
-        split deformation into the committed target.
+        split deformation into the committed target. If `invert_shape` is True, the
+        split deformation is inverted before baking.
         Parameters:
             pose_name (str): The name of the split pose to commit.
             destination_editor (BlueSteelEditor): The destination editor instance.
+            invert_shape (bool): Whether to invert the split deformation before baking it.
         Returns:
             None
         Example:
             >>> session.commit_pose("browUpL", split_editor)
         """
         destination_blendshape = destination_editor.blendshape
-        committed_shape = destination_editor.commit_shape(pose_name, destination_editor.base_mesh)
+        committed_shape = destination_editor.commit_shape(shape_name=pose_name,
+                                                          mesh=destination_editor.base_mesh,
+                                                          invert_shape=invert_shape)
         if committed_shape is None:
             return
         committed_weight_id = getattr(committed_shape, "weight_id", None)
@@ -1557,10 +1564,14 @@ class BlueSteelEditor(object):
         # next_shape_type = sorted_shapes[i+1].type if i < len(sorted_shapes)-1 else None
         # we need to check what kind of shape it is and if it needs to be extracted
         if shape.type == "PrimaryShape":
-            self.add_primary_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
+            self.add_primary_shape(mesh=mesh,
+                                   shape=shape,
+                                   invert_shape=invert_shape)
         elif shape.type == "InbetweenShape":
             # setting the pose of the rig to the inbetween shape
-            self.add_inbetween_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
+            self.add_inbetween_shape(mesh=mesh,
+                                     shape=shape,
+                                     invert_shape=invert_shape)
         elif shape.type in ["ComboShape", "ComboInbetweenShape"]:
             self.add_combo_shape(mesh=mesh, shape=shape, invert_shape=invert_shape)
         return shape
@@ -2111,6 +2122,8 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        if not blendshape_node or not cmds.objExists(blendshape_node):
+            raise ValueError(f"Blendshape node '{blendshape_node}' does not exist.")
         # we need to create a commit mesh and link it to the blendshape node.
         commit_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_commitMesh")
         
