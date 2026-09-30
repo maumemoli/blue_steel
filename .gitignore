@@ -54,3 +54,4 @@ scripts/blue_steel_start_maya_2022.py
 releases/maya/BlueSteel/icons/editWeights.af
 .pi/
 coder.md
+package-lock.json
