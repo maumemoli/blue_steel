@@ -964,7 +964,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Propagate to Active Shape")
+        dialog.setWindowTitle("Propagate to Active Shapes")
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         blur_iterations_spin = QSpinBox(dialog)

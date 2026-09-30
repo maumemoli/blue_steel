@@ -4562,8 +4562,12 @@ class BlueSteelEditor(object):
         self.split_and_commit_split_shapes(shapes=sorted_shapes,
                                            destination_editor=split_editor)
 
-        end_time = time.time()
-        print(f"Splitting shapes took {end_time - start_time} seconds")
+        end_time = time.time()                                                                                                                                                                                                                                 
+        elapsed_time = end_time - start_time                                                                                                                                                                                                                   
+        hours, remainder = divmod(elapsed_time, 3600)                                                                                                                                                                                                          
+        minutes, seconds = divmod(remainder, 60)                                                                                                                                                                                                               
+                                                                                                                                                                                                                                                                
+        print(f"Splitting shapes took: {int(hours):02d}:{int(minutes):02d}:{seconds:05.2f}")        
 
         if split_editor:
             return split_editor.name 
@@ -5292,6 +5296,8 @@ class BlueSteelEditor(object):
         Propagate the delta of the current work shape down to the active shapes
         duplicating the work shape and masking the delta according to the active shapes.
         The delta that cannot be propagated will stay in a work shape called unpropagated.
+        Every work shape created by the propagation is moved into a Work Shapes tree
+        folder named ``<work_shape>_Propagation`` (auto-uniquified on collision).
         Parameters:
             work_shape (str): The name of the work shape to propagate from.
             active_shapes (list): List of active shape names to propagate to.
@@ -5329,6 +5335,8 @@ class BlueSteelEditor(object):
                          isInterruptable=True,
                          status=f"Propagating work shape '{work_shape}'...",
                          maxValue=total_steps)
+        # the work shapes created by this propagation, grouped at the end
+        created_work_shapes = []
         try:
             # we need the absolute deltas for the active shapes.
             active_deltas = self.get_shapes_delta_masks(active_shapes,
@@ -5354,9 +5362,11 @@ class BlueSteelEditor(object):
                 if mask is None:
                     print(f"No mask found for shape '{shape}', skipping.")
                     continue
-                work_shape_name = f"{shape}_decomp" if shape=="unpropagated" else f"{work_shape}_{shape}"
+                work_shape_name = f"{shape}_decomp" if shape=="unpropagated" else f"{shape}"
                 current_work_shape = self.add_work_shape(name=work_shape_name,
                                                          target_object=multi_mesh)
+                # add_work_shape returns a Weight whose str() is the actual stored name
+                created_work_shapes.append(str(current_work_shape))
                 if shape == "unpropagated":
                     unpropagated_work_shape = current_work_shape
                 # now we need to set the weights
@@ -5368,8 +5378,12 @@ class BlueSteelEditor(object):
             # Mask normalization/blurring is handled by get_shapes_delta_masks.
             self.work_blendshape.set_weight_value(unpropagated_work_shape, 1.0)
             self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
+            # gather every propagated work shape under a dedicated folder
+            self._group_propagated_work_shapes(work_shape, created_work_shapes)
         except _PropagationCancelled:
             print(f"Propagation of work shape '{work_shape}' cancelled.")
+            # still group whatever was created before the cancellation
+            self._group_propagated_work_shapes(work_shape, created_work_shapes)
         finally:
             # --- End the progress bar ---
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
@@ -5380,6 +5394,37 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
+    def _group_propagated_work_shapes(self, work_shape: str, work_shape_names: list) -> str:
+        """
+        Move propagated work shapes into a dedicated Work Shapes tree folder.
 
+        The folder is named ``<work_shape>_Propagation`` and is created through
+        the persisted Work Shapes ordering store, so it behaves exactly like the
+        folders created by the UI 'Group Work Shapes' action. The store
+        auto-uniquifies the name when a folder with that name already exists.
 
-        
+        Parameters:
+            work_shape (str): The source work shape whose propagation created the
+                work shapes.
+            work_shape_names (list): Names of the work shapes to move into the
+                folder.
+
+        Returns:
+            str: The created folder name, or an empty string when nothing was
+            grouped.
+        """
+        work_shape_names = [str(name) for name in (work_shape_names or []) if name]
+        if not work_shape_names:
+            return ""
+        group_name = f"{work_shape}_Propagation"
+        try:
+            store = self._work_shape_sorting_store()
+            created = store.group(work_shape_names, group_name)
+            if created:
+                store.save(self)
+            return created
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not group propagated work shapes under '{group_name}': {exc}")
+            return ""
+
