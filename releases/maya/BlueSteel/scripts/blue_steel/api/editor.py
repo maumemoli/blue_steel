@@ -10,7 +10,7 @@ import itertools
 
 from . import attrUtils
 from .treeViewOrderingManager import TreeViewOrderingManager
-from .mayaUtils import undoable, pause_shape_editor, disable_viewport_update
+from .mayaUtils import undoable, pause_shape_editor, disable_viewport_update, timed
 from .container import Container
 from .blendshape import Blendshape, Weight
 from .skinCluster import SkinCluster
@@ -2233,6 +2233,7 @@ class BlueSteelEditor(object):
 
     @pause_shape_editor
     @disable_viewport_update
+    @timed
     def import_shapes_from_blendshape_node(self, import_path: str, absolute_delta: bool = False) -> int:
         """
         Import shapes from a blendshape node in a mb or ma file into the Blue Steel rig.
@@ -2258,6 +2259,7 @@ class BlueSteelEditor(object):
             self.zero_out()
             self._restore_stored_pose()
 
+    @timed
     def export_shapes_as_blendshape_node(self, export_path: str, absolute_delta: bool = False):
         """
         Export the Blue Steel rig's shapes as a blendshape node in a mb or ma file.
@@ -2334,8 +2336,11 @@ class BlueSteelEditor(object):
             cmds.disconnectAttr(f"{delta_blenshape.name}.outputGeometry[0]", f"{neutral_mesh}.inMesh")
             cmds.delete(neutral_mesh)
         return delta_blenshape.name
+
+    
     
     @disable_viewport_update
+    @timed
     def export_shapes_as_alembic(self,
                                  export_path: str,
                                  absolute_delta: bool = False):
@@ -2408,8 +2413,10 @@ class BlueSteelEditor(object):
             print(f"Error occurred during export: {e}")
         finally:
             cmds.delete(root_neutral)
-        
+
+    
     @disable_viewport_update
+    @timed
     def import_shapes_from_alembic(self, import_path: str, absolute_delta: bool = False):
         """
         Import shapes from an Alembic file.
@@ -2419,6 +2426,7 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        start_time = cmds.currentTime(query=True)
         # making sure the alembic plugin is loaded
         if not cmds.pluginInfo("AbcImport", query=True, loaded=True):
             cmds.loadPlugin("AbcImport")

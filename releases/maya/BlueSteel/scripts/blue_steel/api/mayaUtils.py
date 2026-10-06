@@ -5,6 +5,7 @@ from ctypes import c_float, c_double, c_int, c_uint
 from . import attrUtils
 from functools import wraps
 from contextlib import contextmanager
+import time
 
 """
 Set of utility functions to use the maya API commands.
@@ -352,6 +353,24 @@ def numpy_to_m_points(np_array: np.ndarray):
     # Build a new MPointArray directly from the pointer and count
     # This is the key: MPointArray(double4* ptr, unsigned int count)
     return om.MPointArray(ptr, count)
+
+def timed(func):
+    """
+    Decorator to measure the execution time of a function.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            end_time = time.time()                                                                                                                                                                                                                                 
+            elapsed_time = end_time - start_time                                                                                                                                                                                                                   
+            hours, remainder = divmod(elapsed_time, 3600)                                                                                                                                                                                                          
+            minutes, seconds = divmod(remainder, 60)                                                                                                                                                                                                               
+            print(f"{func.__name__} executed in  {int(hours):02d}:{int(minutes):02d}:{seconds:05.2f}")
+    return wrapper
+
 
 def undoable(func):
     """
