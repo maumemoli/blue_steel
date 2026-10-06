@@ -4,6 +4,7 @@ import numpy as np
 from ctypes import c_float, c_double, c_int, c_uint
 from . import attrUtils
 from functools import wraps
+from contextlib import contextmanager
 
 """
 Set of utility functions to use the maya API commands.
@@ -433,6 +434,28 @@ def get_softselection_values() -> list:
     return weights.tolist() if weights is not None else []
 
 
+def disable_viewport_update(func):
+    """Decorator that temporarily disables viewport updates for faster batch operations."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            # Open a new undo chunk for the wrapped function
+            cmds.undoInfo(openChunk=True)
+            cmds.scriptEditorInfo(
+                                  suppressWarnings=True,
+                                  )
+            cmds.refresh(suspend=True)
+            return func(*args, **kwargs)
+        finally:
+            
+            cmds.scriptEditorInfo(
+                                  suppressWarnings=False,
+                                  )
+            cmds.refresh(suspend=False)
+            cmds.undoInfo(closeChunk=True)
+            cmds.refresh(force=True)
+    return wrapper
+
 
 def pause_shape_editor(func):
     """Decorator that temporarily closes Shape Editor for faster batch operations.
@@ -543,3 +566,57 @@ def disconnect_node(node):
         except RuntimeError:
             # Some connections are locked or not disconnectable
             pass
+
+@contextmanager
+def _preserve_node_connections(node: str):
+    """
+    Context manager that disconnects all connections to and from a node and restores them on exit.
+
+    The connections are reconnected in a finally block so they are always
+    restored, even when the wrapped block raises. Only the connections that
+    were actually disconnected are reconnected.
+    Parameters:
+        node (str): The name of the node whose connections should be suspended
+    Yields:
+        list: The (source, destination) plug pairs that were disconnected
+    Example:
+        >>> with blue_steel._preserve_node_connections("blendShape1"):
+        ...     cmds.file("path.ma", exportSelected=True)
+    """
+    if not cmds.objExists(node):
+        raise ValueError(f"Node '{node}' does not exist.")
+
+    incoming = cmds.listConnections(
+        node,
+        source=True,
+        destination=False,
+        connections=True,
+        plugs=True,
+    ) or []
+    outgoing = cmds.listConnections(
+        node,
+        source=False,
+        destination=True,
+        connections=True,
+        plugs=True,
+    ) or []
+
+    connections = []
+    connections.extend((incoming[i + 1], incoming[i]) for i in range(0, len(incoming), 2))
+    connections.extend((outgoing[i], outgoing[i + 1]) for i in range(0, len(outgoing), 2))
+    connections = list(dict.fromkeys(connections))
+
+    disconnected = []
+    try:
+        for source, destination in connections:
+            if not cmds.isConnected(source, destination):
+                continue
+            cmds.disconnectAttr(source, destination)
+            disconnected.append((source, destination))
+        yield disconnected
+    finally:
+        for source, destination in disconnected:
+            try:
+                cmds.connectAttr(source, destination, force=True)
+            except Exception as e:
+                cmds.warning(f"Could not reconnect '{source}' to '{destination}'. Error: {e}")

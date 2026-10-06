@@ -10,7 +10,7 @@ import itertools
 
 from . import attrUtils
 from .treeViewOrderingManager import TreeViewOrderingManager
-from .mayaUtils import undoable, pause_shape_editor
+from .mayaUtils import undoable, pause_shape_editor, disable_viewport_update
 from .container import Container
 from .blendshape import Blendshape, Weight
 from .skinCluster import SkinCluster
@@ -47,6 +47,19 @@ except ImportError:
 
 VERBOSE = False
 TIMED = False
+
+
+class ShapeImportCancelled(RuntimeError):
+    """Raised when the user cancels a shape import or split operation.
+
+    Carries how far the operation progressed so callers can report a partial
+    result (for example cancellation after 5 of 10 shapes).
+    """
+
+    def __init__(self, message: str, processed: int = 0, total: int = 0):
+        super().__init__(message)
+        self.processed = processed
+        self.total = total
 
 
 class SplitSession(object):
@@ -2113,14 +2126,16 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
-    def ingest_shapes_from_blendshape_node(self, blendshape_node: str, absolute_delta: bool = False):
+    def ingest_shapes_from_blendshape_node(self, blendshape_node: str, absolute_delta: bool = False) -> int:
         """
         Ingest shapes from a blendshape node into the Blue Steel rig.
         Parameters:
             blendshape_node (str): The name of the blendshape node to ingest
             absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
         Returns:
-            None
+            int: The number of shapes successfully ingested.
+        Raises:
+            ShapeImportCancelled: If the user cancelled the progress bar.
         """
         if not blendshape_node or not cmds.objExists(blendshape_node):
             raise ValueError(f"Blendshape node '{blendshape_node}' does not exist.")
@@ -2147,6 +2162,7 @@ class BlueSteelEditor(object):
             raise ValueError(f"Blendshape node '{blendshape_node}' contains invalid shape names: {network.get_invalid_shapes()}")
         gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
         total_shapes = len(shapes_names)
+        processed = 0
         try:
             # --- Start the progress bar ---
             cmds.progressBar(gMainProgressBar, edit=True,
@@ -2157,6 +2173,14 @@ class BlueSteelEditor(object):
 
 
             for weight in shapes_names:
+                if cmds.progressBar(gMainProgressBar,
+                                    query=True,
+                                    isCancelled=True):
+                    raise ShapeImportCancelled(
+                        f"Import cancelled after {processed} of {total_shapes} shapes.",
+                        processed=processed,
+                        total=total_shapes,
+                    )
                 # we need to advance the progress bar for each shape
                 cmds.progressBar(gMainProgressBar,
                                  edit=True,
@@ -2165,17 +2189,14 @@ class BlueSteelEditor(object):
                 delta_blendshape.set_weight_value(weight, 1.0)
                 self.commit_shape(weight, commit_mesh, invert_shape=absolute_delta)
                 delta_blendshape.set_weight_value(weight, 0.0)
-        except Exception as e:
-            print("="*60)
-            print(f"Error committing shape selected meshes:")
-            traceback.print_exc()
-            print("="*60)
+                processed += 1
         finally:
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
             cmds.disconnectAttr(f"{delta_blendshape.name}.outputGeometry[0]", f"{commit_mesh_shape}.inMesh")
             cmds.disconnectAttr(f"{commit_mesh_origin}.worldMesh[0]", f"{blendshape_node}.input[0].inputGeometry")
             cmds.disconnectAttr(f"{commit_mesh_origin}.outMesh", f"{blendshape_node}.originalGeometry[0]")
             cmds.delete(commit_mesh)
+        return processed
             
         
     def import_blendshape_node(self, import_path: str):
@@ -2209,22 +2230,33 @@ class BlueSteelEditor(object):
             raise ValueError(f"Multiple blendshape nodes found in '{import_path}'. Expected only one.")
         return imported_blendshapes[0]
 
-    def import_shapes_from_blendshape_node(self, import_path: str, absolute_delta: bool = False):
+
+    @pause_shape_editor
+    @disable_viewport_update
+    def import_shapes_from_blendshape_node(self, import_path: str, absolute_delta: bool = False) -> int:
         """
         Import shapes from a blendshape node in a mb or ma file into the Blue Steel rig.
         Parameters:
             import_path (str): The path to the mb or ma file to import
             absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
+        Returns:
+            int: The number of shapes successfully imported.
+        Raises:
+            ShapeImportCancelled: If the user cancelled the progress bar.
         """
         # let's store the current pose
         self._store_current_pose()
-        blendshape_node = self.import_blendshape_node(import_path)
-        self.ingest_shapes_from_blendshape_node(blendshape_node, absolute_delta=absolute_delta)
-        # we can delete the imported blendshape node now
-        cmds.delete(blendshape_node)
-        # restore the previous pose
-        self.zero_out()
-        self._restore_stored_pose()
+        blendshape_node = None
+        try:
+            blendshape_node = self.import_blendshape_node(import_path)
+            return self.ingest_shapes_from_blendshape_node(blendshape_node, absolute_delta=absolute_delta)
+        finally:
+            # we can delete the imported blendshape node now
+            if blendshape_node and cmds.objExists(blendshape_node):
+                cmds.delete(blendshape_node)
+            # restore the previous pose
+            self.zero_out()
+            self._restore_stored_pose()
 
     def export_shapes_as_blendshape_node(self, export_path: str, absolute_delta: bool = False):
         """
@@ -2236,19 +2268,31 @@ class BlueSteelEditor(object):
         self._store_current_pose()
         if self.blendshape is None:
             raise ValueError("Main blendshape not found.")
-
+        extension = os.path.splitext(export_path)[1].lower()
+        file_types = {".ma": "mayaAscii", ".mb": "mayaBinary"}
         # we need to make sure that the folders of the export path exist
         os.makedirs(os.path.dirname(export_path), exist_ok=True)
         if absolute_delta:
-            absolute_blendshape = self.create_absolute_delta_blendshape()
-            self.export_blendshape_node(absolute_blendshape, export_path)
-            cmds.delete(absolute_blendshape)
+            export_blendshape_name = self.create_absolute_delta_blendshape()
+            cmds.select(export_blendshape_name, replace=True)
         else:
-            blendshape_name = self.blendshape.name
-            self.export_blendshape_node(blendshape_name, export_path)
+            export_blendshape_name = cmds.duplicate(self.blendshape.name, name=f"{self.blendshape.name}_export")[0]
+            cmds.setAttr(f"{export_blendshape_name}.midLayerParent", 0)
+            # this is probably not a member of the container but better be safe.
+            if export_blendshape_name in self.container.members:
+                self.container.remove_member(export_blendshape_name)
+            cmds.select(export_blendshape_name, replace=True)
+        print(f"Exporting blendshape node '{export_blendshape_name}' to '{export_path}'...")
+        cmds.file(
+            export_path,
+            force=True,
+            options="v=0",
+            type=file_types[extension],
+            exportSelected=True,
+            )
+        cmds.delete(export_blendshape_name)
         self.zero_out()
         self._restore_stored_pose()
-
 
 
     def create_absolute_delta_blendshape(self):
@@ -2291,81 +2335,175 @@ class BlueSteelEditor(object):
             cmds.delete(neutral_mesh)
         return delta_blenshape.name
     
-    def export_blendshape_node(self, blendshape_name: str, export_path: str):
+    @disable_viewport_update
+    def export_shapes_as_alembic(self,
+                                 export_path: str,
+                                 absolute_delta: bool = False):
         """
-        Export the Blue Steel rig's blendshape node as a mb or ma file.
+        Export the Blue Steel rig's blendshape node as an Alembic file.
         Parameters:
-            blendshape_name (str): The name of the blendshape node to export
-            export_path (str): The path to export the mb or ma file to
+            export_path (str): The path to export the Alembic file to
+            absolute_delta (bool): Whether to export the Alembic file with absolute delta (default: False)
         Returns:
             None
         """
-        if self.blendshape is None:
-            raise ValueError("Main blendshape not found.")
-
-        extension = os.path.splitext(export_path)[1].lower()
-        file_types = {".ma": "mayaAscii", ".mb": "mayaBinary"}
-        if extension not in file_types:
-            raise ValueError("Export path must end with '.ma' or '.mb'.")
-
-        original_selection = cmds.ls(selection=True, long=True) or []
-        was_container_member = blendshape_name in self.container.members
-        disconnected = []
+        # making sure the alembic plugin is loaded
+        if not cmds.pluginInfo("AbcExport", query=True, loaded=True):
+            cmds.loadPlugin("AbcExport")
         try:
-            if was_container_member:
-                self.container.remove_member(blendshape_name)
-
-            incoming = cmds.listConnections(
-                blendshape_name,
-                source=True,
-                destination=False,
-                connections=True,
-                plugs=True,
-            ) or []
-            outgoing = cmds.listConnections(
-                blendshape_name,
-                source=False,
-                destination=True,
-                connections=True,
-                plugs=True,
-            ) or []
-
-            connections = []
-            connections.extend((incoming[i + 1], incoming[i]) for i in range(0, len(incoming), 2))
-            connections.extend((outgoing[i], outgoing[i + 1]) for i in range(0, len(outgoing), 2))
-            connections = list(dict.fromkeys(connections))
-
-            for source, destination in connections:
-                if not cmds.isConnected(source, destination):
-                    continue
-                cmds.disconnectAttr(source, destination)
-                disconnected.append((source, destination))
-            current_mid_layer_parent = self.blendshape.mid_layer_parent
-            self.blendshape.set_mid_layer_parent(0)
-            cmds.select(blendshape_name, replace=True)
-            print(f"Exporting blendshape node '{blendshape_name}' to '{export_path}'...")
-            cmds.file(
-                export_path,
-                force=True,
-                options="v=0",
-                type=file_types[extension],
-                exportSelected=True,
-            )
-        finally:
-            for source, destination in disconnected:
-                try:
-                    cmds.connectAttr(source, destination, force=True)
-                except Exception as e:
-                    print(f"Warning: Could not reconnect '{source}' to '{destination}'. Error: {e}")
-
-            if was_container_member:
-                self.container.add_member(blendshape_name)
-
-            if original_selection:
-                cmds.select(original_selection, replace=True)
+            metadata_attr = ENVIRONMENT.SHAPES_SEQUENCE_META_DATA_ATTR_STRING_IDENTIFIER
+            if self.blendshape is None or not cmds.objExists(self.blendshape.name):
+                raise ValueError("No blendshape node found in the current editor.")
+            blendshape_name = self.blendshape.name
+            sequence_meta_data = {}
+            extension = os.path.splitext(export_path)[1].lower()
+            file_types = {".abc": "Alembic"}
+            if extension not in file_types:
+                raise ValueError("Export path must end with '.abc'.")
+            root_neutral = self.duplicate_base_mesh_neutral_state("root_neutral")
+            # we need to create a bogus blendshape
+            bogus_blendshape = cmds.blendShape(root_neutral, name="bogus_blendshape")[0]
+            bogus_original_geo =  cmds.listConnections(f"{bogus_blendshape}.originalGeometry[0]", plugs=True)[0]
+            bogus_out_mesh = cmds.listConnections(f"{bogus_blendshape}.outputGeometry[0]", plugs=True)[0]
+            if absolute_delta:
+                export_blendshape_name = self.create_absolute_delta_blendshape()
             else:
-                cmds.select(clear=True)
-            self.blendshape.set_mid_layer_parent(current_mid_layer_parent)
+                export_blendshape_name = cmds.duplicate(blendshape_name)[0]
+            # we need to connect the blendshape to the root neutral mesh
+            cmds.connectAttr(bogus_original_geo, f"{export_blendshape_name}.originalGeometry[0]", force=True)
+            cmds.connectAttr(bogus_original_geo, f"{export_blendshape_name}.input[0].inputGeometry", force=True)
+            cmds.connectAttr(f"{export_blendshape_name}.outputGeometry[0]", bogus_out_mesh, force=True)
+            cmds.delete(bogus_blendshape)
+            # now we need to get the shapes on the timeline to export the meshcache
+            weights = cmds.listAttr(f"{export_blendshape_name}.weight", multi=True)
+            shape_names = utilities.sort_for_insertion(weights, self.separator)
+            for shape_name in shape_names:
+                cmds.setAttr(f"{export_blendshape_name}.{shape_name}", 0)
+            frames_range = range(0, len(shape_names)+1)
+            cmds.setKeyframe(export_blendshape_name, attribute=shape_names, t=frames_range)
+            # now we need to set the blendshape weights according to the timeline
+            for frame, shape_name in zip(frames_range[:-1], shape_names):
+                cmds.setKeyframe(export_blendshape_name, attribute=shape_name, t=[frame], v=1.0)
+            current_unit_time = cmds.currentUnit(query=True, time=True)
+            # we need to set an attribute with the total number of shapes for reference
+            sequence_meta_data["totalShapes"] = len(shape_names)
+            sequence_meta_data["shapesList"] = shape_names
+            sequence_meta_data["controlSorting"] = self.read_face_ctrl_sorting_attribute()
+            sequence_meta_data["customShapesColors"] = self.read_custom_shapes_colors()
+            sequence_meta_data["currentUnitTime"] = current_unit_time
+
+            sequence_meta_data_json = json.dumps(sequence_meta_data)
+            if not cmds.attributeQuery(metadata_attr, node=root_neutral, exists=True):
+                cmds.addAttr(root_neutral, longName=metadata_attr, dataType="string")
+            cmds.setAttr(f"{root_neutral}.{metadata_attr}", sequence_meta_data_json, type="string")
+            # creating the job string
+            # "-frameRange 0 85 -attr shapesSequenceMetaData -dataFormat ogawa -root CaesarSkin_absoluteDelta
+            # -root |root_neutral -file D:/work/Caesar/cache/alembic/exported2.abc";
+            job_string = "-frameRange {0} -attr {1} -dataFormat ogawa -root {2} -file {3}"
+            frame_range = f"0 {len(shape_names)}"
+            job_string = job_string.format(frame_range, metadata_attr, root_neutral, export_path)
+            result = cmds.AbcExport(j=job_string)
+            print(f"{len(shape_names)} shapes successfully exported to {export_path}")     
+        except Exception as e:
+            print(f"Error occurred during export: {e}")
+        finally:
+            cmds.delete(root_neutral)
+        
+    @disable_viewport_update
+    def import_shapes_from_alembic(self, import_path: str, absolute_delta: bool = False):
+        """
+        Import shapes from an Alembic file.
+        Parameters:
+            import_path (str): The path to the Alembic file to import
+            absolute_delta (bool): Whether to import as absolute delta shapes
+        Returns:
+            None
+        """
+        # making sure the alembic plugin is loaded
+        if not cmds.pluginInfo("AbcImport", query=True, loaded=True):
+            cmds.loadPlugin("AbcImport")
+        try:
+            # setting up the progress bar for the import process
+            gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+            processed = 0
+            current_frame = cmds.currentTime(query=True)
+            current_unit_time = cmds.currentUnit(query=True, time=True)
+            if not os.path.exists(import_path):
+                raise FileNotFoundError(f"Alembic file not found: {import_path}")
+
+            import_group = cmds.createNode("transform", name="imported_shapes_cache")
+            imported_node = cmds.AbcImport(import_path, mode="import", rpr = import_group)
+            import_group_children = cmds.listRelatives(import_group, children=True, type="transform") or []
+            if len(import_group_children) == 1:
+                imported_root = import_group_children[0]
+            else:
+                raise RuntimeError(f"Expected exactly one imported root node, but found {len(import_group_children)}")
+            meta_data_attr = ENVIRONMENT.SHAPES_SEQUENCE_META_DATA_ATTR_STRING_IDENTIFIER
+            if not cmds.attributeQuery(meta_data_attr, node=imported_root, exists=True):
+                raise RuntimeError(f"Expected meta data attribute '{meta_data_attr}' not found on imported root node '{imported_root}'")
+            sequence_meta_data = attrUtils.read_json_attr(imported_root, meta_data_attr)
+            total_shapes = sequence_meta_data.get("totalShapes", None)
+            if total_shapes is None:
+                raise RuntimeError(f"Total shapes information not found in the meta data of imported root node '{imported_root}'")
+            shapes_list = sequence_meta_data.get("shapesList", None)
+            if shapes_list is None:
+                raise RuntimeError(f"Shapes list information not found in the meta data of imported root node '{imported_root}'")
+            import_unit_time = sequence_meta_data.get("currentUnitTime", None)
+            if import_unit_time is None:
+                raise RuntimeError(f"Current unit time information not found in the meta data of imported root node '{imported_root}'")
+            control_sorting = sequence_meta_data.get("controlSorting", None)
+            if control_sorting is not None:
+                self.write_face_ctrl_sorting_attribute(control_sorting)
+            custom_shape_color_attributes = sequence_meta_data.get("customShapeColorAttributes", None)
+            if custom_shape_color_attributes is not None:
+                self.write_custom_shapes_colors(custom_shape_color_attributes)
+            if import_unit_time != current_unit_time:
+                cmds.currentUnit(time=import_unit_time)
+            # now we need to create the mesh for the ingestion. We will duplicate the mesh at the last frame of the sequence
+            cmds.currentTime(total_shapes)
+            ingestion_neutral_mesh = cmds.duplicate(imported_root, name=f"{imported_root}_ingestion", fullPath=True)[0]
+            editor_neutral_mesh = self.duplicate_base_mesh_neutral_state(f"{imported_root}_editor_neutral")
+            chache_blend_shape = cmds.blendShape([editor_neutral_mesh, imported_root],
+                                                ingestion_neutral_mesh,
+                                                name=f"{imported_root}_cache_blendShape",
+                                                weight=[(0, 1.0), (1, 1.0)] )[0]
+            
+            # --- Start the progress bar ---
+            cmds.progressBar(gMainProgressBar, edit=True,
+                            beginProgress=True,
+                            isInterruptable=True,
+                            status=f'Processing {total_shapes} shapes...',
+                            maxValue=total_shapes)
+            cmds.currentTime(0)
+            for i, shape_name in enumerate(shapes_list):
+                if cmds.progressBar(gMainProgressBar,
+                                    query=True,
+                                    isCancelled=True):
+                    raise ShapeImportCancelled(
+                        f"Import cancelled after {processed} of {total_shapes} shapes.",
+                        processed=processed,
+                        total=total_shapes,
+                    )
+                # we need to advance the progress bar for each shape
+                cmds.progressBar(gMainProgressBar,
+                                 edit=True,
+                                 step=1,
+                                 status=f'Committing shape: {shape_name}...')
+                cmds.setAttr(f"{imported_node}.offset", -i)
+                self.commit_shape(shape_name, ingestion_neutral_mesh, invert_shape=absolute_delta)
+                processed += 1
+                cmds.progressBar(gMainProgressBar, edit=True, progress=processed)
+        finally:
+            cmds.delete(imported_node)
+            cmds.delete(chache_blend_shape)
+            cmds.delete(editor_neutral_mesh)
+            cmds.delete(ingestion_neutral_mesh)
+            cmds.delete(imported_root)
+            cmds.delete(import_group)
+            cmds.currentUnit(time=current_unit_time)
+            cmds.currentTime(current_frame)
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+        
 
 
     @undoable
@@ -2729,7 +2867,7 @@ class BlueSteelEditor(object):
         base_mesh = self.base_mesh
         if base_mesh is None:
             raise ValueError("Base mesh not found.")
-        duplicated = cmds.duplicate(base_mesh, name=mesh_name)[0]
+        duplicated = cmds.duplicate(base_mesh, name=mesh_name, fullPath = True)[0]
         # we need to unlock all the transform attributes of the duplicated mesh
         for axis in ["X", "Y", "Z"]:
             for attr in ["translate", "rotate", "scale"]:
@@ -4518,7 +4656,7 @@ class BlueSteelEditor(object):
             with self._split_session() as session:
                 for shape_name in sorted_shapes:
                     if cmds.progressBar(gMainProgressBar, query=True, isCancelled=True):
-                        break
+                        raise ShapeImportCancelled("Operation cancelled by user.")
                     cmds.progressBar(gMainProgressBar,
                                      edit=True,
                                      step=1,

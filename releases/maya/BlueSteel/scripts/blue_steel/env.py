@@ -77,6 +77,7 @@ class Environment:
     DGA_DELTA_STRING_IDENTIFIER: str = "dgaDelta"
     SHAPE_NAME_STR: str = "<<SHAPE_NAME>>"
     CUSTOM_SHAPES_COLOR_ATTR_STRING_IDENTIFIER: str = "customShapesColor"
+    SHAPES_SEQUENCE_META_DATA_ATTR_STRING_IDENTIFIER: str = "shapesSequenceMetaData"
 
     # TARGET GROUP NAMES
     PRIMARY_SHAPES_GRP_NAME: str = "Primaries_GRP"

@@ -17,7 +17,7 @@ import os
 
 from maya import cmds
 
-from ...api.editor import BlueSteelEditor
+from ...api.editor import BlueSteelEditor, ShapeImportCancelled
 from ...api.mayaUtils import undoable
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
@@ -635,25 +635,44 @@ class EditorOpsMixin(MainWindowMixin):
         import_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
         import_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._import_shapes_from_blendshape_node(absolute_delta=True))
         import_blendshape_node_menu.addAction(import_absolute_blendshape_node_action)
+
+
+        import_alembic_menu = import_menu.addMenu("Import From Alembic")
+        import_alembic_action = QAction("Relative Shapes", self)
+        import_alembic_action.triggered.connect(lambda _checked=False: self._import_shapes_from_alembic(absolute_delta=False))
+        import_alembic_menu.addAction(import_alembic_action)
+        import_absolute_alembic_action = QAction("Absolute Shapes", self)
+        import_absolute_alembic_action.triggered.connect(lambda _checked=False: self._import_shapes_from_alembic(absolute_delta=True))
+        import_alembic_menu.addAction(import_absolute_alembic_action)
+
         import_split_data_action = QAction("Import Split Data", self)
         import_split_data_action.triggered.connect(self._import_split_data)
         import_menu.addAction(import_split_data_action)
-
 
         export_menu = file_menu.addMenu("Export")
         export_objs_action = QAction("Export Objs", self)
         export_objs_action.triggered.connect(self._export_objs)
         export_menu.addAction(export_objs_action)
-        export_blendshape_node_menu = export_menu.addMenu("Export To BlendShape Node")
+        export_blendshape_node_menu = export_menu.addMenu("Export Shapes To BlendShape Node")
         export_blendshape_node_action = QAction("Relative Shapes", self)
         export_blendshape_node_action.triggered.connect(lambda _checked=False: self._export_shapes_as_blendshape_node(absolute_delta=False))
         export_blendshape_node_menu.addAction(export_blendshape_node_action)
         export_absolute_blendshape_node_action = QAction("Absolute Shapes", self)
         export_absolute_blendshape_node_action.triggered.connect(lambda _checked=False: self._export_shapes_as_blendshape_node(absolute_delta=True))
         export_blendshape_node_menu.addAction(export_absolute_blendshape_node_action)
+
+        export_alembic_menu = export_menu.addMenu("Export Shapes To Alembic")
+        export_shapes_to_alembic_action = QAction("Relative Shapes", self)
+        export_shapes_to_alembic_action.triggered.connect(lambda _checked=False: self._export_shapes_to_alembic(absolute_delta=False))
+        export_alembic_menu.addAction(export_shapes_to_alembic_action)
+        export_absolute_shapes_to_alembic_action = QAction("Absolute Shapes", self)
+        export_absolute_shapes_to_alembic_action.triggered.connect(lambda _checked=False: self._export_shapes_to_alembic(absolute_delta=True))
+        export_alembic_menu.addAction(export_absolute_shapes_to_alembic_action)
+
         export_split_data_action = QAction("Export Split Data", self)
         export_split_data_action.triggered.connect(self._export_split_data)
         export_menu.addAction(export_split_data_action)
+
 
         self.blendshape_node_io_actions = [
             import_blendshape_node_action,
@@ -810,19 +829,69 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("Import cancelled.")
             return
 
+        delta_label = "absolute" if absolute_delta else "relative"
         self._clear_trackers_for_scene_operation()
         try:
-            self.current_editor.import_shapes_from_blendshape_node(import_path, absolute_delta=absolute_delta)
+            imported_count = self.current_editor.import_shapes_from_blendshape_node(
+                import_path, absolute_delta=absolute_delta)
+        except ShapeImportCancelled as exc:
+            self._set_status(str(exc), warning=True)
         except Exception as exc:
-            self._set_status(f"Error importing shapes from blendshape node: {exc}", error=True)
-            return
+            self._set_status(
+                f"Error importing {delta_label} shapes from blendshape node: {exc}",
+                error=True)
+        else:
+            self._set_status(
+                f"Imported {imported_count} shape(s) from '{import_path}' as {delta_label} deltas.")
         finally:
             self._restart_trackers_after_scene_operation()
+            self._reload_shapes_from_editor()
+            self._reload_editor_menu()
 
-        self._reload_shapes_from_editor()
-        self._reload_editor_menu()
+
+    def _import_shapes_from_alembic(self, absolute_delta: bool = False) -> None:
+        """Import shapes from a saved Alembic file.
+
+        Parameters:
+            absolute_delta (bool): Whether to import absolute rather than
+                relative deltas.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        delta_label = "Absolute" if absolute_delta else "Relative"
+        import_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            f"Import {delta_label} Shapes From Alembic",
+            "",
+            "Alembic Files (*.abc)",
+        )
+        if not import_path:
+            self._set_status("Import cancelled.")
+            return
+
         delta_label = "absolute" if absolute_delta else "relative"
-        self._set_status(f"Imported shapes from '{import_path}' as {delta_label} deltas.")
+        self._clear_trackers_for_scene_operation()
+        try:
+            imported_count = self.current_editor.import_shapes_from_alembic(
+                import_path, absolute_delta=absolute_delta)
+        except ShapeImportCancelled as exc:
+            self._set_status(str(exc), warning=True)
+        except Exception as exc:
+            self._set_status(
+                f"Error importing {delta_label} shapes from Alembic file: {exc}",
+                error=True)
+        else:
+            self._set_status(
+                f"Imported {imported_count} shape(s) from '{import_path}' as {delta_label} deltas.")
+        finally:
+            self._restart_trackers_after_scene_operation()
+            self._reload_shapes_from_editor()
+            self._reload_editor_menu()
 
 
     def _import_split_data(self) -> None:
@@ -911,8 +980,9 @@ class EditorOpsMixin(MainWindowMixin):
         self._clear_trackers_for_scene_operation()
         try:
             split_editor_name = self.current_editor.create_split_shapes_editor()
-
-
+        except ShapeImportCancelled as exc:
+            self._set_status(str(exc), warning=True)
+            return
         except Exception as exc:
             self._set_status(f"Error splitting shapes: {exc}", error=True)
             return
@@ -1029,6 +1099,44 @@ class EditorOpsMixin(MainWindowMixin):
         delta_label = "absolute" if absolute_delta else "relative"
         self._set_status(f"Exported {delta_label} shapes as a blendshape node to '{export_path}'.")
 
+    def _export_shapes_to_alembic(self, absolute_delta: bool = False) -> None:
+        """Export the active editor's shapes to an Alembic file.
+
+        Parameters:
+            absolute_delta (bool): Whether to export absolute rather than
+                relative deltas.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        delta_label = "Absolute" if absolute_delta else "Relative"
+        export_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            f"Export {delta_label} Shapes To Alembic",
+            f"{self.current_editor.name}.abc",
+            "Alembic Files (*.abc)",
+        )
+        if not export_path:
+            self._set_status("Export cancelled.")
+            return
+        if os.path.splitext(export_path)[1].lower() != ".abc":
+            export_path += ".abc"
+
+        self._clear_trackers_for_scene_operation()
+        try:
+            self.current_editor.export_shapes_as_alembic(export_path, absolute_delta=absolute_delta)
+        except Exception as exc:
+            self._set_status(f"Error exporting shapes to Alembic: {exc}", error=True)
+            return
+        finally:
+            self._restart_trackers_after_scene_operation()
+
+        delta_label = "absolute" if absolute_delta else "relative"
+        self._set_status(f"Exported {delta_label} shapes to an Alembic file at '{export_path}'.")
 
     def _rename_current_editor(self) -> None:
         """Prompt for a new name and rename the active editor.
