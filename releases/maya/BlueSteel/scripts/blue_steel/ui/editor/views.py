@@ -95,6 +95,130 @@ def _is_slider_delegate(delegate) -> bool:
     return hasattr(delegate, "external_drag_start") and hasattr(delegate, "is_drag_active")
 
 
+def build_trash_cursor(device_pixel_ratio: float = 1.0) -> QCursor:
+    """Build the high-contrast trash-bin cursor used for drag-out removal.
+
+    The bin is drawn programmatically rather than depending on a Maya resource
+    or a font glyph, both of which can be unavailable on some installations.
+
+    Parameters:
+        device_pixel_ratio (float): Screen scale factor for the pixmap.
+
+    Returns:
+        QCursor: A trash-bin cursor with its hotspot at the bin centre.
+    """
+    dpr = max(1.0, float(device_pixel_ratio or 1.0))
+    pixmap = QPixmap(round(32 * dpr), round(32 * dpr))
+    pixmap.setDevicePixelRatio(dpr)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QColor("black"))
+    painter.setBrush(QColor(245, 245, 245))
+    painter.drawRoundedRect(7, 10, 18, 19, 2, 2)
+    painter.drawRect(12, 3, 8, 4)
+    painter.drawRect(5, 7, 22, 3)
+    for x in (12, 16, 20):
+        painter.drawLine(x, 14, x, 25)
+    painter.end()
+    return QCursor(pixmap, 16, 16)
+
+
+class OutsideRemovalDragMixin:
+    """Drag an item out of a view and release to request its removal.
+
+    The press that arms the gesture is owned by the concrete view; this mixin
+    only tracks the pointer through an application event filter. Moving beyond
+    Qt's drag threshold shows a closed-hand cursor, a trash-bin cursor once
+    outside the view, and releasing outside calls ``_emit_removal_requested``.
+    Releasing inside or pressing Escape cancels without side effects.
+    """
+
+    _removal_drag_target = None
+    _removal_drag_start = None
+    _removal_drag_active = False
+    _removal_drag_outside = None
+    _removal_trash_cursor = None
+    _removal_press_active = False
+
+    def _arm_removal_drag(self, target, global_pos) -> None:
+        """Remember ``target`` and install the global drag event filter."""
+        self._cancel_removal_drag()
+        self._removal_drag_target = target
+        self._removal_drag_start = global_pos
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def _outside_removal_panel(self, global_pos) -> bool:
+        # Include the view frame and scrollbars: these are not removal targets.
+        return not self.rect().contains(self.mapFromGlobal(global_pos))
+
+    def _removal_cursor(self) -> QCursor:
+        if self._removal_trash_cursor is None:
+            self._removal_trash_cursor = build_trash_cursor(self.devicePixelRatioF())
+        return self._removal_trash_cursor
+
+    def _move_removal_drag(self, global_pos) -> None:
+        if not self._removal_drag_active:
+            if (global_pos - self._removal_drag_start).manhattanLength() < QApplication.startDragDistance():
+                return
+            self._removal_drag_active = True
+            QApplication.setOverrideCursor(Qt.ClosedHandCursor)
+        outside = self._outside_removal_panel(global_pos)
+        if outside != self._removal_drag_outside:
+            cursor = self._removal_cursor() if outside else QCursor(Qt.ClosedHandCursor)
+            QApplication.changeOverrideCursor(cursor)
+            self._removal_drag_outside = outside
+
+    def _cancel_removal_drag(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+            if self._removal_drag_active:
+                QApplication.restoreOverrideCursor()
+        self._removal_drag_target = None
+        self._removal_drag_start = None
+        self._removal_drag_active = False
+        self._removal_drag_outside = None
+
+    def _finish_removal_drag(self, global_pos) -> None:
+        target = self._removal_drag_target
+        remove = self._removal_drag_active and self._outside_removal_panel(global_pos)
+        # Restore the cursor/filter before emitting: the callback can reset the
+        # model, raise an error, or close the editor. Never leave a trash cursor.
+        self._cancel_removal_drag()
+        self._removal_press_active = False
+        if remove and target is not None:
+            self._emit_removal_requested(target)
+
+    def _emit_removal_requested(self, target) -> None:
+        """Emit or dispatch the removal request for ``target``."""
+        raise NotImplementedError
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if getattr(self, "_removal_drag_target", None) is not None:
+            event_type = event.type()
+            if event_type == QEvent.MouseMove:
+                self._move_removal_drag(event.globalPos())
+                return True
+            if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self._finish_removal_drag(event.globalPos())
+                return True
+            if event_type == QEvent.ShortcutOverride and event.key() == Qt.Key_Escape:
+                event.accept()  # Keep Maya/global shortcuts from stealing cancellation.
+                return True
+            if event_type == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self._cancel_removal_drag()
+                return True
+            if event_type == QEvent.ApplicationDeactivate or (
+                watched in (self, self.window())
+                and event_type in (QEvent.Hide, QEvent.Close, QEvent.DeferredDelete, QEvent.WindowDeactivate)
+            ):
+                self._cancel_removal_drag()
+        return super().eventFilter(watched, event)
+
+
 class SliderDragViewMixin:
     """Shared mouse handling for slider-style item views.
 
@@ -734,7 +858,7 @@ class SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView):
 
 
 
-class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget):
+class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget):
     """Work shapes tree with parent controls and collapsible, pose-activating drivers.
 
     Work shapes can be grouped and reordered; the order/grouping is persisted
@@ -810,12 +934,6 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         )
         self._collapsed_driver_names = set()
         self._driver_editor = None
-        self._driver_press_active = False
-        self._driver_drag_target = None
-        self._driver_drag_start = None
-        self._driver_drag_active = False
-        self._driver_drag_outside = None
-        self._driver_trash_cursor = None
         self._drop_callback = drop_callback
         self.duplicate_callback = duplicate_callback
         self.extract_work_shape_mesh_callback = extract_work_shape_mesh_callback
@@ -848,7 +966,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         model = self.model()
         if model is not None:
             model.dataChanged.connect(self._driver_data_changed)
-            model.modelAboutToBeReset.connect(self._cancel_driver_drag)
+            model.modelAboutToBeReset.connect(self._cancel_removal_drag)
 
     def _emit_move_requested(self, names, target, position) -> None:
         self.workShapeMoveRequested.emit(names, target, position)
@@ -886,7 +1004,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
 
 
     def _driver_data_changed(self, first, last, roles=()) -> None:
-        self._cancel_driver_drag()
+        self._cancel_removal_drag()
         delegate = self.itemDelegate()
         if delegate is not None and first.isValid():
             delegate.sizeHintChanged.emit(first)
@@ -1005,89 +1123,12 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
             return index, "driver", driver
         return index, "parent", None
 
-    def _trash_cursor(self) -> QCursor:
-        if self._driver_trash_cursor is None:
-            # Draw a high-contrast bin rather than depending on a Maya resource
-            # or a font glyph; both can be unavailable on some installations.
-            dpr = self.devicePixelRatioF()
-            pixmap = QPixmap(round(32 * dpr), round(32 * dpr))
-            pixmap.setDevicePixelRatio(dpr)
-            pixmap.fill(Qt.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setPen(QColor("black"))
-            painter.setBrush(QColor(245, 245, 245))
-            painter.drawRoundedRect(7, 10, 18, 19, 2, 2)
-            painter.drawRect(12, 3, 8, 4)
-            painter.drawRect(5, 7, 22, 3)
-            for x in (12, 16, 20):
-                painter.drawLine(x, 14, x, 25)
-            painter.end()
-            self._driver_trash_cursor = QCursor(pixmap, 16, 16)
-        return self._driver_trash_cursor
-
-    def _outside_driver_panel(self, global_pos) -> bool:
-        # Include the list frame and scrollbars: these are not removal targets.
-        return not self.rect().contains(self.mapFromGlobal(global_pos))
-
-    def _move_driver_drag(self, global_pos) -> None:
-        if not self._driver_drag_active:
-            if (global_pos - self._driver_drag_start).manhattanLength() < QApplication.startDragDistance():
-                return
-            self._driver_drag_active = True
-            QApplication.setOverrideCursor(Qt.ClosedHandCursor)
-        outside = self._outside_driver_panel(global_pos)
-        if outside != self._driver_drag_outside:
-            cursor = self._trash_cursor() if outside else QCursor(Qt.ClosedHandCursor)
-            QApplication.changeOverrideCursor(cursor)
-            self._driver_drag_outside = outside
-
-    def _cancel_driver_drag(self) -> None:
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
-            if self._driver_drag_active:
-                QApplication.restoreOverrideCursor()
-        self._driver_drag_target = None
-        self._driver_drag_start = None
-        self._driver_drag_active = False
-        self._driver_drag_outside = None
-
-    def _finish_driver_drag(self, global_pos) -> None:
-        target = self._driver_drag_target
-        remove = self._driver_drag_active and self._outside_driver_panel(global_pos)
-        # Restore the cursor/filter before emitting: the callback can reset the
-        # model, raise an error, or close the editor. Never leave a trash cursor.
-        self._cancel_driver_drag()
-        self._driver_press_active = False
-        if remove and target is not None:
-            self.driverRemovalRequested.emit(*target)
-
-    def eventFilter(self, watched, event):  # noqa: N802
-        if getattr(self, "_driver_drag_target", None) is not None:
-            event_type = event.type()
-            if event_type == QEvent.MouseMove:
-                self._move_driver_drag(event.globalPos())
-                return True
-            if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-                self._finish_driver_drag(event.globalPos())
-                return True
-            if event_type == QEvent.ShortcutOverride and event.key() == Qt.Key_Escape:
-                event.accept()  # Keep Maya/global shortcuts from stealing cancellation.
-                return True
-            if event_type == QEvent.KeyPress and event.key() == Qt.Key_Escape:
-                self._cancel_driver_drag()
-                return True
-            if event_type == QEvent.ApplicationDeactivate or (
-                watched in (self, self.window())
-                and event_type in (QEvent.Hide, QEvent.Close, QEvent.DeferredDelete, QEvent.WindowDeactivate)
-            ):
-                self._cancel_driver_drag()
-        return super().eventFilter(watched, event)
+    def _emit_removal_requested(self, target) -> None:
+        self.driverRemovalRequested.emit(*target)
 
     def mousePressEvent(self, event):  # noqa: N802
-        self._cancel_driver_drag()
-        self._driver_press_active = False
+        self._cancel_removal_drag()
+        self._removal_press_active = False
         index, part, driver = self._work_shape_hit(event.pos())
         if part == "folder_disclosure":
             # The group chevron is delegate-painted, so Qt's native branch no
@@ -1107,37 +1148,37 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
                 self._set_all_drivers_expanded(not self.drivers_expanded(index))
                 event.accept()
                 return
-            self._driver_press_active = True
+            self._removal_press_active = True
             if event.button() == Qt.LeftButton:
                 if part == "disclosure":
                     self._toggle_drivers(index)
                 else:
-                    self._driver_drag_target = (str(index.data(ShapeItemsModel.NameRole)), driver)
-                    self._driver_drag_start = event.globalPos()
-                    QApplication.instance().installEventFilter(self)
+                    self._arm_removal_drag(
+                        (str(index.data(ShapeItemsModel.NameRole)), driver), event.globalPos()
+                    )
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
         # QListView can begin rubber-band selection even after a consumed press.
-        if self._driver_press_active:
+        if self._removal_press_active:
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
-        if self._driver_press_active:
-            self._driver_press_active = False
+        if self._removal_press_active:
+            self._removal_press_active = False
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
-        self._cancel_driver_drag()
+        self._cancel_removal_drag()
         _, part, driver = self._work_shape_hit(event.pos())
         if part in {"driver", "disclosure", "folder_disclosure"}:
-            self._driver_press_active = True
+            self._removal_press_active = True
             if event.button() == Qt.LeftButton and part == "driver":
                 self.driverPoseRequested.emit(driver)
             event.accept()
@@ -1592,7 +1633,7 @@ class PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWi
 
 
 
-class PrimaryDropTreeWidget(PrimaryTreeWidget):
+class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
     """Flat, drop-enabled primaries tree used by the Sliders Drop Box.
 
     Mirrors the primaries tree (so slider drags, selection, and keyboard
@@ -1627,6 +1668,9 @@ class PrimaryDropTreeWidget(PrimaryTreeWidget):
         self.setDefaultDropAction(Qt.CopyAction)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        model = self.model()
+        if model is not None:
+            model.modelAboutToBeReset.connect(self._cancel_removal_drag)
 
     def _selected_shape_names(self) -> List[str]:
         shape_names: List[str] = []
@@ -1653,6 +1697,39 @@ class PrimaryDropTreeWidget(PrimaryTreeWidget):
         if self._shape_names_from_mime(mime_data):
             return True
         return mime_data.hasFormat(self.PRIMARY_TREE_MIME_TYPE)
+
+    def _emit_removal_requested(self, target) -> None:
+        if self._remove_callback is not None:
+            self._remove_callback(list(target))
+
+    def _should_arm_removal_drag(self, event) -> bool:
+        """Return True when a press may start a drag-out removal.
+
+        The value scrub area and the clickable lock icon keep their existing
+        behaviour; everything else on a primary leaf row can be dragged out.
+        """
+        if event.button() != Qt.LeftButton:
+            return False
+        index = self.indexAt(event.pos())
+        if not index.isValid() or bool(index.data(ShapeItemsModel.IsHeaderRole)):
+            return False
+        if self._resolve_icon_click(event.pos()) is not None:
+            return False
+        delegate = self._slider_delegate()
+        if not _is_slider_delegate(delegate):
+            return False
+        option = OptionRect(self.visualRect(index), self.fontMetrics())
+        return not delegate.value_rect_for(index, option).contains(event.pos())
+
+    def mousePressEvent(self, event):  # noqa: N802
+        arm = self._should_arm_removal_drag(event)
+        # Let the base view update the selection first so a multi-selection
+        # drag removes every selected entry, not just the pressed row.
+        super().mousePressEvent(event)
+        if arm:
+            selected_names = tuple(self._selected_shape_names())
+            if selected_names:
+                self._arm_removal_drag(selected_names, event.globalPos())
 
     def _show_context_menu(self, pos) -> None:
         item = self.itemAt(pos)
