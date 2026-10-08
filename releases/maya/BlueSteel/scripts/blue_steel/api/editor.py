@@ -1320,6 +1320,8 @@ class BlueSteelEditor(object):
         """
         self.convert_soft_selection_to_weight_map(self.work_blendshape, shape_name)
 
+    @undoable
+    @timed
     def extract_axis_motion_from_work_shape(self, shape_name: str, axis: str)->str:
         """
         Extract the motion along a specific axis from the work shape's weight map.
@@ -1354,7 +1356,7 @@ class BlueSteelEditor(object):
             extracted_delta[:, 2] = np.minimum(delta[:, 2], 0)
         else:
             raise ValueError(f"Invalid axis '{axis}'.")
-        delta = extracted_delta - delta
+        delta =  delta - extracted_delta
         
         axis_sign = 'Positive' if axis.endswith('+') else 'Negative' if axis.endswith('-') else ''
         extracted_shape_name = f"{shape_name}_{axis[0]}{axis_sign}_extracted"

@@ -777,6 +777,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         can_extract_mesh_callback: Optional[Callable[[], bool]] = None,
         propagate_to_active_shapes_callback: Optional[Callable[[str], None]] = None,
         apply_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
+        extract_axis_motion_callback: Optional[Callable[[str, str], None]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -829,6 +830,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         self._can_paste_weights_callback = can_paste_weights_callback
         self._can_extract_mesh_callback = can_extract_mesh_callback
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
+        self._extract_axis_motion_callback = extract_axis_motion_callback
         self.setToolTip(
             "<b>Work shapes:</b><br>"
             "<b>Double-click</b> a work shape to rename it.<br>"
@@ -1185,6 +1187,28 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         propagate_to_active_shapes_action = menu.addAction("Propagate to Active Shapes")
         propagate_to_active_shapes_action.setToolTip("Propagate the selected shape down to all active shapes")
         propagate_to_active_shapes_action.setEnabled(self._propagate_to_active_shapes_callback is not None)
+
+        extract_motion_axis_menu = menu.addMenu("Extract Motion Axis")
+        axis_actions: Dict[object, str] = {}
+        for label, axis in (("X", "x"), ("Y", "y"), ("Z", "z")):
+            action = extract_motion_axis_menu.addAction(label)
+            action.setToolTip(f"Extract the {label} motion from the selected work shape")
+            axis_actions[action] = axis
+        extract_motion_axis_menu.addSeparator()
+        positive_axis_menu = extract_motion_axis_menu.addMenu("Positive")
+        for label, axis in (("X+", "x+"), ("Y+", "y+"), ("Z+", "z+")):
+            action = positive_axis_menu.addAction(label)
+            action.setToolTip(f"Extract the positive {label[0]} motion from the selected work shape")
+            axis_actions[action] = axis
+        negative_axis_menu = extract_motion_axis_menu.addMenu("Negative")
+        for label, axis in (("X-", "x-"), ("Y-", "y-"), ("Z-", "z-")):
+            action = negative_axis_menu.addAction(label)
+            action.setToolTip(f"Extract the negative {label[0]} motion from the selected work shape")
+            axis_actions[action] = axis
+        can_extract_axis_motion = self._extract_axis_motion_callback is not None
+        for action in axis_actions:
+            action.setEnabled(can_extract_axis_motion)
+
         extract_work_shape_mesh_action = menu.addAction("Extract Mesh")
         can_extract_mesh = self._can_extract_mesh_callback is None or self._can_extract_mesh_callback()
         extract_work_shape_mesh_action.setEnabled(can_extract_mesh)
@@ -1232,6 +1256,8 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
             self._propagate_to_active_shapes_callback(receiver_name)
         elif selected_action == break_link_action:
             self._break_link_callback(receiver_name)
+        elif selected_action in axis_actions and self._extract_axis_motion_callback is not None:
+            self._extract_axis_motion_callback(receiver_name, axis_actions[selected_action])
         elif selected_action == copy_weights_action and self._copy_weights_callback is not None:
             self._copy_weights_callback(receiver_name)
         elif selected_action == paste_weights_action and self._paste_weights_callback is not None:

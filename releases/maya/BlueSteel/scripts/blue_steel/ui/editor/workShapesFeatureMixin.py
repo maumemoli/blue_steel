@@ -935,6 +935,35 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Extracted shape '{new_shape_name}' from work shape '{work_shape_name}'.")
 
 
+    def _on_work_shape_extract_axis_motion_requested(self, work_shape_name: str, axis: str) -> None:
+        """Extract the motion along a single axis from a work shape.
+
+        Parameters:
+            work_shape_name (str): The work shape to extract motion from.
+            axis (str): The combined axis/sign selector ('x', 'y', 'z', 'x+', 'y+',
+                'z+', 'x-', 'y-', 'z-').
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        try:
+            self._stop_active_blendshape_trackers()
+            new_shape_name = str(self.current_editor.extract_axis_motion_from_work_shape(work_shape_name, axis))
+        except Exception as exc:
+            self._set_status(
+                f"Error extracting '{axis}' motion from work shape '{work_shape_name}': {exc}", error=True)
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+        self._reload_work_shapes_from_editor()
+        self._select_work_shape(work_shape_name)
+        self._set_status(
+            f"Extracted '{axis}' motion from work shape '{work_shape_name}' to '{new_shape_name}'.")
+
+
     def _on_work_shape_propagate_to_active_shapes_requested(self, work_shape_name: str) -> None:
         """Propagate a work shape to a user-selected subset of active shapes.
 

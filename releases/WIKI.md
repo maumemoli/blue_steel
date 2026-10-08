@@ -310,6 +310,13 @@ Key behavior:
 - The WorkShape context-menu **Extract Mesh** operation is separate from regular
   shape extraction and is currently unavailable when the editor mesh has a
   skinCluster.
+- The WorkShape context-menu **Extract Motion Axis** submenu splits a work
+  shape's target delta into per-axis contributions. It offers **X**, **Y**, and
+  **Z** for the full axis, plus **Positive** and **Negative** submenus with
+  **X+**/**Y+**/**Z+** and **X-**/**Y-**/**Z-** for the positive-only or
+  negative-only motion along each axis. The original work shape keeps the
+  remaining motion and each extraction creates a new work shape named after the
+  source and axis (for example ``shape_xPositive_extracted``).
 
 
 ### Active Shapes

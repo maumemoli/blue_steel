@@ -88,6 +88,40 @@ PRIMARY_TREE_NAME_ROLE = UI["constants"].PRIMARY_TREE_NAME_ROLE
 PRIMARY_TREE_FOLDER_ROLE = UI["constants"].PRIMARY_TREE_FOLDER_ROLE
 
 
+def find_menu_action(menu, path):
+    """Return the menu action addressed by a tuple of nested action labels."""
+    for action in menu.actions():
+        if action.text() != path[0]:
+            continue
+        if len(path) == 1:
+            return action
+        submenu = action.menu()
+        if submenu is not None:
+            found = find_menu_action(submenu, path[1:])
+            if found is not None:
+                return found
+    return None
+
+
+class ContextMenuProbe(UI["qt"].QMenu):
+    """A ``QMenu`` whose ``exec`` returns a preselected action instead of blocking.
+
+    Defined once at module scope so its type object outlives the menu instances
+    Qt parents to the view; a throwaway subclass per call crashes on teardown.
+    """
+
+    selected_path = ()
+    picked_action = None
+
+    def exec(self, *args, **kwargs):
+        del args, kwargs
+        type(self).picked_action = find_menu_action(self, self.selected_path)
+        return type(self).picked_action
+
+    def exec_(self, *args, **kwargs):
+        return self.exec(*args, **kwargs)
+
+
 class Weight(str):
     def __new__(cls, name, target_id):
         result = super().__new__(cls, name)
@@ -133,7 +167,8 @@ def feature_handlers():
     path = UI_PATH / "workShapesFeatureMixin.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names = {"_on_work_shapes_double_clicked", "_on_work_shape_driver_pose_requested",
-             "_on_work_shape_driver_removal_requested"}
+             "_on_work_shape_driver_removal_requested",
+             "_on_work_shape_extract_axis_motion_requested"}
     methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
                for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {
@@ -734,6 +769,66 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.top() + 1))[1], "before")
         self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.center().y()))[1], "inside")
         self.assertEqual(self.view._internal_drop_target(QtCore.QPoint(rect.center().x(), rect.bottom() - 1))[1], "after")
+
+    # ------------------------------------------------------------------
+    # Extract Motion Axis context menu
+    # ------------------------------------------------------------------
+    def invoke_work_shape_menu(self, pos, path):
+        """Run the work-shape context menu and pick the action at ``path``."""
+        with patch.object(UI["views"], "QMenu", ContextMenuProbe):
+            ContextMenuProbe.selected_path = path
+            ContextMenuProbe.picked_action = None
+            self.view._show_context_menu(pos)
+        return ContextMenuProbe.picked_action
+
+    def work_shape_parent_pos(self, name):
+        """Return the viewport position over a work shape's parent/name band."""
+        index = self.item_index(name)
+        _, name_rect = self.delegate._area_rects(self.option(index), index)
+        return name_rect.center()
+
+    def test_extract_motion_axis_context_menu_actions(self):
+        """The Extract Motion Axis submenu dispatches the combined axis/value."""
+        calls = []
+        self.view._extract_axis_motion_callback = lambda name, axis: calls.append((name, axis))
+        pos = self.work_shape_parent_pos("mouthFix_workShape")
+        actions = [
+            (("Extract Motion Axis", "X"), "x"),
+            (("Extract Motion Axis", "Y"), "y"),
+            (("Extract Motion Axis", "Z"), "z"),
+            (("Extract Motion Axis", "Positive", "X+"), "x+"),
+            (("Extract Motion Axis", "Positive", "Y+"), "y+"),
+            (("Extract Motion Axis", "Positive", "Z+"), "z+"),
+            (("Extract Motion Axis", "Negative", "X-"), "x-"),
+            (("Extract Motion Axis", "Negative", "Y-"), "y-"),
+            (("Extract Motion Axis", "Negative", "Z-"), "z-"),
+        ]
+        for path, axis in actions:
+            calls.clear()
+            action = self.invoke_work_shape_menu(pos, path)
+            self.assertIsNotNone(action, "Missing menu action: %s" % (path,))
+            self.assertTrue(action.isEnabled(), "Disabled menu action: %s" % (path,))
+            self.assertEqual(calls, [("mouthFix_workShape", axis)], path)
+
+    def test_extract_motion_axis_actions_disabled_without_callback(self):
+        """Axis actions are disabled when no extract-axis callback is wired."""
+        self.view._extract_axis_motion_callback = None
+        pos = self.work_shape_parent_pos("mouthFix_workShape")
+        action = self.invoke_work_shape_menu(pos, ("Extract Motion Axis", "X"))
+        self.assertIsNotNone(action)
+        self.assertFalse(action.isEnabled())
+
+    def test_extract_axis_motion_handler_calls_editor(self):
+        """The feature handler forwards the shape name and axis to the editor."""
+        host = Mock()
+        host.current_editor = Mock()
+        host.current_editor.extract_axis_motion_from_work_shape.return_value = "mouthFix_workShape_x+_extracted"
+        HANDLERS["_on_work_shape_extract_axis_motion_requested"](host, "mouthFix_workShape", "x+")
+        host.current_editor.extract_axis_motion_from_work_shape.assert_called_once_with(
+            "mouthFix_workShape", "x+")
+        host._reload_work_shapes_from_editor.assert_called_once()
+        host._select_work_shape.assert_called_once_with("mouthFix_workShape")
+        host._set_status.assert_called_once()
 
     # ------------------------------------------------------------------
     # Delegate opt-in behavior
