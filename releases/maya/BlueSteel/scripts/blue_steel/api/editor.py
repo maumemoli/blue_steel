@@ -1320,18 +1320,37 @@ class BlueSteelEditor(object):
         """
         self.convert_soft_selection_to_weight_map(self.work_blendshape, shape_name)
 
-    def clear_work_weight_map_values(self, shape_name: str):
+    @undoable
+    @timed
+    def apply_masked_weight_maps_to_work_shapes(self, shape_names: list):
         """
-        Clear the weight map values to 1.0 of a shape by setting them all to 0.
+        Apply the masked weight maps to the work shapes for the given shape names.
         Parameters:
-            shape_name (str): The name of the shape to clear the weight values for
+            shape_names (list): A list of shape names to apply the masked weight maps to
         """
-        weight = self.work_blendshape.get_weight_by_name(shape_name)
-        if weight is None:
-            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-        num_vertices = len(self.work_blendshape.get_weight_map_values(weight.id))
+        for shape_name in shape_names:
+            weight = self.work_blendshape.get_weight_by_name(shape_name)
+            if weight is None:
+                raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+            self.work_blendshape.apply_weight_map_to_target(weight)
+
+    
+    @undoable
+    @timed
+    def clear_work_weights_map_values(self, shape_names: list):
+        """
+        Clear the weight map values of the given shapes by setting them all to 1.0.
+        Parameters:
+            shape_names (list): A list of shape names to clear the weight values for
+        """
+        # add a temp workshape
+        num_vertices = cmds.polyEvaluate(self.base_mesh, vertex=True)
         zero_values = [1.0] * num_vertices
-        self.work_blendshape.set_weight_map_values(weight.id, zero_values)
+        for shape_name in shape_names:
+            weight = self.work_blendshape.get_weight_by_name(shape_name)
+            if weight is None:
+                raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+            self.work_blendshape.set_weight_map_values(weight.id, zero_values)
 
     def normalize_shapes_weight_map_values(self, blendshape: Blendshape, shape_names: list):
         """

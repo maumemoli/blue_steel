@@ -772,10 +772,11 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         add_copied_weights_callback: Optional[Callable[[str], None]] = None,
         subtract_copied_weights_callback: Optional[Callable[[str], None]] = None,
         normalize_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
-        clear_weights_callback: Optional[Callable[[str], None]] = None,
+        clear_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
         can_paste_weights_callback: Optional[Callable[[], bool]] = None,
         can_extract_mesh_callback: Optional[Callable[[], bool]] = None,
         propagate_to_active_shapes_callback: Optional[Callable[[str], None]] = None,
+        apply_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -824,6 +825,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         self._subtract_copied_weights_callback = subtract_copied_weights_callback
         self._normalize_weights_callback = normalize_weights_callback
         self._clear_weights_callback = clear_weights_callback
+        self._apply_weights_callback = apply_weights_callback
         self._can_paste_weights_callback = can_paste_weights_callback
         self._can_extract_mesh_callback = can_extract_mesh_callback
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
@@ -1170,7 +1172,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         selected_shape_names = [str(it.data(0, ShapeItemsModel.NameRole) or "")
                                 for it in self.selectedItems()
                                 if not bool(it.data(0, ShapeItemsModel.IsHeaderRole))]
-        normalize_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
+        weight_map_targets = selected_shape_names if receiver_name in selected_shape_names else [receiver_name]
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         group_action = menu.addAction("Group Selected")
@@ -1202,6 +1204,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         subtract_copied_weights_action = weight_maps_menu.addAction("Subtract Copied Weights")
         normalize_selected_weights_action = weight_maps_menu.addAction("Normalize Selected Weights")
         weight_maps_menu.addSeparator()
+        apply_weights_action = weight_maps_menu.addAction("Apply Weights")
         clear_weights_action = weight_maps_menu.addAction("Clear Weights")
 
         can_paste_weights = True
@@ -1211,8 +1214,9 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         paste_inverted_weights_action.setEnabled(can_paste_weights)
         add_copied_weights_action.setEnabled(can_paste_weights)
         subtract_copied_weights_action.setEnabled(can_paste_weights)
-        normalize_selected_weights_action.setEnabled(bool(normalize_targets) and self._normalize_weights_callback is not None)
-        clear_weights_action.setEnabled(self._clear_weights_callback is not None)
+        normalize_selected_weights_action.setEnabled(bool(weight_map_targets) and self._normalize_weights_callback is not None)
+        apply_weights_action.setEnabled(bool(weight_map_targets) and self._apply_weights_callback is not None)
+        clear_weights_action.setEnabled(bool(weight_map_targets) and self._clear_weights_callback is not None)
 
         if hasattr(menu, "exec"):
             selected_action = menu.exec(self.viewport().mapToGlobal(pos))
@@ -1239,9 +1243,11 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         elif selected_action == subtract_copied_weights_action and self._subtract_copied_weights_callback is not None:
             self._subtract_copied_weights_callback(receiver_name)
         elif selected_action == normalize_selected_weights_action and self._normalize_weights_callback is not None:
-            self._normalize_weights_callback(normalize_targets)
+            self._normalize_weights_callback(weight_map_targets)
+        elif selected_action == apply_weights_action and self._apply_weights_callback is not None:
+            self._apply_weights_callback(weight_map_targets)
         elif selected_action == clear_weights_action and self._clear_weights_callback is not None:
-            self._clear_weights_callback(receiver_name)
+            self._clear_weights_callback(weight_map_targets)
 
 
 

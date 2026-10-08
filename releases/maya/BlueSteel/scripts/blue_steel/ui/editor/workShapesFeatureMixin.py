@@ -1265,11 +1265,12 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Normalized weight maps for {len(shape_names)} work shape(s).")
 
 
-    def _on_work_shape_clear_weights_requested(self, work_shape_name: str) -> None:
-        """Clear the weight-map values of a work shape.
+    def _on_work_shape_apply_weights_requested(self, work_shape_names: Sequence[str]) -> None:
+        """Apply the masked weight maps to the given work shapes.
 
         Parameters:
-            work_shape_name (str): The work shape to clear.
+            work_shape_names (Sequence[str]): The work-shape names to apply the
+                masked weight maps to.
 
         Returns:
             None
@@ -1277,13 +1278,42 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
-        try:
-            print(f"Clearing weight map values for '{work_shape_name}'...")
-            self.current_editor.clear_work_weight_map_values(work_shape_name)
-        except Exception as exc:
-            self._set_status(f"Error clearing weight map values for '{work_shape_name}': {exc}", error=True)
+        shape_names = [str(name) for name in (work_shape_names or []) if str(name)]
+        if not shape_names:
+            self._set_status("No work shapes selected.", warning=True)
             return
-        self._set_status(f"Cleared weight map values for '{work_shape_name}'.")
+        try:
+            print(f"Applying masked weight maps for {len(shape_names)} work shape(s)...")
+            self.current_editor.apply_masked_weight_maps_to_work_shapes(shape_names)
+        except Exception as exc:
+            self._set_status(f"Error applying masked weight maps: {exc}", error=True)
+            return
+        self._set_status(f"Applied masked weight maps for {len(shape_names)} work shape(s).")
+
+
+    def _on_work_shape_clear_weights_requested(self, work_shape_names: Sequence[str]) -> None:
+        """Clear the weight-map values of the given work shapes.
+
+        Parameters:
+            work_shape_names (Sequence[str]): The work-shape names to clear.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        shape_names = [str(name) for name in (work_shape_names or []) if str(name)]
+        if not shape_names:
+            self._set_status("No work shapes selected.", warning=True)
+            return
+        try:
+            print(f"Clearing weight map values for {len(shape_names)} work shape(s)...")
+            self.current_editor.clear_work_weights_map_values(shape_names)
+        except Exception as exc:
+            self._set_status(f"Error clearing weight map values: {exc}", error=True)
+            return
+        self._set_status(f"Cleared weight map values for {len(shape_names)} work shape(s).")
 
 
     def _begin_inline_workshape_rename(self, item: Optional[QTreeWidgetItem]) -> None:
