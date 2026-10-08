@@ -536,8 +536,19 @@ class EditorUiMixin(MainWindowMixin):
         primary_drop_toolbar = QHBoxLayout()
         self._compact_layout(primary_drop_toolbar)
         self.primary_drop_get_active_button = QPushButton("Get Active")
+        self.primary_drop_get_active_button.setIcon(REFRESH_ICON)
+        self.primary_drop_get_active_button.setToolTip(
+            "Replace the Sliders Drop Box with the currently active primaries"
+        )
         self._prepare_toolbar_button(self.primary_drop_get_active_button)
         primary_drop_toolbar.addWidget(self.primary_drop_get_active_button)
+        self.primary_drop_add_active_button = QPushButton("Add Active")
+        self.primary_drop_add_active_button.setIcon(ADD_ICON)
+        self.primary_drop_add_active_button.setToolTip(
+            "Add the currently active primaries to the Sliders Drop Box without clearing it"
+        )
+        self._prepare_toolbar_button(self.primary_drop_add_active_button)
+        primary_drop_toolbar.addWidget(self.primary_drop_add_active_button)
         primary_drop_toolbar.addStretch(1)
         primary_drop_layout.addLayout(primary_drop_toolbar)
         self.primary_drop_view = PrimaryDropTreeWidget(
@@ -1056,6 +1067,7 @@ class EditorUiMixin(MainWindowMixin):
         self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
         self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
         self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
+        self.primary_drop_add_active_button.clicked.connect(self._add_primary_drop_list_from_active)
         self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
         self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
         self.shapes_view.toggleUpstreamFilterRequested.connect(self._on_shapes_toggle_upstream_filter_requested)

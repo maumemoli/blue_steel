@@ -987,23 +987,49 @@ class ShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Removed {removed} slider(s) from Sliders Drop Box.")
 
 
-    def _fill_primary_drop_list_from_active(self) -> None:
+    def _active_primary_names(self) -> List[str]:
+        """Return the primary shape names with a non-zero blendshape weight.
+
+        Returns:
+            List[str]: Names of currently active primary shapes.
+        """
         if self.current_editor is None:
-            self._set_status("No system selected.", warning=True)
-            return
-        active_primaries = []
+            return []
+        active_primaries: List[str] = []
         for shape in self.current_editor.get_primary_shapes() or []:
             weight = self.current_editor.blendshape.get_weight_by_name(shape)
             if weight is None:
                 continue
             if float(self.current_editor.blendshape.get_weight_value(weight)) > 0.0:
                 active_primaries.append(str(shape))
+        return active_primaries
+
+
+    def _fill_primary_drop_list_from_active(self) -> None:
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        active_primaries = self._active_primary_names()
         self._primary_subset_proxy.clear_selected_names()
         self._primary_subset_proxy.add_selected_names(active_primaries)
         self._apply_primary_drop_tree_filter()
         self._update_delegate_name_columns()
         self._update_info_labels()
         self._set_status(f"Loaded {len(active_primaries)} active primaries.")
+
+
+    def _add_primary_drop_list_from_active(self) -> None:
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        active_primaries = self._active_primary_names()
+        existing = set(self._primary_subset_proxy.selected_names())
+        new_primaries = [name for name in active_primaries if name not in existing]
+        self._primary_subset_proxy.add_selected_names(active_primaries)
+        self._apply_primary_drop_tree_filter()
+        self._update_delegate_name_columns()
+        self._update_info_labels()
+        self._set_status(f"Added {len(new_primaries)} active primaries.")
 
 
     def _selected_names_from_list_view(self, view: QListView, model) -> List[str]:
