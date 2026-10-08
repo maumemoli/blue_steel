@@ -1320,6 +1320,54 @@ class BlueSteelEditor(object):
         """
         self.convert_soft_selection_to_weight_map(self.work_blendshape, shape_name)
 
+    def extract_axis_motion_from_work_shape(self, shape_name: str, axis: str)->str:
+        """
+        Extract the motion along a specific axis from the work shape's weight map.
+        Parameters:
+            shape_name (str): The name of the shape to extract the axis motion from
+            axis (str): The axis to extract motion from ('x', 'y','z', 'x+', 'y+', 'z+', 'x-', 'y-', 'z-')
+        Returns:
+            str: The name of the newly created extracted work shape.
+        """
+        weight = self.work_blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
+        delta = self.work_blendshape.get_target_delta(weight.id)
+        extracted_delta = np.zeros_like(delta)
+        if axis == 'x':
+            extracted_delta[:, 0] = delta[:, 0]
+        elif axis == 'y':
+            extracted_delta[:, 1] = delta[:, 1]
+        elif axis == 'z':
+            extracted_delta[:, 2] = delta[:, 2]
+        elif axis == 'x+':
+            extracted_delta[:, 0] = np.maximum(delta[:, 0], 0)
+        elif axis == 'y+':
+            extracted_delta[:, 1] = np.maximum(delta[:, 1], 0)
+        elif axis == 'z+':
+            extracted_delta[:, 2] = np.maximum(delta[:, 2], 0)
+        elif axis == 'x-':
+            extracted_delta[:, 0] = np.minimum(delta[:, 0], 0)
+        elif axis == 'y-':
+            extracted_delta[:, 1] = np.minimum(delta[:, 1], 0)
+        elif axis == 'z-':
+            extracted_delta[:, 2] = np.minimum(delta[:, 2], 0)
+        else:
+            raise ValueError(f"Invalid axis '{axis}'.")
+        delta = extracted_delta - delta
+        
+        axis_sign = 'Positive' if axis.endswith('+') else 'Negative' if axis.endswith('-') else ''
+        extracted_shape_name = f"{shape_name}_{axis[0]}{axis_sign}_extracted"
+        extracted_work_shape = self.add_work_shape(extracted_shape_name)
+        extracted_weight = self.work_blendshape.get_weight_by_name(extracted_work_shape)
+
+        self.work_blendshape.set_target_delta(weight.id, delta)
+        self.work_blendshape.set_target_delta(extracted_weight.id, extracted_delta)
+
+        return extracted_work_shape
+
+
+
     @undoable
     @timed
     def apply_masked_weight_maps_to_work_shapes(self, shape_names: list):
