@@ -316,7 +316,9 @@ Key behavior:
   **X+**/**Y+**/**Z+** and **X-**/**Y-**/**Z-** for the positive-only or
   negative-only motion along each axis. The original work shape keeps the
   remaining motion and each extraction creates a new work shape named after the
-  source and axis (for example ``shape_xPositive_extracted``).
+  source and axis (for example ``shape_xPositive_extracted``). The extracted
+  work shape is inserted directly below its source work shape in the Work
+  Shapes tree, staying inside the same group when the source is grouped.
 
 
 ### Active Shapes

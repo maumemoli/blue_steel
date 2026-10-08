@@ -1366,9 +1366,36 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_target_delta(weight.id, delta)
         self.work_blendshape.set_target_delta(extracted_weight.id, extracted_delta)
 
+        self._place_work_shape_after_in_sorting(str(extracted_work_shape), shape_name)
+
         return extracted_work_shape
 
+    def combine_work_shapes(self, target_work_shape_name: str, work_shape_names: list):
+        """
+        Combine multiple source work shapes into a target work shape.
 
+        Parameters:
+            target_work_shape_name (str): The name of the target work shape.
+            work_shape_names (list): A list of source work shape names to combine into the target.
+
+        Returns:
+            None
+        """
+        target_weight = self.work_blendshape.get_weight_by_name(target_work_shape_name)
+        
+        if target_weight is None:
+            raise ValueError(f"Target shape '{target_work_shape_name}' not found in {self.work_blendshape.name}.")
+        target_delta = self.work_blendshape.get_target_delta(target_weight.id)
+        for work_shape_name in work_shape_names:
+            source_weight = self.work_blendshape.get_weight_by_name(work_shape_name)
+            if source_weight is None:
+                raise ValueError(f"Source shape '{work_shape_name}' not found in {self.work_blendshape.name}.")
+            source_delta = self.work_blendshape.get_target_delta(source_weight.id)
+            target_delta += source_delta
+            self.delete_work_shape(work_shape_name)
+        self.work_blendshape.set_target_delta(target_weight.id, target_delta)
+
+        
 
     @undoable
     @timed
@@ -3876,6 +3903,32 @@ class BlueSteelEditor(object):
         except Exception as exc:
             if VERBOSE:
                 print(f"Could not update work shape sorting for '{work_shape_name}': {exc}")
+
+    def _place_work_shape_after_in_sorting(self, work_shape_name: str, after_name: str) -> None:
+        """Place a work shape immediately after another in the persisted tree.
+
+        Keeps the moved shape at the same level, and inside the same group, as
+        the shape it follows. Both names must already exist in the
+        ``workShapeSorting`` tree; when either is missing the persisted order is
+        left untouched so callers that ran before the tree was populated still
+        work.
+
+        Parameters:
+            work_shape_name (str): The work shape to reposition.
+            after_name (str): The work shape the first should follow.
+
+        Returns:
+            None
+        """
+        try:
+            store = self._work_shape_sorting_store()
+            if not store.contains(str(work_shape_name)) or not store.contains(str(after_name)):
+                return
+            if store.move([str(work_shape_name)], str(after_name), "after"):
+                store.save(self)
+        except Exception as exc:
+            if VERBOSE:
+                print(f"Could not reorder work shape '{work_shape_name}' after '{after_name}': {exc}")
 
     def _remove_work_shapes_from_sorting(self, work_shape_names) -> None:
         """Remove work shapes from the persisted sorting tree.
