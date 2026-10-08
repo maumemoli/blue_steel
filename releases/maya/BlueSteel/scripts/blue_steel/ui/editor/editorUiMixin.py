@@ -25,6 +25,7 @@ from ..common.icons import (
     DELETE_ICON,
     DOWN_ARROW_ICON,
     DUPLICATE_ICON,
+    EDIT_ICON,
     MMTOOLS_ICON,
     REFRESH_ICON,
     RENAME_ICON,
@@ -568,6 +569,24 @@ class EditorUiMixin(MainWindowMixin):
         self.apply_work_shapes_button.setToolTip("Apply changes to all linked work blendshape targets")
         work_toolbar.addWidget(self.apply_work_shapes_button)
         work_toolbar.addStretch(1)
+        self.auto_edit_work_shape_button = self._create_work_tool_button("Auto Edit", EDIT_ICON)
+        self.auto_edit_work_shape_button.setToolTip("Set automatically the selected work shape in Edit mode")
+        self.auto_edit_work_shape_button.setCheckable(True)
+        self.auto_edit_work_shape_button.setChecked(False)
+        self.auto_edit_work_shape_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #525252;
+                border: 1px solid #232323;
+                border-radius: 3px;
+            }
+            QPushButton:checked {
+                background-color: #c64141;
+                border: 1px solid #232323;
+            }
+            """
+        )
+        work_toolbar.addWidget(self.auto_edit_work_shape_button)
         work_shapes_layout.addLayout(work_toolbar)
         self.work_shapes_view = WorkShapesListView(
             self._on_work_shape_drop_received,
@@ -1091,6 +1110,8 @@ class EditorUiMixin(MainWindowMixin):
         self.work_remove_button.clicked.connect(self._on_remove_work_shapes_clicked)
         self.work_paint_button.clicked.connect(self._on_paint_work_shape_clicked)
         self.apply_work_shapes_button.clicked.connect(self._on_apply_work_shapes_clicked)
+        self.auto_edit_work_shape_button.toggled.connect(self._on_auto_edit_work_shape_toggled)
+        self.work_shapes_view.currentItemChanged.connect(self._on_work_shapes_current_item_changed)
         if self.work_shapes_view.selectionModel() is not None:
             self.work_shapes_view.itemSelectionChanged.connect(self._on_work_shapes_selection_changed)
 

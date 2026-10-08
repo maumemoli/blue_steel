@@ -79,6 +79,20 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         return selected_names[0]
 
 
+    def _active_work_shape_name(self) -> Optional[str]:
+        """Return the active (highlighted) work-shape name, or ``None``.
+
+        Returns:
+            Optional[str]: The active work-shape name, or ``None`` when no
+            work shape is active or a folder is active.
+        """
+        item = self.work_shapes_view.currentItem()
+        if item is None or bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+            return None
+        name = str(item.data(0, PRIMARY_TREE_NAME_ROLE) or item.data(0, ShapeItemsModel.NameRole) or "")
+        return name or None
+
+
     def _select_work_shape(self, shape_name: str) -> None:
         """Select a work shape in the work-shapes view.
 
@@ -105,6 +119,16 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         """
         self._update_work_shape_button_panel()
         self._update_heat_map_target_from_work_shapes_selection()
+        self._auto_edit_work_shape()
+
+
+    def _on_work_shapes_current_item_changed(self, _current, _previous) -> None:
+        """Apply Auto Edit when the active (highlighted) work shape changes.
+
+        Returns:
+            None
+        """
+        self._auto_edit_work_shape()
 
 
     def _update_work_shape_button_panel(self) -> None:
@@ -120,6 +144,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self.work_remove_button.setEnabled(has_editor and has_selection)
         self.work_paint_button.setEnabled(has_editor and has_selection)
         self.apply_work_shapes_button.setEnabled(has_editor and self._has_connected_driver_shapes())
+        self.auto_edit_work_shape_button.setEnabled(has_editor)
 
 
     def _stop_active_blendshape_trackers(self) -> None:
@@ -812,6 +837,60 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_work_shape_edit_name(shape_name)
         self._set_status(f"Edit mode enabled for '{shape_name}'.")
 
+        self._update_work_shape_button_panel()
+
+
+    def _on_auto_edit_work_shape_toggled(self, checked: bool) -> None:
+        """Handle the Auto Edit toolbar toggle.
+
+        Parameters:
+            checked (bool): The new checked state.
+
+        Returns:
+            None
+        """
+        if checked:
+            self._auto_edit_work_shape()
+
+
+    def _auto_edit_work_shape(self) -> None:
+        """Apply Auto Edit to the active (highlighted) work shape, when enabled."""
+        button = getattr(self, "auto_edit_work_shape_button", None)
+        if button is None or not button.isChecked():
+            return
+        if self.current_editor is None or self.current_editor.work_blendshape is None:
+            return
+        shape_name = self._active_work_shape_name()
+        if not shape_name:
+            shape_name = self._first_selected_work_shape_name()
+        if not shape_name:
+            return
+        self._activate_work_shape_edit_mode(shape_name)
+
+
+    def _activate_work_shape_edit_mode(self, shape_name: Optional[str]) -> None:
+        """Set the work blendshape sculpt target without toggling edit mode off.
+
+        Parameters:
+            shape_name (Optional[str]): The work-shape name to edit.
+
+        Returns:
+            None
+        """
+        if not shape_name:
+            return
+        if self.current_editor is None or self.current_editor.work_blendshape is None:
+            return
+        if self._work_shape_edit_name() == shape_name:
+            return
+        item = self._work_shape_item(shape_name)
+        if item is not None and bool(item.data(0, WorkShapeRoles.ConnectedRole)):
+            return
+        try:
+            self.current_editor.set_work_shape_editable(shape_name)
+        except Exception:
+            return
+        self._set_work_shape_edit_name(shape_name)
         self._update_work_shape_button_panel()
 
 
