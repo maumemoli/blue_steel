@@ -2126,6 +2126,34 @@ class BlueSteelEditor(object):
             # refreshing the viewport to remove the progress bar artifacts
             cmds.refresh(force=True)
 
+    @staticmethod
+    def _connect_mesh_to_blendshape(mesh_name: str, blendshape_node: str):
+        """
+        Create the necessary connections between a mesh and a blendshape node.
+
+        Parameters:
+            mesh_name (str): The name of the mesh node.
+            blendshape_node (str): The blendshape node to connect to.
+
+        Returns:
+            None
+        """
+        # create a temporary blendshape we will use to replace the original connections
+        temp_blendshape_name = f"{mesh_name.split('|')[-1]}_tempBlendshape"
+        temp_blendshape = cmds.blendShape(mesh_name, name=temp_blendshape_name)[0]
+        orig_plug =  cmds.listConnections(f"{temp_blendshape}.originalGeometry[0]", plugs=True)[0]
+        input_geometry_plug = cmds.listConnections(f"{temp_blendshape}.input[0].inputGeometry", plugs=True)[0]
+        out_mesh_plug = cmds.listConnections(f"{temp_blendshape}.outputGeometry[0]", plugs=True)[0]
+
+        # now we can replace the connections from the temporary blendshape to the original blendshape node
+        cmds.connectAttr(orig_plug, f"{blendshape_node}.originalGeometry[0]", force=True)
+        cmds.connectAttr(input_geometry_plug, f"{blendshape_node}.input[0].inputGeometry", force=True)
+        cmds.connectAttr(f"{blendshape_node}.outputGeometry[0]", out_mesh_plug, force=True)
+
+        # finally we can delete the temporary blendshape as it is no longer needed
+        cmds.delete(temp_blendshape)
+
+
     def ingest_shapes_from_blendshape_node(self, blendshape_node: str, absolute_delta: bool = False) -> int:
         """
         Ingest shapes from a blendshape node into the Blue Steel rig.
@@ -2142,13 +2170,8 @@ class BlueSteelEditor(object):
         # we need to create a commit mesh and link it to the blendshape node.
         commit_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_commitMesh")
         
-        temp_blendshape = cmds.blendShape(commit_mesh, name=f"{self.editor_base_name}_tempBlendshape")[0]
-        cmds.delete(temp_blendshape)
-        commit_mesh_shape, commit_mesh_origin = cmds.listRelatives(commit_mesh, shapes=True, fullPath=True) or []
-        cmds.connectAttr(f"{blendshape_node}.outputGeometry[0]", f"{commit_mesh_shape}.inMesh", force=True)
-        cmds.connectAttr(f"{commit_mesh_origin}.worldMesh[0]", f"{blendshape_node}.input[0].inputGeometry", force=True)
-        # CaesarSkin_commitMeshShapeOrig.outMesh to CaesarSkin_tempBlendshape.originalGeometry
-        cmds.connectAttr(f"{commit_mesh_origin}.outMesh", f"{blendshape_node}.originalGeometry[0]", force=True)
+        self._connect_mesh_to_blendshape(commit_mesh, blendshape_node)
+        
         delta_blendshape = Blendshape(blendshape_node)
         # let's get the weights from the blendshape node and build a network to see if there are invalid shapes.
         network = Network()
@@ -2192,9 +2215,7 @@ class BlueSteelEditor(object):
                 processed += 1
         finally:
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
-            cmds.disconnectAttr(f"{delta_blendshape.name}.outputGeometry[0]", f"{commit_mesh_shape}.inMesh")
-            cmds.disconnectAttr(f"{commit_mesh_origin}.worldMesh[0]", f"{blendshape_node}.input[0].inputGeometry")
-            cmds.disconnectAttr(f"{commit_mesh_origin}.outMesh", f"{blendshape_node}.originalGeometry[0]")
+            cmds.delete(delta_blendshape.name)
             cmds.delete(commit_mesh)
         return processed
             
@@ -2360,25 +2381,19 @@ class BlueSteelEditor(object):
             if self.blendshape is None or not cmds.objExists(self.blendshape.name):
                 raise ValueError("No blendshape node found in the current editor.")
             blendshape_name = self.blendshape.name
-            sequence_meta_data = {}
+
             extension = os.path.splitext(export_path)[1].lower()
             file_types = {".abc": "Alembic"}
             if extension not in file_types:
                 raise ValueError("Export path must end with '.abc'.")
             root_neutral = self.duplicate_base_mesh_neutral_state("root_neutral")
             # we need to create a bogus blendshape
-            bogus_blendshape = cmds.blendShape(root_neutral, name="bogus_blendshape")[0]
-            bogus_original_geo =  cmds.listConnections(f"{bogus_blendshape}.originalGeometry[0]", plugs=True)[0]
-            bogus_out_mesh = cmds.listConnections(f"{bogus_blendshape}.outputGeometry[0]", plugs=True)[0]
             if absolute_delta:
                 export_blendshape_name = self.create_absolute_delta_blendshape()
             else:
                 export_blendshape_name = cmds.duplicate(blendshape_name)[0]
             # we need to connect the blendshape to the root neutral mesh
-            cmds.connectAttr(bogus_original_geo, f"{export_blendshape_name}.originalGeometry[0]", force=True)
-            cmds.connectAttr(bogus_original_geo, f"{export_blendshape_name}.input[0].inputGeometry", force=True)
-            cmds.connectAttr(f"{export_blendshape_name}.outputGeometry[0]", bogus_out_mesh, force=True)
-            cmds.delete(bogus_blendshape)
+            self._connect_mesh_to_blendshape(root_neutral, export_blendshape_name)
             # now we need to get the shapes on the timeline to export the meshcache
             weights = cmds.listAttr(f"{export_blendshape_name}.weight", multi=True)
             shape_names = utilities.sort_for_insertion(weights, self.separator)
@@ -2391,6 +2406,7 @@ class BlueSteelEditor(object):
                 cmds.setKeyframe(export_blendshape_name, attribute=shape_name, t=[frame], v=1.0)
             current_unit_time = cmds.currentUnit(query=True, time=True)
             # we need to set an attribute with the total number of shapes for reference
+            sequence_meta_data = {}
             sequence_meta_data["totalShapes"] = len(shape_names)
             sequence_meta_data["shapesList"] = shape_names
             sequence_meta_data["controlSorting"] = self.read_face_ctrl_sorting_attribute()
@@ -2402,8 +2418,6 @@ class BlueSteelEditor(object):
                 cmds.addAttr(root_neutral, longName=metadata_attr, dataType="string")
             cmds.setAttr(f"{root_neutral}.{metadata_attr}", sequence_meta_data_json, type="string")
             # creating the job string
-            # "-frameRange 0 85 -attr shapesSequenceMetaData -dataFormat ogawa -root CaesarSkin_absoluteDelta
-            # -root |root_neutral -file D:/work/Caesar/cache/alembic/exported2.abc";
             job_string = "-frameRange {0} -attr {1} -dataFormat ogawa -root {2} -file {3}"
             frame_range = f"0 {len(shape_names)}"
             job_string = job_string.format(frame_range, metadata_attr, root_neutral, export_path)
@@ -2426,7 +2440,6 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
-        start_time = cmds.currentTime(query=True)
         # making sure the alembic plugin is loaded
         if not cmds.pluginInfo("AbcImport", query=True, loaded=True):
             cmds.loadPlugin("AbcImport")
