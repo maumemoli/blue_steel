@@ -1360,7 +1360,7 @@ class BlueSteelEditor(object):
         delta =  delta - extracted_delta
         
         axis_sign = 'Positive' if axis.endswith('+') else 'Negative' if axis.endswith('-') else ''
-        extracted_shape_name = f"{shape_name}_{axis[0]}{axis_sign}_extracted"
+        extracted_shape_name = f"{shape_name}_extracted_{axis[0].capitalize()}{axis_sign}"
         extracted_work_shape = self.add_work_shape(extracted_shape_name)
         extracted_weight = self.work_blendshape.get_weight_by_name(extracted_work_shape)
 
