@@ -586,6 +586,7 @@ class EditorUiMixin(MainWindowMixin):
             propagate_to_active_shapes_callback=self._on_work_shape_propagate_to_active_shapes_requested,
             apply_weights_callback=self._on_work_shape_apply_weights_requested,
             extract_axis_motion_callback=self._on_work_shape_extract_axis_motion_requested,
+            combine_callback=self._on_work_shapes_combine_requested,
         )
         self._allow_horizontal_collapse(self.work_shapes_view)
         self.work_shapes_view.setSelectionMode(QAbstractItemView.ExtendedSelection)

@@ -796,6 +796,23 @@ class WorkShapeItemDelegate(SliderItemDelegate):
         finally:
             option.rect = item_rect
 
+        # Distinct outline for the active/current work shape so the Combine
+        # target is visually identifiable among the other selected items.
+        parent_view = self.parent()
+        if (
+            parent_view is not None
+            and parent_view.currentItem() is not None
+            and parent_view.currentItem() is parent_view.itemFromIndex(index)
+        ):
+            cue_rect = QRect(parent_rect.adjusted(1, 1, -1, -1))
+            cue_color = QColor(255, 255, 255)
+            cue_color.setAlpha(178)
+            painter.save()
+            painter.setPen(cue_color)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(cue_rect)
+            painter.restore()
+
         drivers = index.data(WorkShapeRoles.DriverNamesRole) or ()
         if not drivers:
             return

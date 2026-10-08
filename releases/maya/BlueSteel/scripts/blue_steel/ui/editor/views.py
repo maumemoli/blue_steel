@@ -778,6 +778,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         propagate_to_active_shapes_callback: Optional[Callable[[str], None]] = None,
         apply_weights_callback: Optional[Callable[[Sequence[str]], None]] = None,
         extract_axis_motion_callback: Optional[Callable[[str, str], None]] = None,
+        combine_callback: Optional[Callable[[str, Sequence[str]], None]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -831,6 +832,7 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         self._can_extract_mesh_callback = can_extract_mesh_callback
         self._propagate_to_active_shapes_callback = propagate_to_active_shapes_callback
         self._extract_axis_motion_callback = extract_axis_motion_callback
+        self._combine_work_shapes_callback = combine_callback
         self.setToolTip(
             "<b>Work shapes:</b><br>"
             "<b>Double-click</b> a work shape to rename it.<br>"
@@ -926,9 +928,62 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         self.viewport().update()
 
     def keyPressEvent(self, event):  # noqa: N802
+        if self._handle_combine_shortcut(event):
+            return
         if self._handle_group_shortcut(event):
             return
         super().keyPressEvent(event)
+
+    def _combine_selection(self) -> tuple:
+        """Return ``(target_name, source_names)`` for the Combine action.
+
+        The active/current item is the combine target; every other selected
+        work-shape leaf becomes a source.
+
+        Returns:
+            tuple: ``(target_name, source_names)`` where ``target_name`` is
+                ``""`` and ``source_names`` is empty when combining is invalid.
+        """
+        current_item = self.currentItem()
+        target_name = ""
+        if current_item is not None and not bool(current_item.data(0, ShapeItemsModel.IsHeaderRole)):
+            target_name = str(current_item.data(0, ShapeItemsModel.NameRole) or "")
+
+        selected_names = [
+            str(item.data(0, ShapeItemsModel.NameRole) or "")
+            for item in self.selectedItems()
+            if not bool(item.data(0, ShapeItemsModel.IsHeaderRole))
+        ]
+        source_names = [
+            name for name in selected_names
+            if name and name != target_name
+        ]
+        return target_name, source_names
+
+    def _can_combine_selection(self) -> bool:
+        """Return True when Combine has a valid target and at least one source."""
+        if self._combine_work_shapes_callback is None:
+            return False
+        target_name, source_names = self._combine_selection()
+        return bool(target_name) and bool(source_names)
+
+    def _emit_combine_requested(self) -> bool:
+        """Emit the combine request when the current selection is valid."""
+        if self._combine_work_shapes_callback is None:
+            return False
+        target_name, source_names = self._combine_selection()
+        if not target_name or not source_names:
+            return False
+        self._combine_work_shapes_callback(target_name, source_names)
+        return True
+
+    def _handle_combine_shortcut(self, event) -> bool:
+        """Handle Ctrl+J and emit the combine request when pressed."""
+        if event.key() == Qt.Key_J and (event.modifiers() & Qt.ControlModifier):
+            if self._emit_combine_requested():
+                event.accept()
+                return True
+        return False
 
 
     def _work_shape_hit(self, pos):
@@ -1188,6 +1243,11 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
         propagate_to_active_shapes_action.setToolTip("Propagate the selected shape down to all active shapes")
         propagate_to_active_shapes_action.setEnabled(self._propagate_to_active_shapes_callback is not None)
 
+        combine_action = menu.addAction("Combine Work Shapes")
+        combine_action.setShortcut("Ctrl+J")
+        combine_action.setToolTip("Combine the selected work shapes into the active work shape (Ctrl+J)")
+        combine_action.setEnabled(self._can_combine_selection())
+
         extract_motion_axis_menu = menu.addMenu("Extract Motion Axis")
         axis_actions: Dict[object, str] = {}
         for label, axis in (("X", "x"), ("Y", "y"), ("Z", "z")):
@@ -1248,6 +1308,8 @@ class WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, Slide
             selected_action = menu.exec_(self.viewport().mapToGlobal(pos))
         if selected_action == group_action:
             self.groupRequested.emit()
+        elif selected_action == combine_action:
+            self._emit_combine_requested()
         elif selected_action == duplicate_action:
             self.duplicate_callback(receiver_name)
         elif selected_action == extract_work_shape_mesh_action:

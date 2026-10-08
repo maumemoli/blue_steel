@@ -1332,6 +1332,7 @@ class BlueSteelEditor(object):
             str: The name of the newly created extracted work shape.
         """
         weight = self.work_blendshape.get_weight_by_name(shape_name)
+        driver_shapes = self.get_work_shape_driver_shapes(shape_name)
         if weight is None:
             raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
         delta = self.work_blendshape.get_target_delta(weight.id)
@@ -1367,9 +1368,13 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_target_delta(extracted_weight.id, extracted_delta)
 
         self._place_work_shape_after_in_sorting(str(extracted_work_shape), shape_name)
-
+        if driver_shapes:
+            for driver_shape in driver_shapes:
+                self.connect_work_blendshape_weight_to_blendshape_weight(extracted_work_shape, driver_shape)
         return extracted_work_shape
 
+    @undoable
+    @timed
     def combine_work_shapes(self, target_work_shape_name: str, work_shape_names: list):
         """
         Combine multiple source work shapes into a target work shape.

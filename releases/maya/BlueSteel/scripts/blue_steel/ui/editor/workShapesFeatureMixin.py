@@ -645,6 +645,54 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Removed {removed_count} work shape(s).")
 
 
+    def _on_work_shapes_combine_requested(self, target_work_shape_name: str, work_shape_names) -> None:
+        """Combine the selected work shapes into the active work shape.
+
+        The active/current work shape is the target; every other selected work
+        shape is merged into it and then deleted.
+
+        Parameters:
+            target_work_shape_name (str): The work shape receiving the combined
+                deltas.
+            work_shape_names (Sequence[str]): The source work shapes to combine
+                into the target.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        source_names = [str(name) for name in (work_shape_names or []) if name]
+        if not target_work_shape_name or not source_names:
+            return
+
+        active_edit_shape = self._work_shape_edit_name()
+        if active_edit_shape in source_names:
+            try:
+                cmds.sculptTarget(self.current_editor.work_blendshape.name, e=True, t=-1)
+            except Exception:
+                pass
+            self._set_work_shape_edit_name(None)
+
+        try:
+            self._stop_active_blendshape_trackers()
+            self.current_editor.combine_work_shapes(target_work_shape_name, source_names)
+        except Exception as exc:
+            self._set_status(
+                f"Error combining work shapes into '{target_work_shape_name}': {exc}",
+                error=True,
+            )
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+        self._reload_work_shapes_from_editor()
+        self._select_work_shape(target_work_shape_name)
+        self._set_status(
+            f"Combined {len(source_names)} work shape(s) into '{target_work_shape_name}'."
+        )
+
+
     def _on_paint_work_shape_clicked(self) -> None:
         """Enter paint mode for the selected work shape.
 
