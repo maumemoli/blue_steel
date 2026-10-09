@@ -350,7 +350,8 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
 
 - `PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget)` — the Primaries tree.
   - Signals: `pageNavigationPoseRequested(str)`, `primaryMoveRequested(object, str, str)`, `groupRequested()`.
-  - `_resolve_icon_click(event_pos)`, `_selected_draggable_shape_names()`, `_selected_order_names()`, `_next_selectable_item(...)`, `_move_to_next_selectable_item(...)`, `startDrag(...)`, `_item_name(item)`, `keyPressEvent(...)`.
+  - `_resolve_icon_click(event_pos)`, `_selected_draggable_shape_names()`, `_selected_order_names()`, `_next_selectable_item(...)`, `_move_to_next_selectable_item(...)`, `_set_all_groups_expanded(expanded)`, `startDrag(...)`, `_item_name(item)`, `keyPressEvent(...)`.
+  - `mousePressEvent` / `mouseReleaseEvent` handle **Alt+left-click** on any group row: the clicked group's current expansion picks the target state and `_set_all_groups_expanded` applies it to every group; the press/release pair is consumed so Qt does not also emit `itemClicked` (which the window turns into a single-group toggle). A plain left-click is unchanged.
   - Internal drag & drop reorders/reparents primaries and groups (groups are draggable and drop targets) and emits `primaryMoveRequested(names, target, position)`; `Ctrl+G` emits `groupRequested()`. The drop zone is resolved from the cursor position within the row: a group's middle band nests, its top/bottom edges reorder as siblings, and empty viewport space targets the root (`position == "root"`). A self-drawn indicator (line for reorder, filled rect for nesting) is painted in `paintEvent`. The owning window persists the change and rebuilds. External drops are ignored (`_enable_internal_reorder` toggles this off in `PrimaryDropTreeWidget`).
 
 - `PrimaryTreeItem(QTreeWidgetItem)` — primaries tree item with custom ordering.

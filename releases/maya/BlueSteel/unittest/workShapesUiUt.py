@@ -282,6 +282,22 @@ def add_work_shape_folder(view, name, parent=None):
     return folder
 
 
+def add_primary_leaf(view, name, parent=None):
+    """Add a primary leaf item the way the production tree builder does."""
+    leaf = QtWidgets.QTreeWidgetItem([name])
+    leaf.setData(0, PRIMARY_TREE_NAME_ROLE, name)
+    leaf.setData(0, Shape.NameRole, name)
+    leaf.setData(0, Shape.TypeRole, "PrimaryShape")
+    leaf.setData(0, Shape.IsHeaderRole, False)
+    leaf.setData(0, Shape.EditableRole, True)
+    leaf.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+    if parent is None:
+        view.addTopLevelItem(leaf)
+    else:
+        parent.addChild(leaf)
+    return leaf
+
+
 class FakeTreeItem:
     """Minimal QTreeWidgetItem stand-in for role-keyed double-click tests."""
 
@@ -701,6 +717,85 @@ class WorkShapesUiTests(unittest.TestCase):
         QtTest.QTest.keyClick(self.view, Qt.Key_G, Qt.ControlModifier)
         APP.processEvents()
         self.assertTrue(groups)
+
+    # ------------------------------------------------------------------
+    # Primaries tree: Alt+left-click toggles every group at once
+    # ------------------------------------------------------------------
+    def build_primary_tree(self):
+        """Build a shown Primaries tree with nested groups and a leaf."""
+        view = UI["views"].PrimaryTreeWidget()
+        view.resize(320, 320)
+        view.show()
+        APP.processEvents()
+        group_a = add_work_shape_folder(view, "GroupA")
+        group_b = add_work_shape_folder(view, "GroupB")
+        nested = add_work_shape_folder(view, "Nested", parent=group_a)
+        leaf = add_primary_leaf(view, "jawOpen", parent=group_a)
+        for group in (group_a, group_b, nested):
+            group.setExpanded(True)
+        APP.processEvents()
+        self.addCleanup(self.close_view, view)
+        return view, (group_a, group_b, nested), leaf
+
+    @staticmethod
+    def close_view(view):
+        view.close()
+        view.deleteLater()
+        APP.processEvents()
+
+    def test_alt_left_click_group_collapses_every_group(self):
+        view, groups, _ = self.build_primary_tree()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(not group.isExpanded() for group in groups))
+
+    def test_alt_left_click_group_expands_every_group(self):
+        view, groups, _ = self.build_primary_tree()
+        for group in groups:
+            group.setExpanded(False)
+        APP.processEvents()
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
+    def test_alt_left_click_group_does_not_emit_item_clicked(self):
+        view, groups, _ = self.build_primary_tree()
+        clicks = []
+        view.itemClicked.connect(lambda item, column: clicks.append(item))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(clicks, [])
+
+    def test_alt_left_click_leaf_leaves_group_expansion_unchanged(self):
+        view, groups, leaf = self.build_primary_tree()
+        self.assertFalse(bool(leaf.data(0, PRIMARY_TREE_FOLDER_ROLE)))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(leaf).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
+    def test_plain_left_click_group_still_emits_item_clicked(self):
+        view, groups, _ = self.build_primary_tree()
+        clicks = []
+        view.itemClicked.connect(lambda item, column: clicks.append(item))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.NoModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(clicks, [groups[0]])
 
     def test_work_shape_tree_enables_internal_reorder(self):
         self.assertTrue(self.view._enable_internal_reorder)

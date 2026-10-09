@@ -1529,6 +1529,7 @@ class PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWi
     _uses_native_branch_indicator = False
     _enable_slider_value_edit = True
     _enable_internal_reorder = True
+    _alt_group_toggle_active = False
 
     def __init__(self, parent=None) -> None:
         """Create the primaries tree with slider-only value editing enabled.
@@ -1605,6 +1606,46 @@ class PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWi
         target_item.setSelected(True)
         self.scrollToItem(target_item, QAbstractItemView.EnsureVisible)
         return True
+
+    def _set_all_groups_expanded(self, expanded: bool) -> None:
+        """Apply one expansion state to every primary group in the tree.
+
+        Parameters:
+            expanded (bool): ``True`` to expand every group row, ``False`` to
+                collapse every group row.
+
+        Returns:
+            None
+        """
+        stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+                item.setExpanded(bool(expanded))
+            for i in range(item.childCount()):
+                stack.append(item.child(i))
+
+    def mousePressEvent(self, event):  # noqa: N802
+        # Alt+left-click a group to expand or collapse every group at once.
+        # Consuming the press (and its matching release) keeps Qt from emitting
+        # ``itemClicked``, so the single group is not toggled a second time.
+        if event.button() == Qt.LeftButton and bool(event.modifiers() & Qt.AltModifier):
+            item = self.itemAt(event.pos())
+            if item is not None and bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+                self._set_all_groups_expanded(not item.isExpanded())
+                self._alt_group_toggle_active = True
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._alt_group_toggle_active:
+            self._alt_group_toggle_active = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
         if self._handle_group_shortcut(event):

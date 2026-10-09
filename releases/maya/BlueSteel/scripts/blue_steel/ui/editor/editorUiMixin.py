@@ -649,7 +649,8 @@ class EditorUiMixin(MainWindowMixin):
         self.primaries_view.setToolTip(
             "Drag the value area to adjust; click names to select; drag names or groups onto "
             "the middle of a group to nest, its top/bottom edge to reorder, or empty space to "
-            "move to the top level; Ctrl+G groups the selected primaries"
+            "move to the top level; Ctrl+G groups the selected primaries; "
+            "Alt+left-click a group to expand or collapse all groups"
         )
         self.primaries_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._primaries_delegate = SliderItemDelegate(self.primaries_view)
