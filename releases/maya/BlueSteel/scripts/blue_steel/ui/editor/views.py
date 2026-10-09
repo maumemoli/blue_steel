@@ -858,6 +858,40 @@ class SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView):
 
 
 
+class ActiveShapesListView(SliderListView):
+    """Read-only Active Shapes list with group (level) collapse shortcuts.
+
+    The panel is a flat list whose "groups" are Level header rows managed by
+    ``ShapesFilterProxyModel``. Alt+left-clicking a group header asks the owning
+    window to collapse or expand every level at once.
+    """
+
+    allGroupsToggleRequested = Signal(bool)
+    _alt_group_toggle_active = False
+
+    def mousePressEvent(self, event):  # noqa: N802
+        # Alt+left-click a group header to collapse or expand every level. The
+        # target state mirrors the clicked header (collapsed -> expand all).
+        # Consuming the press and its release stops Qt emitting ``clicked``,
+        # which would otherwise single-toggle the clicked level as well.
+        if event.button() == Qt.LeftButton and bool(event.modifiers() & Qt.AltModifier):
+            index = self.indexAt(event.pos())
+            if index.isValid() and bool(index.data(ShapeItemsModel.IsHeaderRole)):
+                collapsed = bool(index.data(ShapeItemsModel.HeaderCollapsedRole))
+                self.allGroupsToggleRequested.emit(collapsed)
+                self._alt_group_toggle_active = True
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._alt_group_toggle_active:
+            self._alt_group_toggle_active = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget):
     """Work shapes tree with parent controls and collapsible, pose-activating drivers.
 
@@ -2079,12 +2113,33 @@ class SplitPrimaryAssignmentsView(SliderDragViewMixin, QTreeWidget):
         self.assignmentChanged.emit(group_name, primary_names)
         event.acceptProposedAction()
 
+    def _set_all_groups_expanded(self, expanded: bool) -> None:
+        """Apply one expansion state to every split-assignment group.
+
+        Groups are the top-level items; their children are primaries.
+
+        Parameters:
+            expanded (bool): ``True`` to expand every group, ``False`` to
+                collapse every group.
+
+        Returns:
+            None
+        """
+        for row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(row)
+            if item is not None:
+                item.setExpanded(bool(expanded))
+
     def mousePressEvent(self, event):  # noqa: N802
         self._pressed_primary_names = []
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.pos())
             if item is not None and item.parent() is None:
-                item.setExpanded(not item.isExpanded())
+                # Alt+left-click a group to expand or collapse every group.
+                if bool(event.modifiers() & Qt.AltModifier):
+                    self._set_all_groups_expanded(not item.isExpanded())
+                else:
+                    item.setExpanded(not item.isExpanded())
                 event.accept()
                 return
             if item is not None and item.parent() is not None and item.isSelected():

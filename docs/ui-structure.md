@@ -225,6 +225,7 @@ Qt models. Roles used throughout are `Qt.UserRole + N` constants (see
   - `set_color_filter(color_hexes, include_no_color=False)` — color filter.
   - `color_filter_active()` — whether a color filter is set.
   - `toggle_level_collapsed(level)` — collapse/expand a type level.
+  - `set_all_levels_collapsed(collapsed)` — collapse/expand every level group at once (the pinned "With Value" header is skipped and stays expanded).
   - `_shape_row_matches_filters(model, index)` — filter predicate.
   - `_count_visible_shapes_for_level(model, level)` — count helper.
   - `filterAcceptsRow(source_row, source_parent)` — filter predicate.
@@ -326,10 +327,14 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
   - `_internal_drop_target(pos)` / `_emit_move_requested(names, target, position)` / `_emit_group_requested()`
   - `dragEnterEvent` / `dragMoveEvent` / `dragLeaveEvent` / `dropEvent` / `paintEvent` / `_handle_group_shortcut(event)`
 
-- `SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView)` — generic slider-style list view; used directly by Active Shapes.
+- `SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView)` — generic slider-style list view.
   - `__init__(parent=None)`
   - `_selected_draggable_shape_names()`
   - `startDrag(supportedActions)` — begin a name drag.
+
+- `ActiveShapesListView(SliderListView)` — the read-only Active Shapes list.
+  - Signal: `allGroupsToggleRequested(bool)` — emitted with the target *expanded* state when Alt+left-clicking a group header.
+  - `mousePressEvent` / `mouseReleaseEvent` handle **Alt+left-click** on any group (Level) header: the emitted state mirrors the clicked header (collapsed header -> expand all), and the press/release pair is consumed so Qt does not also emit `clicked` (which the window turns into a single-level toggle). Plain clicks are unchanged.
 
 - `WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget)` — item-based Work Shapes tree.
   - Signals: `driverPoseRequested(str)`, `driverRemovalRequested(str, str)`, `workShapeMoveRequested(object, str, str)`, `groupRequested()`, `renameGroupRequested(object)`, `ungroupRequested()`.
@@ -368,8 +373,10 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
   - `sync_source_data(top_left, bottom_right, roles)`
   - `set_search_terms(terms)` / `set_search_text(text)`
   - `startDrag(supported_actions)`
+  - `_set_all_groups_expanded(expanded)` — applies one expansion state to every top-level group row.
   - `_drop_group_name(pos)`
   - `dragEnterEvent` / `dragMoveEvent` / `dropEvent` / `mousePressEvent`
+  - Alt+left-clicking a group row expands/collapses every group; a plain click still toggles only the clicked group.
   - Double-clicking a child primary's name sets that shape to its pose (handled by `_on_split_primaries_item_double_clicked`); double-clicking the slider bar opens the numeric value editor.
 
 ---
@@ -805,6 +812,7 @@ behave the same way, and **Ctrl+G** groups the selected work shapes.
 ```
 SliderDragViewMixin  (views.py)
 ├── SliderListView(SliderIconClickMixin, SliderDragViewMixin, QListView)
+│   └── ActiveShapesListView(SliderListView)
 ├── ShapeTreeWidget(SliderDragViewMixin, QTreeWidget)
 ├── ReorderableTreeWidgetMixin  (views.py)
 │   └── PrimaryTreeWidget(ReorderableTreeWidgetMixin, SliderDragViewMixin, QTreeWidget)
@@ -861,7 +869,7 @@ MainWindow (central widget)
             │               │   └── work_shapes_view (WorkShapesListView)
             │               └── "Active Shapes"
             │                   ├── active_shapes_search (TokenSearchBar)
-            │                   └── active_shapes_view (SliderListView)
+            │                   └── active_shapes_view (ActiveShapesListView)
             └── Split Settings tab
                 └── split settings splitter (horizontal)
                     ├── "Primary Split Group Assignments"
@@ -889,7 +897,7 @@ MainWindow (central widget)
 | `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
 | `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
 | `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `QTreeWidget` internal model built from `TreeViewOrderingManager` (reconciled with the work-blendshape weights) | Editor tab → Work Shapes (third column) |
-| `SliderListView` (`active_shapes_view`) | `SliderItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
+| `ActiveShapesListView` (`active_shapes_view`) | `ActiveShapesItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
 | `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |
 | `SplitGroupsTree` (`split_groups_tree`) | default `QTreeWidget` delegate | `QTreeWidget` items | Split Settings tab → Split Groups |
 | `SplitMapsTree` (`split_maps_list`) | `SplitMapStatusDelegate` | `QTreeWidget` items | Split Settings tab → Split Maps browser |

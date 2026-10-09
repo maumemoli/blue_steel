@@ -596,6 +596,40 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
             self._collapsed_levels.add(level)
         self.invalidateFilter()
 
+    def set_all_levels_collapsed(self, collapsed: bool) -> None:
+        """Collapse or expand every level group at once.
+
+        The pinned "With Value" header is never collapsible, so it does not
+        contribute a level and stays expanded.
+
+        Parameters:
+            collapsed (bool): ``True`` to collapse every level group, ``False``
+                to expand every level group.
+
+        Returns:
+            None
+        """
+        if not collapsed:
+            self._collapsed_levels.clear()
+        else:
+            levels: Set[int] = set()
+            model = self.sourceModel()
+            if model is not None:
+                with_value_header = (
+                    self._with_value_header_source_index(model)
+                    if self._is_value_sort_mode()
+                    else QModelIndex()
+                )
+                for row in range(model.rowCount()):
+                    idx = model.index(row, 0)
+                    if not bool(model.data(idx, ShapeItemsModel.IsHeaderRole)):
+                        continue
+                    if idx == with_value_header:
+                        continue
+                    levels.add(int(model.data(idx, ShapeItemsModel.LevelRole) or 0))
+            self._collapsed_levels = levels
+        self.invalidateFilter()
+
     def _shape_row_matches_filters(self, model, index: QModelIndex) -> bool:
         """Return True when a non-header row matches search/primary filters."""
         if not index.isValid():

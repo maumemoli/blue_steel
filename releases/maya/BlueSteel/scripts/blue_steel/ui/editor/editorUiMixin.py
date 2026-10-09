@@ -83,6 +83,7 @@ from .qt import (
     get_maya_main_window,
 )
 from .views import (
+    ActiveShapesListView,
     PrimaryDropTreeWidget,
     PrimaryTreeWidget,
     ShapeTreeWidget,
@@ -938,7 +939,7 @@ class EditorUiMixin(MainWindowMixin):
         self._compact_layout(active_shapes_layout, margin=self.COMPACT_MARGIN)
         self.active_shapes_search = TokenSearchBar("Filter active shapes...")
         active_shapes_layout.addWidget(self.active_shapes_search)
-        self.active_shapes_view = SliderListView()
+        self.active_shapes_view = ActiveShapesListView()
         # Active Shapes is a display/monitor panel: sliders are read-only so
         # values cannot be scrubbed or edited here. Name drag-and-drop and the
         # mute/lock icons still work.
@@ -951,6 +952,10 @@ class EditorUiMixin(MainWindowMixin):
         self.active_shapes_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._active_shapes_delegate = ActiveShapesItemDelegate(self.active_shapes_view)
         self.active_shapes_view.setItemDelegate(self._active_shapes_delegate)
+        self.active_shapes_view.setToolTip(
+            "Click a group to collapse or expand it; "
+            "Alt+left-click a group to collapse or expand all groups"
+        )
         active_shapes_layout.addWidget(self.active_shapes_view, 1)
         active_shapes_footer_layout = QVBoxLayout()
         active_shapes_footer_layout.setContentsMargins(0, 0, 0, 0)
@@ -1390,6 +1395,9 @@ class EditorUiMixin(MainWindowMixin):
             self.shapes_view.model().dataChanged.connect(self._on_shapes_tree_data_changed)
         self.active_shapes_view.customContextMenuRequested.connect(self._show_shapes_context_menu)
         self.active_shapes_view.clicked.connect(self._on_active_shapes_item_clicked)
+        self.active_shapes_view.allGroupsToggleRequested.connect(
+            self._on_active_shapes_all_groups_toggle_requested
+        )
         self.active_shapes_view.doubleClicked.connect(self._on_active_shapes_double_clicked)
         self.work_shapes_view.itemDoubleClicked.connect(self._on_work_shapes_double_clicked)
         self.work_shapes_view.itemExpanded.connect(self._update_work_shape_folder_icon)

@@ -890,6 +890,158 @@ class WorkShapesUiTests(unittest.TestCase):
         APP.processEvents()
         self.assertEqual(clicks, [groups[0]])
 
+    # ------------------------------------------------------------------
+    # Active Shapes list: Alt+left-click toggles every level group
+    # ------------------------------------------------------------------
+    def active_shapes_model(self, with_value_header=False):
+        model = QtGui.QStandardItemModel()
+
+        def add_row(name, is_header, level, value=0.0, collapsed=False):
+            item = QtGui.QStandardItem(name)
+            item.setData(bool(is_header), Shape.IsHeaderRole)
+            item.setData(level, Shape.LevelRole)
+            item.setData(value, Shape.ValueRole)
+            if is_header:
+                item.setData(collapsed, Shape.HeaderCollapsedRole)
+            model.appendRow(item)
+            return item
+
+        if with_value_header:
+            add_row("With Value (1)", True, -1)
+        header = add_row("Level 0 (1)", True, 0)
+        add_row("shape0", False, 0, value=1.0)
+        add_row("Level 1 (0)", True, 1)
+        add_row("shape1", False, 1, value=0.0)
+        return model, header
+
+    def active_shapes_list(self):
+        view = UI["views"].ActiveShapesListView()
+        view.resize(320, 240)
+        view.show()
+        APP.processEvents()
+        self.addCleanup(self.close_view, view)
+        return view
+
+    def test_active_shapes_proxy_set_all_levels_collapsed(self):
+        model, _ = self.active_shapes_model()
+        proxy = UI["models"].ShapesFilterProxyModel()
+        proxy.setSourceModel(model)
+        proxy.set_all_levels_collapsed(True)
+        self.assertEqual(proxy._collapsed_levels, {0, 1})
+        proxy.set_all_levels_collapsed(False)
+        self.assertEqual(proxy._collapsed_levels, set())
+
+    def test_active_shapes_proxy_skips_with_value_header(self):
+        model, _ = self.active_shapes_model(with_value_header=True)
+        proxy = UI["models"].ShapesFilterProxyModel()
+        proxy.setSourceModel(model)
+        proxy.setSortRole(Shape.ValueRole)
+        self.assertTrue(proxy._is_value_sort_mode())
+        proxy.set_all_levels_collapsed(True)
+        self.assertEqual(proxy._collapsed_levels, {0, 1})
+
+    def test_active_shapes_list_alt_click_header_requests_all_groups_toggle(self):
+        view = self.active_shapes_list()
+        model, header = self.active_shapes_model()
+        view.setModel(model)
+        APP.processEvents()
+        requests = []
+        view.allGroupsToggleRequested.connect(requests.append)
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualRect(model.index(0, 0)).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(requests, [False])
+
+        header.setData(True, Shape.HeaderCollapsedRole)
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualRect(model.index(0, 0)).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(requests, [False, True])
+
+    def test_active_shapes_list_alt_click_leaf_and_plain_click_emit_nothing(self):
+        view = self.active_shapes_list()
+        model, _ = self.active_shapes_model()
+        view.setModel(model)
+        APP.processEvents()
+        requests = []
+        clicks = []
+        view.allGroupsToggleRequested.connect(requests.append)
+        view.clicked.connect(lambda index: clicks.append(index))
+        leaf_index = model.index(1, 0)
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualRect(leaf_index).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(requests, [])
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.NoModifier,
+            view.visualRect(model.index(0, 0)).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(requests, [])
+        self.assertTrue(clicks)
+        self.assertEqual(clicks[-1], model.index(0, 0))
+
+    # ------------------------------------------------------------------
+    # Split assignment tree: Alt+left-click toggles every group
+    # ------------------------------------------------------------------
+    def build_split_assignments(self):
+        view = UI["views"].SplitPrimaryAssignmentsView()
+        view.resize(300, 300)
+        view.show()
+        APP.processEvents()
+        group_a = QtWidgets.QTreeWidgetItem(["NoSplit"])
+        group_b = QtWidgets.QTreeWidgetItem(["GroupA"])
+        view.addTopLevelItem(group_a)
+        view.addTopLevelItem(group_b)
+        group_a.addChild(QtWidgets.QTreeWidgetItem(["jawOpen"]))
+        group_b.addChild(QtWidgets.QTreeWidgetItem(["smile"]))
+        for group in (group_a, group_b):
+            group.setExpanded(True)
+        APP.processEvents()
+        self.addCleanup(self.close_view, view)
+        return view, (group_a, group_b)
+
+    def test_split_assignments_alt_click_group_toggles_all_groups(self):
+        view, groups = self.build_split_assignments()
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(not group.isExpanded() for group in groups))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
+    def test_split_assignments_plain_click_group_toggles_only_clicked(self):
+        view, groups = self.build_split_assignments()
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.NoModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertFalse(groups[0].isExpanded())
+        self.assertTrue(groups[1].isExpanded())
+
+    def test_split_assignments_alt_click_leaf_leaves_groups_unchanged(self):
+        view, groups = self.build_split_assignments()
+        leaf = groups[0].child(0)
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(leaf).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
     def test_work_shape_tree_enables_internal_reorder(self):
         self.assertTrue(self.view._enable_internal_reorder)
         self.assertEqual(self.view.ORDER_MIME_TYPE, UI["constants"].WORK_SHAPE_ORDER_MIME_TYPE)

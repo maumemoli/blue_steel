@@ -109,6 +109,10 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self.split_primaries_tree.setStyleSheet("QTreeView::item { padding-top: 1px; padding-bottom: 1px; }")
         self._split_primary_slider_delegate = SliderItemDelegate(self.split_primaries_tree)
         self.split_primaries_tree.setItemDelegateForColumn(0, self._split_primary_slider_delegate)
+        self.split_primaries_tree.setToolTip(
+            "Click a group to expand or collapse it; "
+            "Alt+left-click a group to expand or collapse all groups"
+        )
         primaries_layout.addWidget(self.split_primaries_tree, 1)
         split_settings_splitter.addWidget(primaries_group)
 

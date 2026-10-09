@@ -589,6 +589,20 @@ class ShapesFeatureMixin(MainWindowMixin):
         self._update_delegate_name_columns()
         self._update_info_labels()
 
+    def _on_active_shapes_all_groups_toggle_requested(self, expanded: bool) -> None:
+        """Collapse or expand every Active Shapes level group at once.
+
+        Parameters:
+            expanded (bool): ``True`` to expand every level group, ``False`` to
+                collapse every level group.
+
+        Returns:
+            None
+        """
+        self._active_shapes_proxy.set_all_levels_collapsed(not expanded)
+        self._update_delegate_name_columns()
+        self._update_info_labels()
+
 
     def _on_active_shapes_selection_changed(self, *_args) -> None:
         self._update_info_labels()
