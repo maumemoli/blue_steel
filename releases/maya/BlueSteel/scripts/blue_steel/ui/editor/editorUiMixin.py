@@ -68,6 +68,7 @@ from .qt import (
     QPoint,
     QPolygon,
     QPushButton,
+    QRect,
     QSize,
     QSizePolicy,
     QSplitter,
@@ -79,6 +80,7 @@ from .qt import (
     QVBoxLayout,
     QWidget,
     Qt,
+    get_maya_main_window,
 )
 from .views import (
     PrimaryDropTreeWidget,
@@ -138,7 +140,227 @@ class EditorUiMixin(MainWindowMixin):
         return button
 
 
+    def _is_workspace_floating(self) -> Optional[bool]:
+        """Return whether the Blue Steel workspace control is floating.
+
+        Returns:
+            Optional[bool]: ``True`` when the control is floating, ``False``
+            when it is docked, or ``None`` when the control does not exist.
+
+        Example:
+            >>> win._is_workspace_floating()
+            True
+        """
+        if not cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, query=True, exists=True):
+            return None
+        return bool(
+            cmds.workspaceControl(
+                self.WORKSPACE_CONTROL_NAME,
+                query=True,
+                floating=True,
+            )
+        )
+
+
+    def _workspace_widget_chain(self) -> List[QWidget]:
+        """Return the editor's ancestors up to, but never including, MayaWindow.
+
+        Keep the wrappers alive for the whole operation. Maya places workspace
+        controls inside a stack, a tab widget and one or more splitters; the
+        workspace control itself is not the geometry-owning pane.
+        """
+        chain = []
+        widget = self
+        maya_window = get_maya_main_window()
+        while widget is not None and widget != maya_window:
+            chain.append(widget)
+            if widget.isWindow():
+                break
+            widget = widget.parentWidget()
+        return chain
+
+
+    def _floating_shell_window(self) -> Optional[QWidget]:
+        """Return the floating shell, never the main Maya window."""
+        if self._is_workspace_floating() is False:
+            return None
+        chain = self._workspace_widget_chain()
+        return chain[-1] if chain and chain[-1].isWindow() else None
+
+
+    def _dock_splitter_pane(self):
+        """Find the direct child of the nearest horizontal docking splitter."""
+        chain = self._workspace_widget_chain()
+        for child, parent in zip(chain, chain[1:]):
+            if (isinstance(parent, QSplitter)
+                    and parent.orientation() == Qt.Horizontal
+                    and parent.count() > 1):
+                return parent, child
+        return None
+
+
+    def _activate_workspace_layouts(self) -> None:
+        """Propagate new size hints before resizing the shell or dock splitter.
+
+        Without this bottom-up relayout the shell retains the expanded minimum
+        size and clamps (or reverses) the collapse resize.
+        """
+        for widget in self._workspace_widget_chain():
+            layout = widget.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            widget.updateGeometry()
+
+
+    @staticmethod
+    def _dock_resize_neighbors(splitter: QSplitter, pane: QWidget) -> List[int]:
+        """Prefer Maya's viewport for space released by collapsing the editor.
+
+        Maya's standard horizontal layout contains Toolbox, Blue Steel,
+        Outliner, MainPane and the attribute/channel editors. Giving space to
+        the nearest sibling on the left stretches the Toolbox. MainPane is
+        Maya's viewport workspace control, possibly inside a nested splitter.
+        If it is absent, prefer the right-hand panes so the strip stays left.
+        """
+        index = splitter.indexOf(pane)
+        neighbors = [i for i in range(splitter.count()) if i != index]
+        viewport_indices = []
+        for i in neighbors:
+            widget = splitter.widget(i)
+            if (widget.objectName() == "MainPane"
+                    or widget.findChild(QWidget, "MainPane") is not None):
+                viewport_indices.append(i)
+        return sorted(
+            neighbors,
+            key=lambda i: (i not in viewport_indices, i < index, abs(i - index)),
+        )
+
+
+    def _resize_dock_pane(self, splitter: QSplitter, pane: QWidget, width: int) -> None:
+        """Transfer width to/from the viewport rather than stretching Toolbox."""
+        index = splitter.indexOf(pane)
+        if index < 0:
+            return
+        sizes = splitter.sizes()
+        remaining = sizes[index] - width
+        sizes[index] = width
+        neighbors = self._dock_resize_neighbors(splitter, pane)
+        for i in neighbors:
+            change = max(-sizes[i], remaining)
+            sizes[i] += change
+            remaining -= change
+            if remaining == 0:
+                break
+        splitter.setSizes(sizes)
+
+
+    def _resize_collapse_container(self) -> None:
+        """Resize the actual Maya container after changing content visibility.
+
+        Used immediately and by an owned single-shot timer. The timer reads the
+        current state, so a quick expand/re-collapse cannot run a stale resize
+        or release constraints belonging to a newer collapse.
+        """
+        self._activate_workspace_layouts()
+        docked = self._is_workspace_floating() is False
+        if self._collapsed and docked != self._collapsed_layout_docked:
+            self._apply_collapsed_layout(docked)
+            return
+        if docked:
+            dock = self._dock_splitter_pane()
+            if dock is None:
+                return
+            splitter, pane = dock
+            if self._collapsed:
+                width = max(self.width(), pane.minimumSizeHint().width())
+                self._resize_dock_pane(splitter, pane, width)
+                return
+            if self._pre_collapse_splitter_state is not None:
+                saved_splitter, saved_panes, saved_sizes = self._pre_collapse_splitter_state
+                panes = [splitter.widget(i) for i in range(splitter.count())]
+                if splitter == saved_splitter and panes == saved_panes:
+                    # Also restore the neighboring panes exactly. If Maya was
+                    # resized meanwhile, give the extra space to a neighbor.
+                    sizes = list(saved_sizes)
+                    neighbor = self._dock_resize_neighbors(splitter, pane)[0]
+                    sizes[neighbor] = max(
+                        0, sizes[neighbor] + sum(splitter.sizes()) - sum(sizes)
+                    )
+                    splitter.setSizes(sizes)
+                    return
+            if self._pre_collapse_size is not None:
+                # Reparenting can replace the splitter. Do not apply a stale
+                # snapshot to unrelated panes; restore only our content width.
+                chrome = max(0, pane.width() - self.width())
+                self._resize_dock_pane(splitter, pane, self._pre_collapse_size.width() + chrome)
+        else:
+            shell = self._floating_shell_window()
+            if shell is None:
+                return
+            if self._collapsed:
+                shell.resize(shell.width(), max(1, shell.minimumSizeHint().height()))
+            elif self._pre_collapse_window_size is not None:
+                shell.resize(self._pre_collapse_window_size)
+            elif self._pre_collapse_size is not None:
+                chrome = shell.size() - self.size()
+                shell.resize(self._pre_collapse_size + chrome)
+
+
+    def _set_collapse_button_state(self, collapsed: bool, docked: bool) -> None:
+        """Update the collapse toggle icon and tooltip.
+
+        The icon is a single bar while the window is expanded (horizontal at
+        the top when floating, vertical at the right when docked) and a square
+        while it is collapsed, so the button always advertises the next action.
+
+        Args:
+            collapsed (bool): Whether the window is currently collapsed.
+            docked (bool): Whether the workspace control is currently docked.
+
+        Returns:
+            None
+        """
+        if self.collapse_toggle_button is None:
+            return
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.transparent)
+        color = self.collapse_toggle_button.palette().color(QPalette.ButtonText)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if collapsed:
+            # Expand affordance: an outlined square standing for the window.
+            painter.setPen(color)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(QRect(3, 3, 8, 8))
+        else:
+            # Collapse affordance: the bar the window collapses down to.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            if docked:
+                # Docked windows collapse horizontally, leaving a vertical bar
+                # aligned to the right edge.
+                painter.drawRect(QRect(10, 2, 2, 10))
+            else:
+                # Floating windows collapse vertically, leaving a horizontal
+                # bar aligned to the top edge.
+                painter.drawRect(QRect(2, 2, 10, 2))
+        painter.end()
+        self.collapse_toggle_button.setIcon(QIcon(pixmap))
+        self.collapse_toggle_button.setToolTip(
+            "Expand Blue Steel" if collapsed else "Collapse Blue Steel"
+        )
+
+
     def _set_dock_button_state(self, docked: bool) -> None:
+        """Update the dock toggle icon and the mirrored close-button visibility.
+
+        Args:
+            docked (bool): Whether the workspace control is currently docked.
+
+        Returns:
+            None
+        """
         pixmap = QPixmap(14, 14)
         pixmap.fill(Qt.transparent)
         points = (
@@ -154,20 +376,98 @@ class EditorUiMixin(MainWindowMixin):
         painter.end()
         self.dock_toggle_button.setIcon(QIcon(pixmap))
         self.dock_toggle_button.setToolTip("Undock Blue Steel" if docked else "Dock Blue Steel")
-        self.dock_close_button.setVisible(docked)
+        self.dock_close_button.setVisible(docked and not self._collapsed)
+        # Keep the collapse icon oriented for the current dock state.
+        self._set_collapse_button_state(self._collapsed, docked)
 
 
     def _refresh_dock_button_state(self) -> None:
         """Sync the dock toggle button with the actual workspaceControl state."""
-        if not cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, query=True, exists=True):
-            self._set_dock_button_state(docked=False)
+        self._set_dock_button_state(docked=self._is_workspace_floating() is False)
+
+
+    def _apply_collapsed_layout(self, docked: bool) -> None:
+        """Hide content and collapse the geometry-owning shell or splitter pane."""
+        if self.collapse_toggle_button is None or self.centralWidget() is None:
             return
-        is_floating = cmds.workspaceControl(
-            self.WORKSPACE_CONTROL_NAME,
-            query=True,
-            floating=True,
-        )
-        self._set_dock_button_state(docked=not is_floating)
+        self._collapsed_layout_docked = docked
+        self.centralWidget().hide()
+        self.status_bar.hide()
+        if self.menu_bar is not None:
+            self.menu_bar.setVisible(not docked and self._collapsed_menu_bar_visible)
+        self.dock_toggle_button.setVisible(not docked)
+        self.dock_close_button.hide()
+
+        # Maya's "fixed" size properties use its stored workspace dimensions
+        # in minimumSizeHint(), not the embedded widget's new fixed size.
+        # They therefore pin the EXPANDED size. Leave Maya sizing free and
+        # constrain only our widget; explicitly resize the outer container.
+        if self._is_workspace_floating() is not None:
+            cmds.workspaceControl(
+                self.WORKSPACE_CONTROL_NAME, edit=True,
+                widthProperty="free", heightProperty="free",
+                minimumWidth=0, minimumHeight=0,
+            )
+        minimum, maximum = self._pre_collapse_constraints
+        self.setMinimumSize(minimum)
+        self.setMaximumSize(maximum)
+        if docked:
+            self.setFixedWidth(self.collapse_toggle_button.width() + 4)
+        else:
+            self.setFixedHeight(self.menuWidget().sizeHint().height())
+        self._set_collapse_button_state(True, docked)
+        self._resize_collapse_container()
+        self._collapse_layout_timer.start(0)
+
+
+    def _set_collapsed(self, collapsed: bool) -> None:
+        """Toggle content visibility, saving and restoring the outer geometry."""
+        if self.collapse_toggle_button is None or collapsed == self._collapsed:
+            return
+        docked = self._is_workspace_floating() is False
+        if collapsed:
+            self._pre_collapse_size = self.size()
+            self._pre_collapse_constraints = (self.minimumSize(), self.maximumSize())
+            shell = self._floating_shell_window()
+            self._pre_collapse_window_size = shell.size() if shell is not None else None
+            self._pre_collapse_splitter_state = None
+            dock = self._dock_splitter_pane() if docked else None
+            if dock is not None:
+                splitter, _pane = dock
+                self._pre_collapse_splitter_state = (
+                    splitter,
+                    [splitter.widget(i) for i in range(splitter.count())],
+                    splitter.sizes(),
+                )
+            if self.menu_bar is not None:
+                self._collapsed_menu_bar_visible = not self.menu_bar.isHidden()
+            self._collapsed_content_visible = not self.centralWidget().isHidden()
+            self._collapsed_status_visible = not self.status_bar.isHidden()
+            self._collapsed = True
+            self._apply_collapsed_layout(docked)
+            return
+
+        self._collapsed = False
+        minimum, maximum = self._pre_collapse_constraints
+        self.setMinimumSize(minimum)
+        self.setMaximumSize(maximum)
+        if self.menu_bar is not None:
+            self.menu_bar.setVisible(self._collapsed_menu_bar_visible)
+        self.dock_toggle_button.show()
+        self.centralWidget().setVisible(self._collapsed_content_visible)
+        self.status_bar.setVisible(self._collapsed_status_visible)
+        self._set_dock_button_state(docked=docked)
+        self._resize_collapse_container()
+        self._collapse_layout_timer.start(0)
+
+
+    def _toggle_collapsed(self) -> None:
+        """Toggle the collapsed state of the window.
+
+        Returns:
+            None
+        """
+        self._set_collapsed(not self._collapsed)
 
 
     def _dock_to_maya_panel(self) -> bool:
@@ -205,9 +505,13 @@ class EditorUiMixin(MainWindowMixin):
         )
         if is_floating:
             self._dock_to_maya_panel()
+            if self._collapsed:
+                self._apply_collapsed_layout(docked=True)
             return
         cmds.workspaceControl(self.WORKSPACE_CONTROL_NAME, edit=True, floating=True)
         self._set_dock_button_state(docked=False)
+        if self._collapsed:
+            self._apply_collapsed_layout(docked=False)
 
 
     def _build_ui(self) -> None:
@@ -1036,6 +1340,7 @@ class EditorUiMixin(MainWindowMixin):
         self.refresh_button.clicked.connect(self.refresh_ui)
         self.create_system_button.clicked.connect(self._create_new_editor)
         self.dock_toggle_button.clicked.connect(self._toggle_docking)
+        self.collapse_toggle_button.clicked.connect(self._toggle_collapsed)
         self.dock_close_button.clicked.connect(self.close)
         self.editor_combo.currentTextChanged.connect(self._on_editor_selected)
         if self.heat_map_switch is not None:

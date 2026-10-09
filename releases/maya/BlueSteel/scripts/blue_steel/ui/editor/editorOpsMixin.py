@@ -593,8 +593,17 @@ class EditorOpsMixin(MainWindowMixin):
         menu_layout.setSpacing(2)
         menu_bar = QMenuBar(menu_widget)
         menu_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.menu_bar = menu_bar
         menu_layout.addWidget(menu_bar, 1)
         button_size = 20
+        self.collapse_toggle_button = QPushButton(menu_widget)
+        self.collapse_toggle_button.setFixedSize(button_size, button_size)
+        self.collapse_toggle_button.setIconSize(QSize(14, 14))
+        self.collapse_toggle_button.setStyleSheet(
+            "QPushButton { border: 1px solid palette(mid); border-radius: 5px; padding: 0px; }"
+        )
+        self.collapse_toggle_button.setToolTip("Collapse Blue Steel")
+        menu_layout.addWidget(self.collapse_toggle_button, 0, Qt.AlignVCenter)
         self.dock_toggle_button = QPushButton(menu_widget)
         self.dock_toggle_button.setFixedSize(button_size, button_size)
         self.dock_toggle_button.setIconSize(QSize(14, 14))
@@ -743,6 +752,8 @@ class EditorOpsMixin(MainWindowMixin):
         icon_size = max(14, int(button_size * 0.6))
         self.dock_toggle_button.setFixedSize(button_size, button_size)
         self.dock_toggle_button.setIconSize(QSize(icon_size, icon_size))
+        self.collapse_toggle_button.setFixedSize(button_size, button_size)
+        self.collapse_toggle_button.setIconSize(QSize(icon_size, icon_size))
         self.dock_close_button.setFixedSize(button_size, button_size)
 
 

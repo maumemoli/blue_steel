@@ -38,6 +38,7 @@ from .qt import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenuBar,
     QPushButton,
     QSize,
     QSplitter,
@@ -150,6 +151,20 @@ class MainWindow(
         self._primary_rename_old_name: str = ""
         self._controller_layout_window: Optional[ControllerLayoutWindow] = None
         self.heat_map_switch: Optional[QPushButton] = None
+        self.collapse_toggle_button: Optional[QPushButton] = None
+        self.menu_bar: Optional[QMenuBar] = None
+        self._collapsed: bool = False
+        self._pre_collapse_size = None
+        self._pre_collapse_window_size = None
+        self._pre_collapse_splitter_state = None
+        self._pre_collapse_constraints = None
+        self._collapsed_layout_docked = False
+        self._collapsed_menu_bar_visible = True
+        self._collapsed_content_visible = True
+        self._collapsed_status_visible = True
+        self._collapse_layout_timer = QTimer(self)
+        self._collapse_layout_timer.setSingleShot(True)
+        self._collapse_layout_timer.timeout.connect(self._resize_collapse_container)
         self._main_splitter: Optional[QSplitter] = None
         self._editor_splitter: Optional[QSplitter] = None
         self._third_column_splitter: Optional[QSplitter] = None
@@ -242,6 +257,17 @@ class MainWindow(
         return result
 
 
+    def floatingChanged(self, isFloating: bool) -> None:  # noqa: N802
+        """Sync collapse after Maya reparents the workspace control.
+
+        This must override MayaQWidgetDockableMixin's stub on MainWindow,
+        rather than in a feature mixin later in the MRO.
+        """
+        self._set_dock_button_state(docked=not isFloating)
+        if self._collapsed:
+            self._collapse_layout_timer.start(0)
+
+
     def dockCloseEventTriggered(self) -> None:  # noqa: N802
         """Handle closing the dockable workspace control.
 
@@ -256,6 +282,7 @@ class MainWindow(
         Returns:
             None
         """
+        self._collapse_layout_timer.stop()
         self._shutdown_window()
 
 
