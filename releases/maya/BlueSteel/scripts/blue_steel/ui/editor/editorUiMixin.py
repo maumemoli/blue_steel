@@ -697,6 +697,10 @@ class EditorUiMixin(MainWindowMixin):
         self.shapes_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._shapes_delegate = SliderItemDelegate(self.shapes_view)
         self.shapes_view.setItemDelegateForColumn(0, self._shapes_delegate)
+        self.shapes_view.setToolTip(
+            "Click a group to expand or collapse it; "
+            "Alt+left-click a group to expand or collapse all groups"
+        )
 
         shapes_header_layout = QHBoxLayout()
         shapes_header_layout.setContentsMargins(0, 0, 0, 0)

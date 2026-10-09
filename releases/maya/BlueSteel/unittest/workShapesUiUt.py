@@ -298,6 +298,24 @@ def add_primary_leaf(view, name, parent=None):
     return leaf
 
 
+def add_shape_header(view, name, parent=None, level=0):
+    """Add a shapes-tree group row (level header or nested type group)."""
+    header = QtWidgets.QTreeWidgetItem([name])
+    header.setData(0, Shape.IsHeaderRole, True)
+    header.setData(0, Shape.NameRole, name)
+    header.setData(0, Shape.LevelRole, int(level))
+    header.setData(0, Shape.HeaderCollapsedRole, False)
+    font = header.font(0)
+    font.setBold(True)
+    header.setFont(0, font)
+    header.setFlags(Qt.ItemIsEnabled)
+    if parent is None:
+        view.addTopLevelItem(header)
+    else:
+        parent.addChild(header)
+    return header
+
+
 class FakeTreeItem:
     """Minimal QTreeWidgetItem stand-in for role-keyed double-click tests."""
 
@@ -788,6 +806,81 @@ class WorkShapesUiTests(unittest.TestCase):
 
     def test_plain_left_click_group_still_emits_item_clicked(self):
         view, groups, _ = self.build_primary_tree()
+        clicks = []
+        view.itemClicked.connect(lambda item, column: clicks.append(item))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.NoModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(clicks, [groups[0]])
+
+    # ------------------------------------------------------------------
+    # Shapes tree: Alt+left-click toggles every group at once
+    # ------------------------------------------------------------------
+    def build_shapes_tree(self):
+        """Build a shown Shapes tree with level headers and type groups."""
+        view = UI["views"].ShapeTreeWidget()
+        view.resize(320, 320)
+        view.show()
+        APP.processEvents()
+        header_a = add_shape_header(view, "Level 1", level=0)
+        header_b = add_shape_header(view, "Level 2", level=1)
+        type_group = add_shape_header(view, "Type A", parent=header_a, level=0)
+        add_primary_leaf(view, "jawOpen", parent=type_group)
+        groups = (header_a, header_b, type_group)
+        for group in groups:
+            group.setExpanded(True)
+        APP.processEvents()
+        self.addCleanup(self.close_view, view)
+        return view, groups
+
+    def test_alt_left_click_shape_group_collapses_every_group(self):
+        view, groups = self.build_shapes_tree()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(not group.isExpanded() for group in groups))
+
+    def test_alt_left_click_shape_group_expands_every_group(self):
+        view, groups = self.build_shapes_tree()
+        for group in groups:
+            group.setExpanded(False)
+        APP.processEvents()
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
+    def test_alt_left_click_shape_group_does_not_emit_item_clicked(self):
+        view, groups = self.build_shapes_tree()
+        clicks = []
+        view.itemClicked.connect(lambda item, column: clicks.append(item))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(groups[0]).center(),
+        )
+        APP.processEvents()
+        self.assertEqual(clicks, [])
+
+    def test_alt_left_click_shape_leaf_leaves_group_expansion_unchanged(self):
+        view, groups = self.build_shapes_tree()
+        leaf = groups[2].child(0)
+        self.assertFalse(bool(leaf.data(0, Shape.IsHeaderRole)))
+        QtTest.QTest.mouseClick(
+            view.viewport(), Qt.LeftButton, Qt.AltModifier,
+            view.visualItemRect(leaf).center(),
+        )
+        APP.processEvents()
+        self.assertTrue(all(group.isExpanded() for group in groups))
+
+    def test_plain_left_click_shape_group_still_emits_item_clicked(self):
+        view, groups = self.build_shapes_tree()
         clicks = []
         view.itemClicked.connect(lambda item, column: clicks.append(item))
         QtTest.QTest.mouseClick(

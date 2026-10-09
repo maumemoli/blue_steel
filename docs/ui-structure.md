@@ -346,6 +346,8 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
   - `_resolve_icon_click(event_pos)`
   - `_selected_draggable_shape_names()`
   - `_next_selectable_item(start_item, direction)` / `_move_to_next_selectable_item(direction)`
+  - `_set_all_groups_expanded(expanded)` — applies one expansion state to every `IsHeaderRole` group row (both level headers and nested type groups).
+  - `mousePressEvent` / `mouseReleaseEvent` handle **Alt+left-click** on any group row: the clicked group's current expansion picks the target state and `_set_all_groups_expanded` applies it to every group; the press/release pair is consumed so Qt does not also emit `itemClicked` (which the window turns into a single-group toggle). A plain left-click is unchanged.
   - `startDrag(supportedActions)` / `keyPressEvent(event)`
 
 - `PrimaryTreeWidget(SliderDragViewMixin, QTreeWidget)` — the Primaries tree.
