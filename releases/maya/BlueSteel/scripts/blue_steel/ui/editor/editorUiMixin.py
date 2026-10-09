@@ -50,7 +50,7 @@ from .constants import (
     SPLITTER_HANDLE_WIDTH,
 )
 from .mainWindowMixin import MainWindowMixin
-from .delegates import SliderItemDelegate, WorkShapeItemDelegate
+from .delegates import ActiveShapesItemDelegate, SliderItemDelegate, WorkShapeItemDelegate
 from .qt import (
     QAbstractItemView,
     QActionGroup,
@@ -944,7 +944,7 @@ class EditorUiMixin(MainWindowMixin):
         self.active_shapes_view.setDragDropMode(QAbstractItemView.DragOnly)
         self.active_shapes_view.setModel(self._active_shapes_proxy)
         self.active_shapes_view.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._active_shapes_delegate = SliderItemDelegate(self.active_shapes_view)
+        self._active_shapes_delegate = ActiveShapesItemDelegate(self.active_shapes_view)
         self.active_shapes_view.setItemDelegate(self._active_shapes_delegate)
         active_shapes_layout.addWidget(self.active_shapes_view, 1)
         active_shapes_footer_layout = QVBoxLayout()

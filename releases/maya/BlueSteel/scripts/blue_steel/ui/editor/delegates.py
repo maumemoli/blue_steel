@@ -109,6 +109,15 @@ class SliderItemDelegate(QStyledItemDelegate):
     MIN_TEXT_WIDTH = 20
     FOLDER_DISCLOSURE_SIZE = 14
 
+    # Per-view opt-outs. Subclasses (e.g. ``ActiveShapesItemDelegate``) flip
+    # these to suppress the slider track/fill and the shape-type indicator bar
+    # while keeping the name and numeric value text.
+    _hides_value_track = False
+    _hides_type_indicator = False
+    # When True the value area hugs the formatted value text instead of
+    # stretching to the shared value-column width as the list resizes.
+    _uses_fixed_value_width = False
+
     def _is_primary_tree_view(self) -> bool:
         parent_view = self.parent()
         return bool(getattr(parent_view, "_primary_tree_layout", False))
@@ -220,9 +229,12 @@ class SliderItemDelegate(QStyledItemDelegate):
         available_w = max(1, rect.width() - left_margin - self.RIGHT_MARGIN)
         icon_slots = self._reserved_icon_slots(index)
         icon_area_w = (self.ICON_SIZE * icon_slots) + (self.ICON_GAP * icon_slots)
-        reserved_text_w = max(self.MIN_TEXT_WIDTH, min(self._name_column_width, available_w))
-        reserved_after_value_w = self.VALUE_TO_ICON_GAP + icon_area_w + reserved_text_w
-        value_w = min(self._value_column_width, max(value_text_w, available_w - reserved_after_value_w), available_w)
+        if self._uses_fixed_value_width:
+            value_w = min(value_text_w, available_w)
+        else:
+            reserved_text_w = max(self.MIN_TEXT_WIDTH, min(self._name_column_width, available_w))
+            reserved_after_value_w = self.VALUE_TO_ICON_GAP + icon_area_w + reserved_text_w
+            value_w = min(self._value_column_width, max(value_text_w, available_w - reserved_after_value_w), available_w)
 
         value_left = rect.left() + left_margin
         value_rect = QRect(value_left, rect.top(), value_w, rect.height())
@@ -424,33 +436,35 @@ class SliderItemDelegate(QStyledItemDelegate):
             sel.setAlpha(60)
             painter.fillRect(option.rect, sel)
 
-        indicator_rect = QRect(option.rect.left() + self._tree_row_indent(index) + 1, option.rect.top() + 3, 4, max(6, option.rect.height() - 6))
-        indicator_color = QColor(0, 0, 0, 0)
-        if is_driver_connected_work_shape:
-            # Maya-like driven-key cue for linked work shapes.
-            indicator_color = QColor(102, 153, 255)
-        elif shape_type in {"InbetweenShape", "ComboShape", "ComboInbetweenShape"}:
-            # Maya channel-box-like direct-connection cue.
-            indicator_color = QColor(220, 190, 76)
-        if indicator_color.alpha() > 0:
-            painter.fillRect(indicator_rect, indicator_color)
+        if not self._hides_type_indicator:
+            indicator_rect = QRect(option.rect.left() + self._tree_row_indent(index) + 1, option.rect.top() + 3, 4, max(6, option.rect.height() - 6))
+            indicator_color = QColor(0, 0, 0, 0)
+            if is_driver_connected_work_shape:
+                # Maya-like driven-key cue for linked work shapes.
+                indicator_color = QColor(102, 153, 255)
+            elif shape_type in {"InbetweenShape", "ComboShape", "ComboInbetweenShape"}:
+                # Maya channel-box-like direct-connection cue.
+                indicator_color = QColor(220, 190, 76)
+            if indicator_color.alpha() > 0:
+                painter.fillRect(indicator_rect, indicator_color)
 
-        track_rect = value_rect.adjusted(0, 3, 0, -3)
-        progress_width = int(max(0.0, min(1.0, value)) * track_rect.width())
+        if not self._hides_value_track:
+            track_rect = value_rect.adjusted(0, 3, 0, -3)
+            progress_width = int(max(0.0, min(1.0, value)) * track_rect.width())
 
-        value_bg = QColor(57, 57, 57)
-        track_border = QColor(83, 83, 83)
-        fill_color = QColor(109, 109, 109)
-        if is_driver_connected_work_shape:
-            fill_color = option.palette.highlight().color()
+            value_bg = QColor(57, 57, 57)
+            track_border = QColor(83, 83, 83)
+            fill_color = QColor(109, 109, 109)
+            if is_driver_connected_work_shape:
+                fill_color = option.palette.highlight().color()
 
-        painter.fillRect(track_rect, value_bg)
-        painter.setPen(track_border)
-        painter.drawRect(track_rect.adjusted(0, 0, -1, -1))
+            painter.fillRect(track_rect, value_bg)
+            painter.setPen(track_border)
+            painter.drawRect(track_rect.adjusted(0, 0, -1, -1))
 
-        if progress_width > 0:
-            progress_rect = QRect(track_rect.left(), track_rect.top(), progress_width, track_rect.height())
-            painter.fillRect(progress_rect, fill_color)
+            if progress_width > 0:
+                progress_rect = QRect(track_rect.left(), track_rect.top(), progress_width, track_rect.height())
+                painter.fillRect(progress_rect, fill_color)
 
         custom_color = model.data(index, ShapeItemsModel.ColorRole)
         if isinstance(custom_color, QColor) and custom_color.isValid():
@@ -971,4 +985,16 @@ class SplitMapWeightSliderDelegate(SliderItemDelegate):
         return 0
 
 
+class ActiveShapesItemDelegate(SliderItemDelegate):
+    """Active Shapes monitor rows: name and numeric value only.
+
+    The Active Shapes panel is a read-only display list, so the slider track
+    and fill are suppressed along with the shape-type indicator bar. Each row
+    shows only the shape name and its current value, and the value area is
+    pinned to the value text width rather than the shared slider column width.
+    """
+
+    _hides_value_track = True
+    _hides_type_indicator = True
+    _uses_fixed_value_width = True
 
