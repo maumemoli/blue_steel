@@ -42,6 +42,8 @@ from ..common.icons import (
     HUD_ICON,
     MASK_ICON,
     FILTER_ACTIVE_VALUES_ICON,
+    COPY_VERTICES_ICON,
+    PASTE_VERTICES_ICON,
 )
 from .constants import (
     PRIMARY_TREE_FOLDER_ROLE,
@@ -94,6 +96,7 @@ from .widgets import (
     InlineWorkshapeRenameEditor,
     TokenSearchBar,
 )
+from ...mmtools import meshTools
 
 
 class _ColorFilterRow(QWidget):
@@ -1306,11 +1309,28 @@ class EditorUiMixin(MainWindowMixin):
         self.compare_shapes_button.setToolTip("Compare the shapes in the editor with meshes in the scene with the same name.")
         debug_shapes_frame_layout.addWidget(self.compare_shapes_button)
 
+        mesh_utilities_frame_layout = FrameLayout("Mesh Utilities")
+        self._tools_panel_sections.append(mesh_utilities_frame_layout)
+        self._tools_panel_section_labels[mesh_utilities_frame_layout] = "Mesh Utilities"
+        tooltip = "Copy the vertex positions of the selected mesh to a clipboard."
+        self.copy_vtx_positions_button = self._create_tool_button("Copy Vtx Positions",
+                                                                   COPY_VERTICES_ICON,
+                                                                   tooltip,
+                                                                   track_enabled=False)
+        tooltip = "Paste the copied vertex positions onto the selected mesh."
+        self.paste_vtx_positions_button = self._create_tool_button("Paste Vtx Positions",
+                                                                    PASTE_VERTICES_ICON,
+                                                                    tooltip,
+                                                                    track_enabled=False)
+        mesh_utilities_frame_layout.addWidget(self.copy_vtx_positions_button)
+        mesh_utilities_frame_layout.addWidget(self.paste_vtx_positions_button)
+
         main_tools_layout.addWidget(edit_shapes_frame_layout, 0)
         main_tools_layout.addWidget(placeholder_shapes_frame_layout, 0)
         main_tools_layout.addWidget(editor_frame_layout, 0)
         main_tools_layout.addWidget(preview_shapes_frame_layout, 0)
         main_tools_layout.addWidget(debug_shapes_frame_layout, 0)
+        main_tools_layout.addWidget(mesh_utilities_frame_layout, 0)
         for section in self._tools_panel_sections:
             section.layout.setSpacing(0)
             section.content_layout.setContentsMargins(0, 1, 0, 1)
@@ -1423,6 +1443,8 @@ class EditorUiMixin(MainWindowMixin):
         self.unlock_all_shapes_button.clicked.connect(self.unlock_all_shapes)
         self.compare_shapes_button.clicked.connect(self.compare_shapes_debug)
         self.mmtools_button.clicked.connect(self.launch_mmtools)
+        self.copy_vtx_positions_button.clicked.connect(meshTools.copy_selected_mesh_vertex_position)
+        self.paste_vtx_positions_button.clicked.connect(meshTools.paste_vertex_positions_to_selected_mesh)
         self.toggle_hud_button.clicked.connect(self._on_toggle_hud_clicked)
         self._shape_model.primaryValueCommitted.connect(self._on_primary_value_committed)
         self._shape_model.modelReset.connect(self._update_info_labels)
