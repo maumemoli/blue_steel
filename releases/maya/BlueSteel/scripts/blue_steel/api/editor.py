@@ -2255,12 +2255,17 @@ class BlueSteelEditor(object):
         cmds.delete(temp_blendshape)
 
 
-    def ingest_shapes_from_blendshape_node(self, blendshape_node: str, absolute_delta: bool = False) -> int:
+    def ingest_shapes_from_blendshape_node(self, blendshape_node: str,
+                                           absolute_delta: bool,
+                                           control_sorting: dict = None,
+                                           custom_shapes_colors: dict = None) -> int:
         """
         Ingest shapes from a blendshape node into the Blue Steel rig.
         Parameters:
             blendshape_node (str): The name of the blendshape node to ingest
             absolute_delta (bool): Whether to treat the blendshape node as an absolute delta
+            control_sorting (dict): A dictionary defining the sorting order for controls.
+            custom_shapes_colors (dict): A dictionary defining custom colors for shapes.
         Returns:
             int: The number of shapes successfully ingested.
         Raises:
@@ -2268,26 +2273,27 @@ class BlueSteelEditor(object):
         """
         if not blendshape_node or not cmds.objExists(blendshape_node):
             raise ValueError(f"Blendshape node '{blendshape_node}' does not exist.")
-        # we need to create a commit mesh and link it to the blendshape node.
-        commit_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_commitMesh")
-        
-        self._connect_mesh_to_blendshape(commit_mesh, blendshape_node)
-        
-        delta_blendshape = Blendshape(blendshape_node)
-        # let's get the weights from the blendshape node and build a network to see if there are invalid shapes.
-        network = Network()
-        shapes_names = utilities.sort_for_insertion(delta_blendshape.get_weights(), self.separator)
-        for weight in shapes_names:
-            # we also make sure the weights are all at 0
-            delta_blendshape.set_weight_value(weight, 0.0)
-            shape = network.create_shape(weight)
-            network.add_shape(shape)
-        if network.get_invalid_shapes():
-            raise ValueError(f"Blendshape node '{blendshape_node}' contains invalid shape names: {network.get_invalid_shapes()}")
-        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
-        total_shapes = len(shapes_names)
         processed = 0
         try:
+            # we need to create a commit mesh and link it to the blendshape node.
+            commit_mesh = self.duplicate_base_mesh_neutral_state(mesh_name=f"{self.editor_base_name}_commitMesh")
+            
+            self._connect_mesh_to_blendshape(commit_mesh, blendshape_node)
+            
+            delta_blendshape = Blendshape(blendshape_node)
+            # let's get the weights from the blendshape node and build a network to see if there are invalid shapes.
+            network = Network()
+            shapes_names = utilities.sort_for_insertion(delta_blendshape.get_weights(), self.separator)
+            for weight in shapes_names:
+                # we also make sure the weights are all at 0
+                delta_blendshape.set_weight_value(weight, 0.0)
+                shape = network.create_shape(weight)
+                network.add_shape(shape)
+            if network.get_invalid_shapes():
+                raise ValueError(f"Blendshape node '{blendshape_node}' contains invalid shape names: {network.get_invalid_shapes()}")
+            gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+            total_shapes = len(shapes_names)
+
             # --- Start the progress bar ---
             cmds.progressBar(gMainProgressBar, edit=True,
                             beginProgress=True,
@@ -2314,10 +2320,17 @@ class BlueSteelEditor(object):
                 self.commit_shape(weight, commit_mesh, invert_shape=absolute_delta)
                 delta_blendshape.set_weight_value(weight, 0.0)
                 processed += 1
+            if control_sorting is not None:
+                self.write_face_ctrl_sorting_attribute(control_sorting)
+            if custom_shapes_colors is not None:
+                self.write_custom_shapes_colors(custom_shapes_colors)
+            
         finally:
             cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
-            cmds.delete(delta_blendshape.name)
-            cmds.delete(commit_mesh)
+            if cmds.objExists(delta_blendshape.name):
+                cmds.delete(delta_blendshape.name)
+            if cmds.objExists(commit_mesh):
+                cmds.delete(commit_mesh)
         return processed
             
         
@@ -2372,7 +2385,16 @@ class BlueSteelEditor(object):
         blendshape_node = None
         try:
             blendshape_node = self.import_blendshape_node(import_path)
-            return self.ingest_shapes_from_blendshape_node(blendshape_node, absolute_delta=absolute_delta)
+            meta_data_attr = ENVIRONMENT.SHAPES_SEQUENCE_META_DATA_ATTR_STRING_IDENTIFIER
+            sequence_meta_data = {}
+            if cmds.attributeQuery(meta_data_attr, node=blendshape_node, exists=True):
+                sequence_meta_data = attrUtils.read_json_attr(blendshape_node, meta_data_attr)
+            control_sorting = sequence_meta_data.get("controlSorting", None)
+            custom_shapes_colors = sequence_meta_data.get("customShapeColorAttributes", None)
+            return self.ingest_shapes_from_blendshape_node(blendshape_node=blendshape_node,
+                                                           absolute_delta=absolute_delta,
+                                                           control_sorting=control_sorting,
+                                                           custom_shapes_colors=custom_shapes_colors)
         finally:
             # we can delete the imported blendshape node now
             if blendshape_node and cmds.objExists(blendshape_node):
@@ -2406,6 +2428,12 @@ class BlueSteelEditor(object):
             if export_blendshape_name in self.container.members:
                 self.container.remove_member(export_blendshape_name)
             cmds.select(export_blendshape_name, replace=True)
+        shapes_names =cmds.listAttr(f"{export_blendshape_name}.w", m=True) or []
+        print(f"Found shapes: {shapes_names}")
+        shapes_names = utilities.sort_for_insertion(shapes_names)
+        self._add_sequence_metadata_to_node(export_blendshape_name,
+                                            absolute_delta,
+                                            shapes_names)
         print(f"Exporting blendshape node '{export_blendshape_name}' to '{export_path}'...")
         cmds.file(
             export_path,
@@ -2459,8 +2487,31 @@ class BlueSteelEditor(object):
             cmds.delete(neutral_mesh)
         return delta_blenshape.name
 
-    
-    
+    def _add_sequence_metadata_to_node(self, node_name: str,
+                                       absolute_delta: bool,
+                                       shape_names: list,):
+        """Add sequence metadata to the specified node.
+
+        Args:
+            node_name (str): The name of the node to add metadata to.
+            absolute_delta (bool): Whether the export is using absolute delta.
+            shape_names (list): A list of shape names to include in the metadata.
+        """
+        metadata_attr = ENVIRONMENT.SHAPES_SEQUENCE_META_DATA_ATTR_STRING_IDENTIFIER
+        sequence_meta_data = {}
+        current_unit_time = cmds.currentTime(query=True)
+        sequence_meta_data["totalShapes"] = len(shape_names)
+        sequence_meta_data["shapesList"] = shape_names
+        sequence_meta_data["controlSorting"] = self.read_face_ctrl_sorting_attribute() or []
+        sequence_meta_data["customShapeColorAttributes"] = self.read_custom_shapes_colors() or {}
+        sequence_meta_data["currentUnitTime"] = current_unit_time
+        sequence_meta_data["exportType"] = "absolute" if  absolute_delta else "relative"
+        sequence_meta_data["editorVersion"] = str(ENVIRONMENT.VERSION)
+        if not cmds.attributeQuery(metadata_attr, node=node_name, exists=True):
+                cmds.addAttr(node_name, longName=metadata_attr, dataType="string")
+        sequence_meta_data_json = json.dumps(sequence_meta_data)
+        cmds.setAttr(f"{node_name}.{metadata_attr}", sequence_meta_data_json, type="string")
+
     @disable_viewport_update
     @timed
     def export_shapes_as_alembic(self,
@@ -2505,22 +2556,17 @@ class BlueSteelEditor(object):
             # now we need to set the blendshape weights according to the timeline
             for frame, shape_name in zip(frames_range[:-1], shape_names):
                 cmds.setKeyframe(export_blendshape_name, attribute=shape_name, t=[frame], v=1.0)
-            current_unit_time = cmds.currentUnit(query=True, time=True)
-            # we need to set an attribute with the total number of shapes for reference
-            sequence_meta_data = {}
-            sequence_meta_data["totalShapes"] = len(shape_names)
-            sequence_meta_data["shapesList"] = shape_names
-            sequence_meta_data["controlSorting"] = self.read_face_ctrl_sorting_attribute()
-            sequence_meta_data["customShapesColors"] = self.read_custom_shapes_colors()
-            sequence_meta_data["currentUnitTime"] = current_unit_time
 
-            sequence_meta_data_json = json.dumps(sequence_meta_data)
-            if not cmds.attributeQuery(metadata_attr, node=root_neutral, exists=True):
-                cmds.addAttr(root_neutral, longName=metadata_attr, dataType="string")
-            cmds.setAttr(f"{root_neutral}.{metadata_attr}", sequence_meta_data_json, type="string")
+            self._add_sequence_metadata_to_node(root_neutral, absolute_delta, shape_names)
+
             # creating the job string
-            job_string = "-frameRange {0} -attr {1} -dataFormat ogawa -root {2} -file {3}"
+            # AbcExport tokenizes its job string on spaces, so the file path must be
+            # wrapped in double quotes to survive paths that contain spaces. Its parser
+            # also treats backslashes as escape characters (even inside quotes), so we
+            # normalize to forward slashes as well.
+            job_string = "-frameRange {0} -attr {1} -dataFormat ogawa -root {2} -file \"{3}\""
             frame_range = f"0 {len(shape_names)}"
+            export_path = export_path.replace("\\", "/")
             job_string = job_string.format(frame_range, metadata_attr, root_neutral, export_path)
             result = cmds.AbcExport(j=job_string)
             print(f"{len(shape_names)} shapes successfully exported to {export_path}")     
