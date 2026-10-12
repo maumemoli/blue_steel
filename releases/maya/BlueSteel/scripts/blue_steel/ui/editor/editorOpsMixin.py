@@ -29,7 +29,6 @@ from .qt import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QGuiApplication,
     QHBoxLayout,
     QInputDialog,
@@ -44,6 +43,94 @@ from .qt import (
     Qt,
     get_maya_main_window,
 )
+
+
+def _maya_file_dialog(
+    caption: str,
+    file_mode: int,
+    file_filter: str = "",
+    ok_caption: str = "Select",
+) -> Optional[str]:
+    """Show Maya's native file dialog and return the selected path.
+
+    Parameters:
+        caption (str): The dialog window title.
+        file_mode (int): The Maya ``fileDialog2`` mode (0 save, 1 open,
+            3 directory).
+        file_filter (str): Optional file type filter, for example
+            ``"Alembic Files (*.abc)"``.
+        ok_caption (str): Label for the dialog's accept button.
+
+    Returns:
+        Optional[str]: The selected path, or ``None`` when the dialog is
+            cancelled.
+    """
+    kwargs = {
+        "caption": caption,
+        "fileMode": file_mode,
+        "dialogStyle": 2,
+        "okCaption": ok_caption,
+    }
+    if file_filter:
+        kwargs["fileFilter"] = file_filter
+    result = cmds.fileDialog2(**kwargs)
+    if not result:
+        return None
+    return result[0]
+
+
+def _maya_open_file_dialog(
+    caption: str,
+    file_filter: str,
+    ok_caption: str = "Import",
+) -> Optional[str]:
+    """Show Maya's open-file dialog and return the selected path.
+
+    Parameters:
+        caption (str): The dialog window title.
+        file_filter (str): File type filter entries separated by ``;;``.
+        ok_caption (str): Label for the dialog's accept button.
+
+    Returns:
+        Optional[str]: The selected path, or ``None`` when cancelled.
+    """
+    return _maya_file_dialog(
+        caption, 1, file_filter=file_filter, ok_caption=ok_caption)
+
+
+def _maya_save_file_dialog(
+    caption: str,
+    file_filter: str,
+    ok_caption: str = "Export",
+) -> Optional[str]:
+    """Show Maya's save-file dialog and return the chosen path.
+
+    Parameters:
+        caption (str): The dialog window title.
+        file_filter (str): File type filter entries separated by ``;;``.
+        ok_caption (str): Label for the dialog's accept button.
+
+    Returns:
+        Optional[str]: The chosen path, or ``None`` when cancelled.
+    """
+    return _maya_file_dialog(
+        caption, 0, file_filter=file_filter, ok_caption=ok_caption)
+
+
+def _maya_directory_dialog(
+    caption: str,
+    ok_caption: str = "Select",
+) -> Optional[str]:
+    """Show Maya's directory dialog and return the chosen directory.
+
+    Parameters:
+        caption (str): The dialog window title.
+        ok_caption (str): Label for the dialog's accept button.
+
+    Returns:
+        Optional[str]: The chosen directory, or ``None`` when cancelled.
+    """
+    return _maya_file_dialog(caption, 3, ok_caption=ok_caption)
 
 
 class EditorOpsMixin(MainWindowMixin):
@@ -789,6 +876,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _import_objs(self) -> None:
         """Import OBJ shapes from a directory into the active editor.
 
+        The directory is chosen with Maya's native file dialog.
+
         Returns:
             None
         """
@@ -796,7 +885,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
-        directory = QFileDialog.getExistingDirectory(self, "Select Import Directory")
+        directory = _maya_directory_dialog("Select Import Directory")
         if not directory:
             self._set_status("Import cancelled.")
             return
@@ -818,6 +907,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _import_shapes_from_blendshape_node(self, absolute_delta: bool = False) -> None:
         """Import shapes from a saved blendshape node file.
 
+        The file is chosen with Maya's native file dialog.
+
         Parameters:
             absolute_delta (bool): Whether to import absolute rather than
                 relative deltas.
@@ -830,10 +921,8 @@ class EditorOpsMixin(MainWindowMixin):
             return
 
         delta_label = "Absolute" if absolute_delta else "Relative"
-        import_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
+        import_path = _maya_open_file_dialog(
             f"Import {delta_label} Shapes From BlendShape Node",
-            "",
             "Maya Files (*.ma *.mb);;Maya ASCII (*.ma);;Maya Binary (*.mb)",
         )
         if not import_path:
@@ -863,6 +952,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _import_shapes_from_alembic(self, absolute_delta: bool = False) -> None:
         """Import shapes from a saved Alembic file.
 
+        The file is chosen with Maya's native file dialog.
+
         Parameters:
             absolute_delta (bool): Whether to import absolute rather than
                 relative deltas.
@@ -875,10 +966,8 @@ class EditorOpsMixin(MainWindowMixin):
             return
 
         delta_label = "Absolute" if absolute_delta else "Relative"
-        import_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
+        import_path = _maya_open_file_dialog(
             f"Import {delta_label} Shapes From Alembic",
-            "",
             "Alembic Files (*.abc)",
         )
         if not import_path:
@@ -908,6 +997,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _import_split_data(self) -> None:
         """Import split groups and/or split maps from a directory.
 
+        The directory is chosen with Maya's native file dialog.
+
         Returns:
             None
         """
@@ -915,7 +1006,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
-        directory = QFileDialog.getExistingDirectory(self, "Select Split Data Directory")
+        directory = _maya_directory_dialog("Select Split Data Directory")
         if not directory:
             self._set_status("Import cancelled.")
             return
@@ -1019,6 +1110,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _export_split_data(self) -> None:
         """Export split data from the active editor to a directory.
 
+        The directory is chosen with Maya's native file dialog.
+
         Returns:
             None
         """
@@ -1026,7 +1119,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
-        directory = QFileDialog.getExistingDirectory(self, "Select Export Split Data Directory")
+        directory = _maya_directory_dialog("Select Export Split Data Directory")
         if not directory:
             self._set_status("Export cancelled.")
             return
@@ -1046,6 +1139,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _export_objs(self) -> None:
         """Export every shape in the active editor as OBJ files.
 
+        The directory is chosen with Maya's native file dialog.
+
         Returns:
             None
         """
@@ -1053,7 +1148,7 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
-        directory = QFileDialog.getExistingDirectory(self, "Select Export Directory")
+        directory = _maya_directory_dialog("Select Export Directory")
         if not directory:
             self._set_status("Export cancelled.")
             return
@@ -1074,6 +1169,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _export_shapes_as_blendshape_node(self, absolute_delta: bool = False) -> None:
         """Export the active editor's shapes as a blendshape node file.
 
+        The destination is chosen with Maya's native file dialog.
+
         Parameters:
             absolute_delta (bool): Whether to export absolute rather than
                 relative deltas.
@@ -1086,10 +1183,8 @@ class EditorOpsMixin(MainWindowMixin):
             return
 
         delta_label = "Absolute" if absolute_delta else "Relative"
-        export_path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
+        export_path = _maya_save_file_dialog(
             f"Export {delta_label} Shapes To BlendShape Node",
-            f"{self.current_editor.name}.mb",
             "Maya Binary (*.mb);;Maya ASCII (*.ma);;Maya Files (*.ma *.mb)",
         )
         if not export_path:
@@ -1113,6 +1208,8 @@ class EditorOpsMixin(MainWindowMixin):
     def _export_shapes_to_alembic(self, absolute_delta: bool = False) -> None:
         """Export the active editor's shapes to an Alembic file.
 
+        The destination is chosen with Maya's native file dialog.
+
         Parameters:
             absolute_delta (bool): Whether to export absolute rather than
                 relative deltas.
@@ -1125,10 +1222,8 @@ class EditorOpsMixin(MainWindowMixin):
             return
 
         delta_label = "Absolute" if absolute_delta else "Relative"
-        export_path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
+        export_path = _maya_save_file_dialog(
             f"Export {delta_label} Shapes To Alembic",
-            f"{self.current_editor.name}.abc",
             "Alembic Files (*.abc)",
         )
         if not export_path:

@@ -41,6 +41,10 @@ Full diff of `v1.6.5` → `v1.7.0` (30 files, +6195 / -1317).
 
 - **Workspace collapse/expand** - a collapse toggle button was added to the editor menu bar. In docked mode the released space goes to Maya's viewport (not the toolbox) by resizing the dock splitter/neighbors; it saves and restores window size, constraints and splitter state, works for floating and docked layouts, and handles dock/undock reparenting while collapsed. The menu bar is hidden while docked and collapsed.
 
+### File dialogs
+
+- **Maya-native file dialogs** - the File > Import/Export actions (BlendShape node and Alembic) and the OBJ / split-data directory pickers now use `cmds.fileDialog2` with `dialogStyle=2` instead of Qt's `QFileDialog`, so they match Maya's own file browser. Extension correction for `.ma`/`.mb`/`.abc` is unchanged.
+
 ### Mesh utilities
 
 - **Copy Vtx Positions** / **Paste Vtx Positions** buttons added to the side toolbar (new `copy_vertices_icon.svg` / `paste_vertices_icon.svg`), wired to the existing `meshTools.copy_selected_mesh_vertex_position` / `paste_vertex_positions_to_selected_mesh`.
