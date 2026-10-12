@@ -1,3 +1,30 @@
+## What's new in v1.7.1
+
+Full diff of `v1.7.0` → `v1.7.1` (8 files, +455 / -57).
+
+### Work Shapes
+
+- **Search** - a **Filter work shapes...** token search bar above the tree hides work shapes that do not match the entered terms, keeping group folders visible whenever one of their children matches. The active search is re-applied after tree rebuilds (add/remove/reload).
+
+### File dialogs
+
+- **Maya-native file dialogs** - the File > Import/Export actions (BlendShape node and Alembic) and the OBJ / split-data directory pickers now use `cmds.fileDialog2` with `dialogStyle=2` instead of Qt's `QFileDialog`, so they match Maya's own file browser. Extension correction for `.ma`/`.mb`/`.abc` is unchanged. New helpers `_maya_file_dialog`, `_maya_open_file_dialog`, `_maya_save_file_dialog` and `_maya_directory_dialog` centralize the calls.
+
+### Shape interchange (Alembic / BlendShape node)
+
+- **Shared sequence metadata** - metadata writing was centralized in `_add_sequence_metadata_to_node`, now used by both the blendshape-node and Alembic exporters, so blendshape-node exports carry the same `shapesSequenceMetaData` (`totalShapes`, `shapesList`, `controlSorting`, `customShapeColorAttributes`, `currentUnitTime`, `exportType`, `editorVersion`).
+- **Import restores layout metadata** - `import_blendshape_node` reads `controlSorting` and `customShapeColorAttributes` from the imported metadata, and `ingest_shapes_from_blendshape_node` gained `control_sorting` / `custom_shapes_colors` parameters to re-apply them, so imported shapes keep their ordering and custom colors.
+- **More robust export/import** - `currentUnitTime` is written from `cmds.currentTime` instead of `currentUnit`, the export type (`absolute` / `relative`) and editor version are recorded, temporary-node deletion is guarded with `cmds.objExists`, and the `AbcExport` job string quotes the file path and normalizes backslashes to forward slashes so paths containing spaces survive parsing.
+
+<details>
+<summary>Full commit list (v1.7.0 → v1.7.1)</summary>
+
+- 4616e82 Add search filter to the Work Shapes panel
+- e122c39 Use Maya-native file dialogs for OBJ, BlendShape, Alembic, and split-data selection
+- e1e0c85 refactor: improve Alembic shape interchange metadata handling
+
+</details>
+
 ## What's new in v1.7.0
 
 Full diff of `v1.6.5` → `v1.7.0` (30 files, +6195 / -1317).
@@ -7,7 +34,6 @@ Full diff of `v1.6.5` → `v1.7.0` (30 files, +6195 / -1317).
 **The Work Shapes panel is now a hierarchical tree.** It moved from the flat `QListView`/`WorkShapeItemsModel` backing store to an item-based `QTreeWidget` (`WorkShapesListView`) using shared `WorkShapeRoles`. `WorkShapeItemsModel` was retired (`models.py` -329 lines). Grouping and ordering mirror the Primaries tree: identical 16 px-per-level indentation, native branch glyph hidden, chevrons painted by the delegate.
 
 - **Grouping & ordering** - drag a shape onto the middle of a group to nest it, onto a group's top/bottom edge to reorder as a sibling, or onto empty space to move it to the top level. **Ctrl+G** (or context-menu **Group Selected**) groups the selection; folder rows expose **Rename Group** and **Ungroup**. Ordering/nesting is persisted on the container in the new `workShapeSorting` attribute via the shared `TreeViewOrderingManager`, and reconciled against the rig on load.
-- **Search** - a **Filter work shapes...** token search bar above the tree hides work shapes that do not match the entered terms, keeping group folders visible whenever one of their children matches. The active search is re-applied after tree rebuilds (add/remove/reload).
 - **Extract Motion Axis** - new context submenu that splits a work shape's target delta into per-axis contributions: **X**, **Y**, **Z**, plus a **Positive** submenu (`X+`, `Y+`, `Z+`) and a **Negative** submenu (`X-`, `Y-`, `Z-`). The source shape keeps the remaining motion and each extraction creates a new work shape named `<shape>_extracted_<Axis>[Positive|Negative]`, inserted directly below its source (staying inside the same group). Driver connections are copied to the extracted shape (`extract_axis_motion_from_work_shape`).
 - **Combine Work Shapes** - **Ctrl+J** (or context menu) sums the target deltas of the other selected work shapes into the active/current shape and deletes the sources (`combine_work_shapes`). The delegate paints an outline on the target so it's clear which shape receives the merge.
 - **Apply Weights** - new context action above **Clear Weights** that applies masked weight maps to every selected work shape (`apply_masked_weight_maps_to_work_shapes`).
@@ -41,10 +67,6 @@ Full diff of `v1.6.5` → `v1.7.0` (30 files, +6195 / -1317).
 ### Editor window
 
 - **Workspace collapse/expand** - a collapse toggle button was added to the editor menu bar. In docked mode the released space goes to Maya's viewport (not the toolbox) by resizing the dock splitter/neighbors; it saves and restores window size, constraints and splitter state, works for floating and docked layouts, and handles dock/undock reparenting while collapsed. The menu bar is hidden while docked and collapsed.
-
-### File dialogs
-
-- **Maya-native file dialogs** - the File > Import/Export actions (BlendShape node and Alembic) and the OBJ / split-data directory pickers now use `cmds.fileDialog2` with `dialogStyle=2` instead of Qt's `QFileDialog`, so they match Maya's own file browser. Extension correction for `.ma`/`.mb`/`.abc` is unchanged.
 
 ### Mesh utilities
 
