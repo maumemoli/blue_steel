@@ -26,6 +26,7 @@ from .mainWindowMixin import MainWindowMixin, target_shape_names
 from .models import (
     ShapeItemsModel,
     WorkShapeRoles,
+    normalized_search_terms,
 )
 from .qt import (
     QAbstractItemView,
@@ -203,6 +204,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         editor = self.current_editor
         if editor is None or editor.work_blendshape is None:
             self.work_shapes_view._sync_driver_expansion(None)
+            self._apply_active_work_shapes_search_filter()
             return
 
         weights = sorted(editor.get_work_blendshape_weights() or [], key=lambda w: str(w).lower())
@@ -244,6 +246,67 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             store.ordered_tree(), None, info_by_name, edit_name, selected, collapsed_folders
         )
         self.work_shapes_view._sync_driver_expansion(editor)
+        self._apply_active_work_shapes_search_filter()
+
+
+    def _apply_active_work_shapes_search_filter(self) -> None:
+        """Re-apply the current Work Shapes search terms to the tree.
+
+        Called after a rebuild so an active search survives tree refreshes
+        triggered by add/remove/reload operations.
+
+        Returns:
+            None
+        """
+        search = getattr(self, "work_shapes_search", None)
+        if search is None:
+            return
+        self._apply_work_shapes_tree_filter(search.terms())
+
+
+    def _on_work_shapes_search_changed(self, terms) -> None:
+        """Filter the Work Shapes tree for the given search terms.
+
+        Parameters:
+            terms (object): Token list emitted by the Work Shapes search bar.
+
+        Returns:
+            None
+        """
+        self._apply_work_shapes_tree_filter(terms)
+        self._update_delegate_name_columns()
+
+
+    def _apply_work_shapes_tree_filter(self, terms) -> None:
+        """Hide Work Shapes items that do not match ``terms``.
+
+        Folders stay visible when any descendant matches, mirroring the
+        Primaries tree filter so grouped matches remain discoverable.
+
+        Parameters:
+            terms (object): Search terms (a string or an iterable of strings).
+
+        Returns:
+            None
+        """
+        search_terms = normalized_search_terms(terms)
+
+        def visit(item: QTreeWidgetItem) -> bool:
+            item_text = item.text(0).lower()
+            own_match = not search_terms or any(term in item_text for term in search_terms)
+            child_match = False
+            for i in range(item.childCount()):
+                if visit(item.child(i)):
+                    child_match = True
+            visible = own_match or child_match
+            item.setHidden(not visible)
+            if not visible and item.isSelected():
+                item.setSelected(False)
+            return visible
+
+        for i in range(self.work_shapes_view.topLevelItemCount()):
+            visit(self.work_shapes_view.topLevelItem(i))
+        self.work_shapes_view.viewport().update()
 
 
     def _build_work_shapes_tree(

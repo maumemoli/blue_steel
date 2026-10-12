@@ -912,6 +912,8 @@ class EditorUiMixin(MainWindowMixin):
         )
         work_toolbar.addWidget(self.auto_edit_work_shape_button)
         work_shapes_layout.addLayout(work_toolbar)
+        self.work_shapes_search = TokenSearchBar("Filter work shapes...")
+        work_shapes_layout.addWidget(self.work_shapes_search)
         self.work_shapes_view = WorkShapesListView(
             self._on_work_shape_drop_received,
             self._on_work_shape_duplicate_requested,
@@ -1398,6 +1400,7 @@ class EditorUiMixin(MainWindowMixin):
         self.primaries_search.searchChanged.connect(self._on_primaries_search_changed)
         self.shapes_search.searchChanged.connect(self._on_shapes_search_changed)
         self.active_shapes_search.searchChanged.connect(self._on_active_shapes_search_changed)
+        self.work_shapes_search.searchChanged.connect(self._on_work_shapes_search_changed)
         self.shapes_list_active_button.toggled.connect(self._filter_shapes_active)
         self.shapes_downstream_button.toggled.connect(self._filter_shapes_downstream)
         self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)

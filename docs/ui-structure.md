@@ -655,6 +655,7 @@ Shared base and utilities for all feature mixins.
 - `_stop_active_blendshape_trackers()` / `_start_active_blendshape_trackers()`
 - `_reload_work_shapes_from_editor()` — rebuild the tree and refresh dependent UI.
 - Tree/persistence: `_rebuild_work_shapes_tree()` / `_build_work_shapes_tree(...)` / `_work_shape_sorting_store()` / `_save_work_shape_sorting_store(store)` / `_collapsed_work_shape_folder_names()`.
+- Search: `_on_work_shapes_search_changed(terms)` / `_apply_work_shapes_tree_filter(terms)` / `_apply_active_work_shapes_search_filter()`.
 - Item accessors: `_work_shape_item(name)` / `_work_shape_value(name)` / `_work_shape_edit_name()` / `_set_work_shape_edit_name(name)` / `_has_connected_driver_shapes()`.
 - Group/order handlers: `_on_work_shapes_move_requested(names, target, position)` / `_group_selected_work_shapes()` / `_rename_work_shape_folder(item)` / `_ungroup_selected_work_shapes()` (Ctrl+G emits `groupRequested`).
 - `_on_add_work_shape_clicked()` / `_on_remove_work_shapes_clicked()` / `_on_paint_work_shape_clicked()` / `_on_apply_work_shapes_clicked()`
@@ -866,6 +867,7 @@ MainWindow (central widget)
             │               │   ├── Get Active button
             │               │   └── primary_drop_view (PrimaryDropTreeWidget)
             │               ├── "Work Shapes"
+            │               │   ├── work_shapes_search (TokenSearchBar)
             │               │   └── work_shapes_view (WorkShapesListView)
             │               └── "Active Shapes"
             │                   ├── active_shapes_search (TokenSearchBar)

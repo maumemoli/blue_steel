@@ -205,7 +205,8 @@ def build_tree_handler():
 
     path = UI_PATH / "workShapesFeatureMixin.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    names = {"_build_work_shapes_tree", "_update_work_shape_folder_icon"}
+    names = {"_build_work_shapes_tree", "_update_work_shape_folder_icon",
+             "_apply_work_shapes_tree_filter"}
     methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
                for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {
@@ -214,6 +215,7 @@ def build_tree_handler():
         "WorkShapeRoles": Roles,
         "PRIMARY_TREE_FOLDER_ROLE": PRIMARY_TREE_FOLDER_ROLE,
         "PRIMARY_TREE_NAME_ROLE": PRIMARY_TREE_NAME_ROLE,
+        "normalized_search_terms": UI["models"].normalized_search_terms,
         "Qt": Qt,
     }
     module = ast.Module(body=methods, type_ignores=[])
@@ -728,6 +730,66 @@ class WorkShapesUiTests(unittest.TestCase):
         self.assertEqual(host._work_shape_tree_items["b_single"], other)
         self.assertTrue(folder.isExpanded())
         self.assertFalse(folder.icon(0).isNull())
+
+    def test_work_shape_search_filter_hides_non_matches_but_keeps_groups(self):
+        """The search filter hides non-matches while keeping matching groups."""
+        class BuilderHost:
+            def __init__(self, view):
+                self.work_shapes_view = view
+                self._work_shape_tree_items = {}
+
+        host = BuilderHost(self.view)
+        host._primary_tree_folder_open_icon = QtGui.QIcon(QtGui.QPixmap(4, 4))
+        host._primary_tree_folder_closed_icon = QtGui.QIcon(QtGui.QPixmap(4, 4))
+        host._build_work_shapes_tree = types.MethodType(BUILD_TREE_HANDLER["_build_work_shapes_tree"], host)
+        host._update_work_shape_folder_icon = types.MethodType(
+            BUILD_TREE_HANDLER["_update_work_shape_folder_icon"], host)
+        host._apply_work_shapes_tree_filter = types.MethodType(
+            BUILD_TREE_HANDLER["_apply_work_shapes_tree_filter"], host)
+        self.view.clear()
+        host._work_shape_tree_items.clear()
+        info = {
+            "mouthFix_workShape": {"value": 0.25, "muted": False, "connected": False,
+                                   "driver_connected": False, "driver_names": (), "tooltip": None},
+            "jawOpen_workShape": {"value": 0.5, "muted": False, "connected": False,
+                                  "driver_connected": False, "driver_names": (), "tooltip": None},
+            "browRaise_workShape": {"value": 0.0, "muted": False, "connected": False,
+                                    "driver_connected": False, "driver_names": (), "tooltip": None},
+            "nose_workShape": {"value": 0.0, "muted": False, "connected": False,
+                               "driver_connected": False, "driver_names": (), "tooltip": None},
+        }
+        nodes = [
+            {"name": "Mouth", "type": "group", "children": [
+                {"name": "mouthFix_workShape", "type": "primary"},
+                {"name": "jawOpen_workShape", "type": "primary"},
+            ]},
+            {"name": "Brows", "type": "group", "children": [
+                {"name": "browRaise_workShape", "type": "primary"},
+            ]},
+            {"name": "nose_workShape", "type": "primary"},
+        ]
+        host._build_work_shapes_tree(nodes, None, info, None, set(), set())
+        mouth_folder = self.view.topLevelItem(0)
+        brows_folder = self.view.topLevelItem(1)
+        nose_leaf = self.view.topLevelItem(2)
+        mouth_leaf = mouth_folder.child(0)
+        jaw_leaf = mouth_folder.child(1)
+
+        jaw_leaf.setSelected(True)
+        host._apply_work_shapes_tree_filter(["mouthfix"])
+
+        self.assertFalse(mouth_folder.isHidden())
+        self.assertFalse(mouth_leaf.isHidden())
+        self.assertTrue(jaw_leaf.isHidden())
+        self.assertFalse(jaw_leaf.isSelected())
+        self.assertTrue(brows_folder.isHidden())
+        self.assertTrue(brows_folder.child(0).isHidden())
+        self.assertTrue(nose_leaf.isHidden())
+
+        host._apply_work_shapes_tree_filter([])
+        for item in (mouth_folder, mouth_leaf, jaw_leaf, brows_folder,
+                     brows_folder.child(0), nose_leaf):
+            self.assertFalse(item.isHidden())
 
     def test_ctrl_g_emits_group_requested(self):
         groups = []
