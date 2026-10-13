@@ -1386,6 +1386,8 @@ class BlueSteelEditor(object):
         Returns:
             None
         """
+        all_shapes = work_shape_names + [target_work_shape_name]
+        self.apply_masked_weight_maps_to_work_shapes(all_shapes)
         target_weight = self.work_blendshape.get_weight_by_name(target_work_shape_name)
         
         if target_weight is None:
@@ -1400,7 +1402,6 @@ class BlueSteelEditor(object):
             self.delete_work_shape(work_shape_name)
         self.work_blendshape.set_target_delta(target_weight.id, target_delta)
 
-        
 
     @undoable
     @timed
@@ -1410,11 +1411,34 @@ class BlueSteelEditor(object):
         Parameters:
             shape_names (list): A list of shape names to apply the masked weight maps to
         """
+        shapes_weights = []
         for shape_name in shape_names:
             weight = self.work_blendshape.get_weight_by_name(shape_name)
             if weight is None:
-                raise ValueError(f"Shape '{shape_name}' not found in {self.work_blendshape.name}.")
-            self.work_blendshape.apply_weight_map_to_target(weight)
+               continue
+            shapes_weights.append(weight)
+        if not shapes_weights:
+            return
+        temp_weight_filter_mesh = self.duplicate_base_mesh_neutral_state("temp_weight_filter_mesh")
+        temp_filter_blendshape_name = cmds.blendShape(temp_weight_filter_mesh, name="temp_filter_blendshape")[0]
+        temp_filter_blendshape = Blendshape(temp_filter_blendshape_name)
+        for shapes_weight in shapes_weights:
+            weight = temp_filter_blendshape.add_target(shapes_weight)
+            self.work_blendshape.connect_target_to_blendshape_target(shapes_weight.id,
+                                                                     temp_filter_blendshape_name,
+                                                                     weight.id)
+            self.work_blendshape.transfer_weight_map(shapes_weight.id,
+                                                     weight.id,
+                                                     temp_filter_blendshape_name,)
+            temp_filter_blendshape.set_weight_value(weight, 1.0)
+            dup = cmds.duplicate(temp_weight_filter_mesh, name=f"dup_{shapes_weight}", f=True)[0]
+            self.work_blendshape.connect_mesh_to_target(shapes_weight.id, dup)
+            
+            cmds.delete(dup)
+            temp_filter_blendshape.remove_target(weight)
+        self.clear_work_weights_map_values(shapes_weights)
+        cmds.delete(temp_weight_filter_mesh)
+
 
     
     @undoable
@@ -5630,7 +5654,8 @@ class BlueSteelEditor(object):
                 active_shapes[str(weight)] = weight_value
         return active_shapes
 
-
+    @undoable
+    @timed
     def propagate_work_shape_to_active_shapes(self,
                                               work_shape: str,
                                               active_shapes: list,
@@ -5683,6 +5708,7 @@ class BlueSteelEditor(object):
         # the work shapes created by this propagation, grouped at the end
         created_work_shapes = []
         try:
+            self.apply_masked_weight_maps_to_work_shapes([work_shape])
             # we need the absolute deltas for the active shapes.
             active_deltas = self.get_shapes_delta_masks(active_shapes,
                                                         normalize=normalize,
@@ -5722,6 +5748,9 @@ class BlueSteelEditor(object):
                 self.connect_work_blendshape_weight_to_blendshape_weight(current_work_shape, shape)
             # Mask normalization/blurring is handled by get_shapes_delta_masks.
             self.work_blendshape.set_weight_value(unpropagated_work_shape, 1.0)
+            drivers = self.get_work_shape_driver_shapes(work_shape)
+            if drivers:
+                self.disconnect_work_shape_drivers(work_shape,drivers)
             self.work_blendshape.set_weight_value(work_shape_weight, 0.0)
             # gather every propagated work shape under a dedicated folder
             group_name = f"{work_shape}_Propagation"

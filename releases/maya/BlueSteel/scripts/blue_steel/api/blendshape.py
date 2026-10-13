@@ -1783,7 +1783,10 @@ class Blendshape(object):
         cmds.setToolTo("sculptMeshCacheContext")
 
 
-    def transfer_weight_map(self, source_weight_id: int, target_weight_id: int, target_blendshape: str = None):
+    def transfer_weight_map(self,
+                            source_weight_id: int,
+                            target_weight_id: int,
+                            target_blendshape: str = None):
         """
         Transfers the weight map from the source weight to the target weight in another blendshape node.
         Parameters:
@@ -1809,8 +1812,8 @@ class Blendshape(object):
         """
         Connects the weight map from the source weight to the target weight in another blendshape node.
         Parameters:
-            source_weight (int): The weight to connect the weight map from.
-            target_weight (int): The weight to connect the weight map to.
+            source_weight_id (int): The weight to connect the weight map from.
+            target_weight_id (int): The weight to connect the weight map to.
             target_blendshape (str): The blendshape node to connect the weight map to.
         Example:
             >>> blendshape1 = Blendshape("blendshape1")

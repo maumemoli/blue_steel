@@ -763,7 +763,9 @@ actual names, and exposes all mutations:
 work-shape add/remove/rename), while the UI layer translates tree gestures into
 store calls and persists them. Primaries and groups can be dragged to reorder
 or nest; dropping onto a group places the dragged items inside it. Work shapes
-behave the same way, and **Ctrl+G** groups the selected work shapes.
+behave the same way, and **Ctrl+G** groups the selected work shapes. The
+Work Shapes tree also handles **Ctrl+Alt+A**, which applies masked weight maps
+to the selected work shapes.
 
 ---
 

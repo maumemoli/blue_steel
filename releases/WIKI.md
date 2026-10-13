@@ -306,7 +306,8 @@ Key behavior:
   reorder, or empty space to move it to the top level. Group order and nesting
   are saved with the system. Press **Ctrl+G** (or use the context-menu **Group
   Selected**) to group the selected WorkShapes; folder rows offer **Rename
-  Group** and **Ungroup**.
+  Group** and **Ungroup**. Press **Ctrl+Alt+A** (or use the context-menu **Apply
+  Weights**) to apply masked weight maps to the selected WorkShapes.
 - The WorkShape context-menu **Extract Mesh** operation is separate from regular
   shape extraction and is currently unavailable when the editor mesh has a
   skinCluster.

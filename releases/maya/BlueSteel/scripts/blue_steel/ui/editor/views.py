@@ -993,7 +993,8 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
             "edge to reorder, or empty space to move it to the top level.<br>"
             "<b>Drag outside</b> a driver row and release to remove that driver connection.<br>"
             "<b>Alt+left-click</b> a disclosure triangle to expand or collapse all work shapes.<br>"
-            "<b>Ctrl+G</b> groups the selected work shapes."
+            "<b>Ctrl+G</b> groups the selected work shapes.<br>"
+            "<b>Ctrl+Alt+A</b> applies masked weight maps to the selected work shapes."
         )
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
@@ -1024,6 +1025,31 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
                 yield item
             for i in range(item.childCount()):
                 stack.append(item.child(i))
+
+    def _weight_map_targets(self) -> List[str]:
+        """Return the work-shape names the weight-map actions should target.
+
+        Selected work-shape leaves are used when available; when nothing is
+        selected the current item is used instead. Header (driver) rows and
+        group/folder rows are ignored.
+
+        Returns:
+            List[str]: Work-shape names to pass to the weight-map callbacks.
+        """
+        def _leaf_name(item) -> str:
+            if item is None:
+                return ""
+            if bool(item.data(0, ShapeItemsModel.IsHeaderRole)):
+                return ""
+            if bool(item.data(0, PRIMARY_TREE_FOLDER_ROLE)):
+                return ""
+            return str(item.data(0, ShapeItemsModel.NameRole) or "")
+
+        names = [name for name in (_leaf_name(item) for item in self.selectedItems()) if name]
+        if names:
+            return names
+        current_name = _leaf_name(self.currentItem())
+        return [current_name] if current_name else []
 
     def _sync_driver_expansion(self, editor=None) -> None:
         """Drop collapsed-driver names that no longer exist in the tree."""
@@ -1084,6 +1110,8 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
             return
         if self._handle_group_shortcut(event):
             return
+        if self._handle_apply_weights_shortcut(event):
+            return
         super().keyPressEvent(event)
 
     def _combine_selection(self) -> tuple:
@@ -1133,6 +1161,21 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
         """Handle Ctrl+J and emit the combine request when pressed."""
         if event.key() == Qt.Key_J and (event.modifiers() & Qt.ControlModifier):
             if self._emit_combine_requested():
+                event.accept()
+                return True
+        return False
+
+    def _handle_apply_weights_shortcut(self, event) -> bool:
+        """Handle Ctrl+Alt+A and apply weights to the selected work shapes."""
+        modifiers = event.modifiers()
+        if (
+            event.key() == Qt.Key_A
+            and (modifiers & Qt.ControlModifier)
+            and (modifiers & Qt.AltModifier)
+        ):
+            targets = self._weight_map_targets()
+            if targets and self._apply_weights_callback is not None:
+                self._apply_weights_callback(targets)
                 event.accept()
                 return True
         return False
@@ -1354,7 +1397,7 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
             menu.setToolTipsVisible(True)
         connections_menu = menu.addMenu("Connections")
         break_link_action = connections_menu.addAction("Break Link")
-
+        menu.addSeparator()
         weight_maps_menu = menu.addMenu("Weight Maps")
         copy_weights_action = weight_maps_menu.addAction("Copy")
         paste_weights_action = weight_maps_menu.addAction("Paste Weights")
@@ -1362,9 +1405,10 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
         add_copied_weights_action = weight_maps_menu.addAction("Add Copied Weights")
         subtract_copied_weights_action = weight_maps_menu.addAction("Subtract Copied Weights")
         normalize_selected_weights_action = weight_maps_menu.addAction("Normalize Selected Weights")
-        weight_maps_menu.addSeparator()
-        apply_weights_action = weight_maps_menu.addAction("Apply Weights")
-        clear_weights_action = weight_maps_menu.addAction("Clear Weights")
+        apply_weights_action = menu.addAction("Apply Weights")
+        apply_weights_action.setShortcut("Ctrl+Alt+A")
+        apply_weights_action.setToolTip("Apply masked weight maps to the selected work shapes (Ctrl+Alt+A)")
+        clear_weights_action = menu.addAction("Clear Weights")
 
         can_paste_weights = True
         if self._can_paste_weights_callback is not None:
