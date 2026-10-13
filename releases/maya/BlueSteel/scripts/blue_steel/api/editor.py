@@ -3087,19 +3087,20 @@ class BlueSteelEditor(object):
         base_mesh = self.base_mesh
         if base_mesh is None:
             raise ValueError("Base mesh not found.")
-        extracted = cmds.duplicate(base_mesh, name=pose_name)
+        extracted = cmds.duplicate(base_mesh, name=pose_name, fullPath=True)[0]
         # we need to unlock all the transform attributes of the duplicated mesh
         for axis in ["X", "Y", "Z"]:
             for attr in ["translate", "rotate", "scale"]:
-                cmds.setAttr(f"{extracted[0]}.{attr}{axis}", lock=False)
-        if extracted[0] != pose_name:
+                cmds.setAttr(f"{extracted}.{attr}{axis}", lock=False)
+        extract_group = extracted
+        if extracted != pose_name:
             extract_group = cmds.createNode("transform", name=f"{pose_name}_extracted_GRP")
-            extracted = cmds.parent(extracted[0], extract_group)[0]
+            extracted = cmds.parent(extracted, extract_group)[0]
             extracted = cmds.rename(extracted, pose_name)
         # we need to move the mesh to the side
         bbox = mayaUtils.get_mesh_bounding_box(base_mesh)
         offset = (bbox[1][0] - bbox[0][0]) * 1.1
-        cmds.move(offset, 0, 0, extracted, relative=True, worldSpace=True)
+        cmds.move(offset, 0, 0, extract_group, relative=True, worldSpace=True)
         return extracted
 
     def set_work_shape_mute_state(self, shape_name: str, state: bool):
@@ -5611,7 +5612,7 @@ class BlueSteelEditor(object):
             for shape in shapes_list:
                 self.set_shape_pose(shape)
                 duplicated = self.duplicate_base_mesh_at_current_pose()
-                deformed_points = mayaUtils.get_mesh_raw_points(duplicated[0])
+                deformed_points = mayaUtils.get_mesh_raw_points(duplicated)
                 mask = np.zeros(total_vertices, dtype=np.float32)
                 components = np.where(np.abs(deformed_points - base_points).max(axis=1) > 0.01)[0]
                 mask[components] = 1.0
