@@ -806,25 +806,38 @@ class ShapesFilterProxyModel(QSortFilterProxyModel):
 
 
 class PrimarySubsetProxyModel(QSortFilterProxyModel):
-    """Primary-only subset view without headers, driven by an explicit name set."""
+    """Primary-only subset view without headers, driven by an ordered name set.
+
+    The selected names are kept in the order they were added or last
+    rearranged; :meth:`selected_names` therefore returns the Sliders Drop Box
+    display order rather than an alphabetical list. A membership set mirrors
+    the order list so :meth:`filterAcceptsRow` stays O(1).
+    """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._selected_order: List[str] = []
         self._selected_names: Set[str] = set()
         self.setDynamicSortFilter(False)
 
     def clear_selected_names(self) -> None:
+        self._selected_order.clear()
         self._selected_names.clear()
         self.invalidateFilter()
 
     def add_selected_names(self, names: Sequence[str]) -> None:
         for name in names:
-            if name:
-                self._selected_names.add(str(name))
+            if not name:
+                continue
+            name = str(name)
+            if name in self._selected_names:
+                continue
+            self._selected_order.append(name)
+            self._selected_names.add(name)
         self.invalidateFilter()
 
     def selected_names(self) -> List[str]:
-        return sorted(self._selected_names)
+        return list(self._selected_order)
 
     def remove_selected_names(self, names: Sequence[str]) -> int:
         remove_names = {str(name) for name in names if name}
@@ -832,9 +845,49 @@ class PrimarySubsetProxyModel(QSortFilterProxyModel):
             return 0
         removed = len(remove_names.intersection(self._selected_names))
         if removed:
+            self._selected_order = [
+                name for name in self._selected_order if name not in remove_names
+            ]
             self._selected_names.difference_update(remove_names)
             self.invalidateFilter()
         return removed
+
+    def reorder_selected_names(
+        self, names: Sequence[str], target: str, position: str
+    ) -> bool:
+        """Move ``names`` next to ``target`` and persist the new order.
+
+        Parameters:
+            names (Sequence[str]): Names being dragged. Names not currently in
+                the set are ignored; the survivors are moved as a block while
+                keeping their current relative order.
+            target (str): Existing name to drop next to; empty or ``"root"``
+                position appends to the end.
+            position (str): ``"before"`` or ``"after"`` (``"root"`` appends).
+
+        Returns:
+            bool: ``True`` when the stored order actually changed.
+        """
+        moving_set = {str(name) for name in names if name and str(name) in self._selected_names}
+        if not moving_set:
+            return False
+        order = list(self._selected_order)
+        moving = [name for name in order if name in moving_set]
+        remaining = [name for name in order if name not in moving_set]
+        target = str(target or "")
+        if not target or str(position) == "root":
+            new_order = remaining + moving
+        elif target not in self._selected_names or target in moving_set:
+            return False
+        else:
+            insert_at = remaining.index(target)
+            if str(position) == "after":
+                insert_at += 1
+            new_order = remaining[:insert_at] + moving + remaining[insert_at:]
+        if new_order == order:
+            return False
+        self._selected_order = new_order
+        return True
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
         model = self.sourceModel()

@@ -59,8 +59,9 @@ MainWindow
 The **Sliders Drop Box** is a flat, drop-enabled `PrimaryTreeWidget` variant
 (`PrimaryDropTreeWidget`). It reuses the primaries-tree slider interaction
 (`SliderDragViewMixin` + `SliderItemDelegate`) and keeps
-`PrimarySubsetProxyModel` only as the backing selected-name set that controls
-which flat rows are visible.
+`PrimarySubsetProxyModel` only as the ordered backing name set that controls
+which flat rows are visible and in what order. Rows can be dragged to
+rearrange them (released inside) or removed (released outside).
 
 ### Data flow
 
@@ -232,10 +233,11 @@ Qt models. Roles used throughout are `Qt.UserRole + N` constants (see
   - `data(index, role)` — overrides header/group rendering.
   - `lessThan(left, right)` — sort comparator.
 
-- `PrimarySubsetProxyModel(QSortFilterProxyModel)` — backing selected-name set for the flat Sliders Drop Box tree. No longer set as a view model; `PrimaryDropTreeWidget` queries `selected_names()` and shows/hides flat rows accordingly.
+- `PrimarySubsetProxyModel(QSortFilterProxyModel)` — backing ordered selected-name set for the flat Sliders Drop Box tree. No longer set as a view model; `PrimaryDropTreeWidget` queries `selected_names()` and shows/hides flat rows accordingly. Names keep insertion order unless rearranged, so `selected_names()` is the drop-box display order (not alphabetical).
   - `__init__(parent=None)`
   - `clear_selected_names()` / `add_selected_names(names)` / `remove_selected_names(names)`
-  - `selected_names()`
+  - `selected_names()` — ordered list of selected names.
+  - `reorder_selected_names(names, target, position)` — move a dragged block before/after `target` (or append for empty/`"root"`), keeping the block's relative order; returns whether the order changed.
   - `filterAcceptsRow(...)` / `lessThan(...)`
 
 - `WorkShapeRoles` — Qt role ids shared by Work Shapes tree items and `WorkShapeItemDelegate` (`InEditModeRole`, `ConnectedRole`, `DriverConnectedRole`, `DriverNamesRole`). `WorkShapeItemsModel` has been retired: the Work Shapes panel is now an item-based `QTreeWidget` (see `WorkShapesListView`).
@@ -307,9 +309,11 @@ Views that participate in slider double-click value editing set `_enable_slider_
 
 The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`: its sliders display values and follow scene updates but cannot be scrubbed or value-edited. `_enable_slider_value_edit` is not set there, and a read-only view also forces the delegate's `_slider_value_edit_enabled()` to `False`.
 
-- `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`.
+- `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`. Its custom drag gesture doubles as an in-view reorder: releasing inside the box emits `primaryMoveRequested(names, target, position)` (the inherited signal), drawing the shared `ReorderableTreeWidgetMixin` insertion indicator while dragging; releasing outside still requests removal.
   - `__init__(drop_callback, remove_callback=None, parent=None)`
   - `_selected_shape_names()`
+  - `_in_view_drop_target(global_pos)` — `(target_name, position)` for a pointer inside the view (`"root"` over empty space).
+  - `_move_removal_drag(global_pos)` / `_cancel_removal_drag()` / `_finish_removal_drag(global_pos)` — reorder when released inside, remove when released outside, and clear the indicator on cancel.
   - `_show_context_menu(pos)`
   - `_shape_names_from_mime(mime_data)`
   - `_can_accept_drop(mime_data)`
@@ -601,8 +605,8 @@ Shared base and utilities for all feature mixins.
 - `_compute_tree_max_name_width(tree)` / `_compute_filtered_max_name_width(view, model)` / `_update_delegate_name_columns()`
 - `_rebuild_shapes_tree()` / `_sync_shapes_tree_items_from_source_rows(...)`
 - `_selected_primary_tree_names()` / `_selected_split_primary_names()`
-- `_rebuild_primary_drop_tree()` / `_apply_primary_drop_tree_filter()` — build/filter the flat Sliders Drop Box tree.
-- `_on_primary_drop_list_dropped(names)` / `_on_primary_drop_remove_requested(names)` / `_fill_primary_drop_list_from_active()`
+- `_rebuild_primary_drop_tree()` / `_apply_primary_drop_tree_filter()` / `_reorder_primary_drop_tree_items(visible_order)` — build, filter and order the flat Sliders Drop Box tree. Visible rows are laid out in `_primary_subset_proxy.selected_names()` order (hidden rows after), so a reorder survives rebuilds.
+- `_on_primary_drop_list_dropped(names)` / `_on_primary_drop_remove_requested(names)` / `_on_primary_drop_move_requested(names, target, position)` / `_fill_primary_drop_list_from_active()`
 - `_selected_names_from_list_view(view, model)` / `_selected_active_shape_names()` / `_selected_primary_drop_shape_names()`
 - `_on_display_heat_map_toggled(checked)` / `_is_heat_map_switch_active()` / `_set_heat_map_target_for_editor(...)` / `_clear_heat_map_target_for_editor()` / `_update_heat_map_target_from_shapes_selection()` / `_update_heat_map_target_from_active_shapes_selection()` / `_update_heat_map_target_from_work_shapes_selection()`
 - `_refresh_primary_folder_sort_values()` / `_sort_primaries_tree()` / `_iter_primary_tree_leaves()` / `_get_primary_tree_value(shape_name)`
@@ -899,7 +903,7 @@ MainWindow (central widget)
 |---|---|---|---|
 | `PrimaryTreeWidget` (`primaries_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `TreeViewOrderingManager` (reconciled with `BlueSteelEditor.get_primary_shapes()`) | Editor tab → Primaries panel |
 | `ShapeTreeWidget` (`shapes_view`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shapes_proxy` rows | Editor tab → Shapes panel |
-| `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
+| `PrimaryDropTreeWidget` (`primary_drop_view`) | `SliderItemDelegate` | `QTreeWidget` internal model; visibility and order driven by `_primary_subset_proxy.selected_names()` | Editor tab → Sliders Drop Box (third column) |
 | `WorkShapesListView` (`work_shapes_view`) | `WorkShapeItemDelegate` | `QTreeWidget` internal model built from `TreeViewOrderingManager` (reconciled with the work-blendshape weights) | Editor tab → Work Shapes (third column) |
 | `ActiveShapesListView` (`active_shapes_view`) | `ActiveShapesItemDelegate` | `_active_shapes_proxy` (`ShapesFilterProxyModel`) | Editor tab → Active Shapes (third column); read-only sliders (`_sliders_read_only = True`) |
 | `SplitPrimaryAssignmentsView` (`split_primaries_tree`) | `SliderItemDelegate` | `QTreeWidget` internal model built from `_shape_model` + group assignments | Split Settings tab → Primary Split Group Assignments |

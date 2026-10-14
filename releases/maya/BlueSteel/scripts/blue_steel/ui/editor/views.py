@@ -1802,6 +1802,10 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
     navigation behave identically) but only ever shows top-level primary
     leaves. The owning window filters item visibility based on the current
     drop set, so this widget itself only owns the drop plumbing.
+
+    The custom drag gesture also reorders rows: releasing inside the box emits
+    ``primaryMoveRequested`` (drawn with the shared insertion indicator) while
+    releasing outside requests removal.
     """
 
     PRIMARY_TREE_MIME_TYPE = PRIMARY_TREE_MIME_TYPE
@@ -1892,6 +1896,52 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
             selected_names = tuple(self._selected_shape_names())
             if selected_names:
                 self._arm_removal_drag(selected_names, event.globalPos())
+
+    def _in_view_drop_target(self, global_pos) -> tuple:
+        """Return ``(target_name, position)`` for a pointer inside the view."""
+        pos = self.viewport().mapFromGlobal(global_pos)
+        item, position = self._internal_drop_target(pos)
+        if item is None:
+            return "", "root"
+        return self._item_name(item), position
+
+    def _move_removal_drag(self, global_pos) -> None:
+        # The removal drag doubles as an in-view reorder gesture: while the
+        # pointer is inside the box, track and draw the insertion target.
+        super()._move_removal_drag(global_pos)
+        if not self._removal_drag_active:
+            return
+        if self._removal_drag_outside:
+            self._clear_drop_indicator()
+            return
+        pos = self.viewport().mapFromGlobal(global_pos)
+        item, position = self._internal_drop_target(pos)
+        if item is not self._drop_target_item or position != self._drop_position:
+            self._drop_target_item = item
+            self._drop_position = position
+            self.viewport().update()
+
+    def _cancel_removal_drag(self) -> None:
+        self._clear_drop_indicator()
+        super()._cancel_removal_drag()
+
+    def _finish_removal_drag(self, global_pos) -> None:
+        target = self._removal_drag_target
+        reorder = (
+            self._removal_drag_active
+            and target is not None
+            and not self._outside_removal_panel(global_pos)
+        )
+        if not reorder:
+            super()._finish_removal_drag(global_pos)
+            return
+        target_name, position = self._in_view_drop_target(global_pos)
+        names = list(target)
+        self._cancel_removal_drag()
+        self._removal_press_active = False
+        if names:
+            self.primaryMoveRequested.emit(names, target_name, position)
+        self.viewport().update()
 
     def _show_context_menu(self, pos) -> None:
         item = self.itemAt(pos)

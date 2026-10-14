@@ -1001,6 +1001,24 @@ class ShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Removed {removed} slider(s) from Sliders Drop Box.")
 
 
+    def _on_primary_drop_move_requested(self, names, target: str, position: str) -> None:
+        """Reorder the Sliders Drop Box after a drag inside the view.
+
+        Parameters:
+            names (Sequence[str]): Selected primary names being dragged.
+            target (str): Name to drop next to; empty for the end of the list.
+            position (str): ``before`` / ``after`` / ``root``.
+
+        Returns:
+            None
+        """
+        if not self._primary_subset_proxy.reorder_selected_names(names, target, position):
+            return
+        self._apply_primary_drop_tree_filter()
+        self._update_info_labels()
+        self._set_status("Reordered Sliders Drop Box.")
+
+
     def _active_primary_names(self) -> List[str]:
         """Return the primary shape names with a non-zero blendshape weight.
 
@@ -1590,8 +1608,19 @@ class ShapesFeatureMixin(MainWindowMixin):
         try:
             primary_shapes = self.current_editor.get_primary_shapes().sort_for_display()
             custom_colors = self.current_editor.read_custom_shapes_colors() or {}
-            visible_names = set(self._primary_subset_proxy.selected_names())
-            for shape in primary_shapes:
+            visible_order = list(self._primary_subset_proxy.selected_names())
+            visible_names = set(visible_order)
+            shapes_by_name = {str(shape): shape for shape in primary_shapes}
+            # Visible entries are created first in their stored order so the
+            # drop-box arrangement survives a rebuild; the remaining primaries
+            # are appended as hidden rows.
+            ordered_shapes = [
+                shapes_by_name[name] for name in visible_order if name in shapes_by_name
+            ]
+            ordered_shapes += [
+                shape for shape in primary_shapes if str(shape) not in visible_names
+            ]
+            for shape in ordered_shapes:
                 shape_name = str(shape)
                 value = self._get_primary_tree_value(shape_name)
                 leaf_value = 0.0 if value is None else float(value)
@@ -1617,15 +1646,15 @@ class ShapesFeatureMixin(MainWindowMixin):
                 if shape_name in selected_names and shape_name in visible_names:
                     item.setSelected(True)
 
-            self.primary_drop_view.sortItems(0, Qt.AscendingOrder)
             self._apply_primary_drop_tree_filter()
         finally:
             self._syncing_primary_drop_tree = False
 
 
     def _apply_primary_drop_tree_filter(self) -> None:
-        """Show only the primary leaves currently present in the drop set."""
-        visible_names = set(self._primary_subset_proxy.selected_names())
+        """Show only the primary leaves in the drop set, in their stored order."""
+        visible_order = list(self._primary_subset_proxy.selected_names())
+        visible_names = set(visible_order)
         for i in range(self.primary_drop_view.topLevelItemCount()):
             item = self.primary_drop_view.topLevelItem(i)
             shape_name = str(item.data(0, PRIMARY_TREE_NAME_ROLE) or "")
@@ -1633,6 +1662,66 @@ class ShapesFeatureMixin(MainWindowMixin):
             item.setHidden(hidden)
             if hidden and item.isSelected():
                 item.setSelected(False)
+        self._reorder_primary_drop_tree_items(visible_order)
+
+
+    def _reorder_primary_drop_tree_items(self, visible_order: Sequence[str]) -> None:
+        """Reorder top-level rows so visible entries follow ``visible_order``.
+
+        Hidden rows keep their previous relative order and are placed after the
+        visible block. Selection and the current item are restored so a
+        reorder or refresh never drops the user's selection.
+
+        Parameters:
+            visible_order (Sequence[str]): Visible names in display order.
+
+        Returns:
+            None
+        """
+        view = self.primary_drop_view
+        count = view.topLevelItemCount()
+        if count <= 1:
+            return
+        desired_names: List[str] = []
+        seen: Set[str] = set()
+        for name in visible_order:
+            if name in self._primary_drop_tree_items and name not in seen:
+                desired_names.append(name)
+                seen.add(name)
+        for i in range(count):
+            name = str(view.topLevelItem(i).data(0, PRIMARY_TREE_NAME_ROLE) or "")
+            if name and name not in seen:
+                desired_names.append(name)
+                seen.add(name)
+        current_names = [
+            str(view.topLevelItem(i).data(0, PRIMARY_TREE_NAME_ROLE) or "") for i in range(count)
+        ]
+        if current_names == desired_names:
+            return
+        selected_names = set(self._selected_primary_drop_shape_names())
+        current_item = view.currentItem()
+        current_name = "" if current_item is None else str(
+            current_item.data(0, PRIMARY_TREE_NAME_ROLE) or ""
+        )
+        items = {}
+        for _ in range(count):
+            item = view.takeTopLevelItem(0)
+            if item is not None:
+                items[str(item.data(0, PRIMARY_TREE_NAME_ROLE) or "")] = item
+        for name in desired_names:
+            item = items.pop(name, None)
+            if item is not None:
+                view.addTopLevelItem(item)
+        for item in items.values():
+            view.addTopLevelItem(item)
+        for i in range(view.topLevelItemCount()):
+            item = view.topLevelItem(i)
+            name = str(item.data(0, PRIMARY_TREE_NAME_ROLE) or "")
+            item.setSelected(name in selected_names)
+        if current_name:
+            restored = self._primary_drop_tree_items.get(current_name)
+            if restored is not None:
+                view.setCurrentItem(restored)
 
 
     def _apply_primaries_tree_filter(self, terms) -> None:

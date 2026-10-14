@@ -870,6 +870,11 @@ class EditorUiMixin(MainWindowMixin):
         )
         self._allow_horizontal_collapse(self.primary_drop_view)
         self.primary_drop_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.primary_drop_view.setToolTip(
+            "<b>Sliders Drop Box:</b><br>"
+            "<b>Drag</b> a row within the box to reorder it.<br>"
+            "<b>Drag outside</b> the box and release to remove the selected entries."
+        )
         self._primary_drop_delegate = SliderItemDelegate(self.primary_drop_view)
         self.primary_drop_view.setItemDelegateForColumn(0, self._primary_drop_delegate)
         primary_drop_layout.addWidget(self.primary_drop_view, 1)
@@ -1406,6 +1411,7 @@ class EditorUiMixin(MainWindowMixin):
         self.shapes_upstream_button.toggled.connect(self._filter_shapes_upstream)
         self.primary_drop_get_active_button.clicked.connect(self._fill_primary_drop_list_from_active)
         self.primary_drop_add_active_button.clicked.connect(self._add_primary_drop_list_from_active)
+        self.primary_drop_view.primaryMoveRequested.connect(self._on_primary_drop_move_requested)
         self.shapes_view.itemClicked.connect(self._on_shapes_item_clicked)
         self.shapes_view.itemSelectionChanged.connect(self._on_shapes_selection_changed)
         self.shapes_view.toggleUpstreamFilterRequested.connect(self._on_shapes_toggle_upstream_filter_requested)

@@ -58,6 +58,7 @@ Full diff of `v1.6.5` → `v1.7.0` (30 files, +6195 / -1317).
 
 - New **Add Active** button (ADD icon) next to **Get Active**: it merges the currently active primaries into the box instead of replacing its contents. **Get Active** now uses the refresh icon. Both have clear tooltips (`_add_primary_drop_list_from_active`, shared `_active_primary_names`).
 - **Drag-out removal** - dragging a selected row outside the box and releasing removes the selected entries, with a closed-hand cursor while dragging and a trash-bin cursor once outside. Value-scrub and lock-icon areas are excluded so slider scrubbing and icon clicks still work.
+- **Drag-to-reorder** - dragging a selected row within the box now rearranges the entries (a blue insertion line shows the drop target); multi-selections move together and keep their relative order. The order is stored on the backing `PrimarySubsetProxyModel`, so it survives refreshes and system switches for the session, and is restored when rows are rebuilt. Releasing over empty space moves the selection to the end.
 
 ### Shapes / Split views
 
