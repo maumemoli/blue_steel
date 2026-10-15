@@ -32,10 +32,7 @@ def make_paint_cluster(*args):
     global CLUSTERS
 
     if selection:
-        weighted = False
-        if cmds.softSelect (q=True , sse=True):
-            weighted = True
-
+        weighted = cmds.softSelect (q=True , sse=True)
         symmetry = cmds.symmetricModelling (q=True , symmetry=True)
         if symmetry:
             cmds.symmetricModelling (symmetry=False)
@@ -43,8 +40,6 @@ def make_paint_cluster(*args):
         if symmetry:
             # mirrorCluster(cluster.handle)
             cmds.symmetricModelling (symmetry=True)
-        if not weighted:
-            cluster.paint ()
 
     else:
         selection = cmds.ls (sl=True)
@@ -348,15 +343,14 @@ class SmartCluster (object):
     def create(cls , weighted=True):
         selection = cmds.filterExpand (sm=31)
         transform = selection[0].split ('.')[0]
-        shape = cmds.listRelatives (transform , s=True)
         all_vertex = cmds.polyEvaluate (v=True)
 
         if selection:
-            elements , weights = soft_selection ()
+            elements, weights = soft_selection()
+            print(elements, weights)
             all_weights = [0.0] * all_vertex
-            if weighted:
-                for element , weight in zip (elements , weights):
-                    all_weights[element] = weight
+            for element , weight in zip (elements , weights):
+                all_weights[element] = weight
             cluster = cls ()
             maya_version = int(cmds.about(v=True))
             if maya_version >= 2022:
