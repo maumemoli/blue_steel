@@ -347,7 +347,6 @@ class SmartCluster (object):
 
         if selection:
             elements, weights = soft_selection()
-            print(elements, weights)
             all_weights = [0.0] * all_vertex
             for element , weight in zip (elements , weights):
                 all_weights[element] = weight
