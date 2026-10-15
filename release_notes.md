@@ -1,3 +1,43 @@
+## What's new in v1.7.2
+
+Full diff of `v1.7.1` → `v1.7.2` (13 files, +892 / -73).
+
+### Work Shapes
+
+- **Apply Weights shortcut** - the weight-map apply action is no longer nested under the **Weight Maps** submenu: it is a top-level context-menu entry with the **Ctrl+Alt+A** shortcut and a tooltip. `WorkShapesListView._weight_map_targets()` resolves the selected work-shape leaves (falling back to the current item) and ignores group and driver rows, so the shortcut works for multi-selections.
+- **Weight-map application rework** - `apply_masked_weight_maps_to_work_shapes` now bakes each shape's masked deformation through a temporary filter blendshape (transfer the weight map, connect the target, duplicate the filtered mesh) and then clears the source weight maps, instead of applying the mask in place. Missing shapes are skipped with a warning rather than raising.
+- **Weighted propagation** - **Propagate to Active Shapes** now scales each active shape's delta mask by its current blendshape weight. `get_shapes_delta_masks` takes a parallel `shapes_weights` list and `propagate_work_shape_to_active_shapes` takes `active_shapes_weights`, so a shape at partial value receives a proportionally smaller share. The source work shape's drivers are disconnected before propagating, and the operation is now `@undoable` and `@timed`.
+- **Propagation dialog weights** - the active-shapes dialog is now a two-column tree (`Active Shapes` / `Weight`) with an editable `_EnterSafeDoubleSpinBox` per shape (0.000-1.000, default 1.000). Editing a weight updates the shape's checkbox and the level check state, and value edits are mirrored across the current multi-selection (Ctrl/Shift selection on the weight fields is supported); a weight of 0.000 unchecks and excludes the shape. Enter commits the typed value without closing the dialog, and the **Propagate** button is no longer the dialog default.
+- **Extract / Combine carry weight maps** - `extract_axis_motion_from_work_shape` now copies the source weight map onto the extracted shape, and **Combine Work Shapes** applies the masked weight maps of every source plus the target before merging.
+
+### Sliders Drop Box
+
+- **Drag-to-reorder** - dragging a selected row and releasing inside the box now rearranges the entries (shared insertion indicator; multi-selections move as a block and keep their relative order; releasing over empty space appends). The order is kept on the backing `PrimarySubsetProxyModel`, whose `selected_names()` now returns insertion/reorder order instead of an alphabetical list, backed by a new `reorder_selected_names(names, target, position)` and a parallel membership set for O(1) filtering. Tree rebuilds and filtering reapply the stored order (hidden rows after the visible block) and restore the selection and current item, so the arrangement survives refreshes and system switches. Drag-outside removal is unchanged.
+- A tooltip documents the **drag inside to reorder / drag outside to remove** gestures.
+
+### Docs & tests
+
+- `docs/ui-structure.md` and `releases/WIKI.md` document the ordered drop-box model, the new reorder handlers, and the **Ctrl+Alt+A** apply-weights shortcut.
+- New `releases/maya/BlueSteel/unittest/primaryDropBoxUiUt.py` (355 lines) covers `PrimarySubsetProxyModel` ordering, drop-box reorder/rebuild/selection persistence, and the drag gesture (`test_drag_inside_emits_reorder_request`, `test_multi_select_drag_moves_every_selected_entry`, `test_reorder_preserves_selection`, ...).
+
+### Fixes & MMTOOLS
+
+- `duplicate_base_mesh_at_current_pose` always returns the extracted mesh name (uses `fullPath=True`, moves and renames the `_extracted_GRP` consistently), fixing callers such as propagation that previously could receive `None`.
+- **SmartCluster** - `create` now applies the soft-selection weights unconditionally (the `weighted` gate was removed), `make_paint_cluster` no longer enters paint mode when soft selection is off, and a leftover print statement and unused shape lookup were removed.
+- `Blendshape.transfer_weight_map` / `connect_weight_map` docstring and formatting cleanup (parameter names, line wrapping).
+
+<details>
+<summary>Full commit list (v1.7.1 → v1.7.2)</summary>
+
+- a92c842 Removed print statement from create classmethod in smartCluster
+- d3cb8ae Apply soft-selection weights unconditionally in SmartCluster
+- 2673ef8 Weight work-shape propagation by active-shape weights
+- df058fb Add drag-to-reorder to the Sliders Drop Box
+- 8086a25 Fixed bug on duplicate_base_mesh_at_current_pose that was not always returning a string
+- ad1c035 Add Ctrl+Alt+A shortcut for Apply Weights and rework weight-map propagation
+
+</details>
+
 ## What's new in v1.7.1
 
 Full diff of `v1.7.0` → `v1.7.1` (8 files, +455 / -57).
