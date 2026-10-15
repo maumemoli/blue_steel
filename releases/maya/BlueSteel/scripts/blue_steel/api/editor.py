@@ -1367,6 +1367,7 @@ class BlueSteelEditor(object):
         self.work_blendshape.set_target_delta(weight.id, delta)
         self.work_blendshape.set_target_delta(extracted_weight.id, extracted_delta)
 
+        self.work_blendshape.transfer_weight_map(weight.id, extracted_weight.id)
         self._place_work_shape_after_in_sorting(str(extracted_work_shape), shape_name)
         if driver_shapes:
             for driver_shape in driver_shapes:
@@ -5574,6 +5575,7 @@ class BlueSteelEditor(object):
 
     def get_shapes_delta_masks(self,
                                shapes_list: list,
+                               shapes_weights: list,
                                normalize: bool = True,
                                blur_iterations: int = 0,
                                blur_strength: float = 0.5,
@@ -5586,6 +5588,7 @@ class BlueSteelEditor(object):
 
         Parameters:
             shapes_list (list): List of shape names to calculate delta masks for.
+            shapes_weights (list): List of weights corresponding to each shape.
             normalize (bool): Whether to normalize the masks into a partition
                 of unity before returning them. Defaults to True.
             blur_iterations (int): Number of Laplacian smoothing passes used
@@ -5609,7 +5612,7 @@ class BlueSteelEditor(object):
         total_vertices = base_points.shape[0]
         upropagated = np.ones(total_vertices, dtype=np.float32)
         try:
-            for shape in shapes_list:
+            for shape, shape_weight in zip(shapes_list, shapes_weights):
                 self.set_shape_pose(shape)
                 duplicated = self.duplicate_base_mesh_at_current_pose()
                 deformed_points = mayaUtils.get_mesh_raw_points(duplicated)
@@ -5617,7 +5620,7 @@ class BlueSteelEditor(object):
                 components = np.where(np.abs(deformed_points - base_points).max(axis=1) > 0.01)[0]
                 mask[components] = 1.0
                 upropagated[components] = 0.0
-                deltas[shape] = mask
+                deltas[shape] = mask * shape_weight
                 cmds.delete(duplicated)
                 if progress_callback is not None:
                     progress_callback(shape)
@@ -5660,6 +5663,7 @@ class BlueSteelEditor(object):
     def propagate_work_shape_to_active_shapes(self,
                                               work_shape: str,
                                               active_shapes: list,
+                                              active_shapes_weights: list,
                                               normalize=True,
                                               blur_iterations=10,
                                               blur_strength=1.0):
@@ -5672,6 +5676,7 @@ class BlueSteelEditor(object):
         Parameters:
             work_shape (str): The name of the work shape to propagate from.
             active_shapes (list): List of active shape names to propagate to.
+            active_shapes_weights (list): List of weights corresponding to each active shape.
             normalize (bool): Whether to normalize the delta masks into a partition of unity.
             blur_iterations (int): Number of Laplacian smoothing passes used to blur mask borders.
             blur_strength (float): Blend factor per blur pass (0.0..1.0).
@@ -5712,6 +5717,7 @@ class BlueSteelEditor(object):
             self.apply_masked_weight_maps_to_work_shapes([work_shape])
             # we need the absolute deltas for the active shapes.
             active_deltas = self.get_shapes_delta_masks(active_shapes,
+                                                        active_shapes_weights,
                                                         normalize=normalize,
                                                         blur_iterations=blur_iterations,
                                                         blur_strength=blur_strength,

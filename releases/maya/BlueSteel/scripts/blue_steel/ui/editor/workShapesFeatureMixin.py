@@ -35,7 +35,9 @@ from .qt import (
     QDoubleSpinBox,
     QFormLayout,
     QGuiApplication,
+    QHeaderView,
     QInputDialog,
+    QItemSelectionModel,
     QLabel,
     QModelIndex,
     QSpinBox,
@@ -44,10 +46,34 @@ from .qt import (
     QTreeWidgetItem,
     QVBoxLayout,
     Qt,
+    Signal,
 )
 from .widgets import (
     InlineWorkshapeRenameEditor,
 )
+
+
+class _EnterSafeDoubleSpinBox(QDoubleSpinBox):
+    """Weight spin box that commits Enter without closing the hosting dialog.
+
+    A dialog's default button would otherwise treat Enter as an accept action.
+    Consuming the key after interpreting the typed text keeps the dialog open.
+    It also reports mouse presses so clicking a weight field can select its row,
+    allowing Ctrl/Shift multi-selection of the weight fields.
+    """
+
+    rowClicked = Signal(object)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.rowClicked.emit(event.modifiers())
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.interpretText()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class WorkShapesFeatureMixin(MainWindowMixin):
@@ -1158,9 +1184,11 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         """Propagate a work shape to a user-selected subset of active shapes.
 
         Opens a dialog listing the currently active shapes grouped by level and
-        sorted by descending weight, each with a checkbox, plus the mask
+        sorted by descending weight, each with a checkbox and an editable
+        weight field (0.000-1.000, defaulting to 1.000), plus the mask
         blurring options, then calls the editor propagation routine for the
-        checked shapes.
+        checked shapes. A shape whose weight is set to 0.000 is unchecked and
+        excluded from the propagation arguments.
 
         Parameters:
             work_shape_name (str): The work shape to propagate from.
@@ -1200,19 +1228,63 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
         layout.addWidget(QLabel("Active shapes to propagate:", dialog))
         active_shapes_tree = QTreeWidget(dialog)
-        active_shapes_tree.setHeaderHidden(True)
+        active_shapes_tree.setColumnCount(2)
+        active_shapes_tree.setHeaderLabels(["Active Shapes", "Weight"])
         active_shapes_tree.setRootIsDecorated(True)
-        active_shapes_tree.setUniformRowHeights(True)
         active_shapes_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        tree_header = active_shapes_tree.header()
+        tree_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        tree_header.setSectionResizeMode(1, QHeaderView.Fixed)
+        tree_header.setStretchLastSection(False)
+        active_shapes_tree.setColumnWidth(1, 90)
+        active_shapes_tree.headerItem().setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
         checkable_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
         level_items: dict = {}
+        weight_spins: dict = {}
+        shape_items_by_name: dict = {}
+
+        def leaf_items_in_order() -> list:
+            items = []
+            for level_index in range(active_shapes_tree.topLevelItemCount()):
+                level_item = active_shapes_tree.topLevelItem(level_index)
+                for child_index in range(level_item.childCount()):
+                    items.append(level_item.child(child_index))
+            return items
+
+        def select_weight_row(shape_name: str, modifiers) -> None:
+            """Select a weight field's row, honoring Ctrl/Shift modifiers."""
+            item = shape_items_by_name.get(shape_name)
+            if item is None:
+                return
+            if modifiers & Qt.ControlModifier:
+                item.setSelected(not item.isSelected())
+            elif modifiers & Qt.ShiftModifier:
+                anchor = active_shapes_tree.currentItem()
+                items = leaf_items_in_order()
+                if anchor is not None and anchor in items and item in items:
+                    start = items.index(anchor)
+                    end = items.index(item)
+                    if start > end:
+                        start, end = end, start
+                    active_shapes_tree.clearSelection()
+                    for leaf in items[start:end + 1]:
+                        leaf.setSelected(True)
+                else:
+                    active_shapes_tree.clearSelection()
+                    item.setSelected(True)
+            else:
+                if not item.isSelected():
+                    active_shapes_tree.clearSelection()
+                item.setSelected(True)
+            active_shapes_tree.setCurrentItem(item, 0, QItemSelectionModel.NoUpdate)
+
         for level in sorted(shapes_by_level):
             level_names = sorted(
                 shapes_by_level[level],
                 key=lambda name: active_shapes.get(name, 0.0),
                 reverse=True,
             )
-            level_item = QTreeWidgetItem([f"Level {level} ({len(level_names)})"])
+            level_item = QTreeWidgetItem([f"Level {level} ({len(level_names)})", ""])
             level_item.setFlags(checkable_flags)
             level_item.setCheckState(0, Qt.Checked)
             level_font = level_item.font(0)
@@ -1220,17 +1292,33 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             level_item.setFont(0, level_font)
             active_shapes_tree.addTopLevelItem(level_item)
             for shape_name in level_names:
-                value = float(active_shapes.get(shape_name, 0.0) or 0.0)
-                shape_item = QTreeWidgetItem([f"{shape_name}   {value:.3f}"])
+                shape_item = QTreeWidgetItem([shape_name, ""])
                 shape_item.setFlags(checkable_flags)
                 shape_item.setCheckState(0, Qt.Checked)
                 shape_item.setData(0, Qt.UserRole, shape_name)
                 level_item.addChild(shape_item)
+                shape_items_by_name[shape_name] = shape_item
+                weight_spin = _EnterSafeDoubleSpinBox(active_shapes_tree)
+                weight_spin.setRange(0.0, 1.0)
+                weight_spin.setDecimals(3)
+                weight_spin.setSingleStep(0.05)
+                weight_spin.setValue(1.0)
+                weight_spin.setKeyboardTracking(False)
+                weight_spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                weight_spin.valueChanged.connect(
+                    lambda value, name=shape_name: on_shape_weight_changed(name, value)
+                )
+                weight_spin.rowClicked.connect(
+                    lambda modifiers, name=shape_name: select_weight_row(name, modifiers)
+                )
+                active_shapes_tree.setItemWidget(shape_item, 1, weight_spin)
+                weight_spins[shape_name] = weight_spin
             level_item.setExpanded(True)
             level_items[level] = level_item
         layout.addWidget(active_shapes_tree)
 
         syncing: dict = {"active": False}
+        bulk: dict = {"active": False}
 
         def selected_leaf_items() -> list:
             return [
@@ -1253,6 +1341,40 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             else:
                 level_item.setCheckState(0, Qt.PartiallyChecked)
 
+        def on_shape_weight_changed(shape_name: str, value: float) -> None:
+            """Mirror the weight value onto the checkbox and selected rows."""
+            item = shape_items_by_name.get(shape_name)
+            if item is None or syncing["active"]:
+                return
+            syncing["active"] = True
+            try:
+                item.setCheckState(0, Qt.Checked if value > 0.0 else Qt.Unchecked)
+                for level_item in level_items.values():
+                    refresh_level_state(level_item)
+            finally:
+                syncing["active"] = False
+            if bulk["active"] or not item.isSelected():
+                return
+            bulk["active"] = True
+            try:
+                for other_item in selected_leaf_items():
+                    if other_item is item:
+                        continue
+                    other_name = str(other_item.data(0, Qt.UserRole) or "")
+                    other_spin = weight_spins.get(other_name)
+                    if other_spin is not None:
+                        other_spin.setValue(value)
+            finally:
+                bulk["active"] = False
+
+        def set_shape_checked_state(shape_item: QTreeWidgetItem, checked: bool) -> None:
+            """Apply a check state and keep the matching weight field in sync."""
+            shape_item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+            name = str(shape_item.data(0, Qt.UserRole) or "")
+            weight_spin = weight_spins.get(name)
+            if weight_spin is not None:
+                weight_spin.setValue(1.0 if checked else 0.0)
+
         def on_active_shape_item_changed(item: QTreeWidgetItem, _column: int) -> None:
             if syncing["active"]:
                 return
@@ -1260,12 +1382,15 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             try:
                 state = item.checkState(0)
                 if item.childCount() > 0:
-                    target_state = Qt.Unchecked if state == Qt.Unchecked else Qt.Checked
+                    checked = state != Qt.Unchecked
                     for i in range(item.childCount()):
-                        item.child(i).setCheckState(0, target_state)
-                elif item.isSelected():
-                    for other_item in selected_leaf_items():
-                        other_item.setCheckState(0, state)
+                        set_shape_checked_state(item.child(i), checked)
+                else:
+                    checked = state == Qt.Checked
+                    set_shape_checked_state(item, checked)
+                    if item.isSelected():
+                        for other_item in selected_leaf_items():
+                            set_shape_checked_state(other_item, checked)
                 for level_item in level_items.values():
                     refresh_level_state(level_item)
             finally:
@@ -1273,17 +1398,31 @@ class WorkShapesFeatureMixin(MainWindowMixin):
 
         active_shapes_tree.itemChanged.connect(on_active_shape_item_changed)
 
-        def checked_shape_names() -> list:
+        def selected_shapes_and_weights() -> tuple:
             names = []
+            weights = []
             for level_item in level_items.values():
                 for i in range(level_item.childCount()):
                     child = level_item.child(i)
-                    if child.checkState(0) == Qt.Checked:
-                        names.append(str(child.data(0, Qt.UserRole) or ""))
-            return [name for name in names if name]
+                    if child.checkState(0) != Qt.Checked:
+                        continue
+                    name = str(child.data(0, Qt.UserRole) or "")
+                    if not name:
+                        continue
+                    weight_spin = weight_spins.get(name)
+                    if weight_spin is not None:
+                        weight_spin.interpretText()
+                        weight = float(weight_spin.value())
+                    else:
+                        weight = 0.0
+                    if weight <= 0.0:
+                        continue
+                    names.append(name)
+                    weights.append(weight)
+            return names, weights
 
         def accept_if_shapes_selected() -> None:
-            if not checked_shape_names():
+            if not selected_shapes_and_weights()[0]:
                 self._set_status("Select at least one active shape to propagate.", warning=True)
                 return
             dialog.accept()
@@ -1292,7 +1431,9 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
             parent=dialog,
         )
-        dialog_buttons.button(QDialogButtonBox.Ok).setText("Propagate")
+        propagate_button = dialog_buttons.button(QDialogButtonBox.Ok)
+        propagate_button.setText("Propagate")
+        propagate_button.setAutoDefault(False)
         dialog_buttons.accepted.connect(accept_if_shapes_selected)
         dialog_buttons.rejected.connect(dialog.reject)
         layout.addWidget(dialog_buttons)
@@ -1304,7 +1445,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._set_status("Propagation cancelled.")
             return
 
-        selected_active_shapes = checked_shape_names()
+        selected_active_shapes, selected_active_shape_weights = selected_shapes_and_weights()
         blur_iterations = blur_iterations_spin.value()
         blur_strength = blur_strength_spin.value()
         try:
@@ -1312,6 +1453,7 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self.current_editor.propagate_work_shape_to_active_shapes(
                 work_shape_name,
                 active_shapes=selected_active_shapes,
+                active_shapes_weights=selected_active_shape_weights,
                 normalize=True,
                 blur_iterations=blur_iterations,
                 blur_strength=blur_strength,
@@ -1323,8 +1465,8 @@ class WorkShapesFeatureMixin(MainWindowMixin):
             self._start_active_blendshape_trackers()
         self._reload_work_shapes_from_editor()
         self._set_status(
-            f"Propagated work shape '{work_shape_name}' to active shapes "
-            f"( blur {blur_iterations} x {blur_strength:.2f})."
+            f"Propagated work shape '{work_shape_name}' to {len(selected_active_shapes)} active shapes "
+            f"(blur {blur_iterations} x {blur_strength:.2f})."
         )
 
 
