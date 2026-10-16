@@ -1,3 +1,9 @@
+## What's new in v1.7.3
+
+### Sliders Drop Box
+
+- **Drag onto a Work Shape to connect drivers** - dragging a slider row out of the box and releasing over a Work Shape now connects the selected sliders as that work shape's drivers (matching the Shapes/Primaries → Work Shapes drop) and keeps them in the box. The drag cursor becomes a copy cursor over a valid Work Shape; releasing anywhere else still removes the entries. Multi-selections connect together in one reload. `PrimaryDropTreeWidget` resolves the receiver through a window-supplied `driver_drop_resolver` and connects through `driver_drop_callback` (`_connect_work_shape_drivers`).
+
 ## What's new in v1.7.2
 
 Full diff of `v1.7.1` → `v1.7.2` (13 files, +892 / -73).

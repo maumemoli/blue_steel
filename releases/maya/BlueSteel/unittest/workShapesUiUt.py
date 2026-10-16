@@ -546,6 +546,23 @@ class WorkShapesUiTests(unittest.TestCase):
         _, name = self.delegate._area_rects(self.option(), self.index)
         self.assertEqual(self.view._receiver_name_at_pos(name.center()), "mouthFix_workShape")
 
+    def test_driver_drop_receiver_at_maps_global_and_ignores_non_leaves(self):
+        viewport = self.view.viewport()
+        _, name = self.delegate._area_rects(self.option(), self.index)
+        self.assertEqual(
+            self.view.driver_drop_receiver_at(viewport.mapToGlobal(name.center())),
+            "mouthFix_workShape",
+        )
+        # Driver rows and points outside the view are not receivers.
+        self.assertIsNone(
+            self.view.driver_drop_receiver_at(viewport.mapToGlobal(self.child_pos()))
+        )
+        self.assertIsNone(
+            self.view.driver_drop_receiver_at(
+                viewport.mapToGlobal(QtCore.QPoint(viewport.width() + 50, 0))
+            )
+        )
+
     def test_parent_controls_remain_clickable_in_narrow_panel(self):
         self.view.resize(180, 300)
         APP.processEvents()

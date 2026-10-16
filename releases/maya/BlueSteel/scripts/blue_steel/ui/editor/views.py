@@ -1282,6 +1282,26 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
         receiver = str(index.data(ShapeItemsModel.NameRole) or "")
         return receiver or None
 
+    def driver_drop_receiver_at(self, global_pos) -> Optional[str]:
+        """Return the Work Shape name under a global pointer, or ``None``.
+
+        Used by the Sliders Drop Box to decide whether a drag-out gesture is a
+        driver connection (released over a Work Shape) or a removal (released
+        anywhere else). Only leaf work shapes are receivers; groups, headers and
+        driver rows return ``None``.
+
+        Parameters:
+            global_pos: A global position (``QPoint``).
+
+        Returns:
+            Optional[str]: The receiver work-shape name, or ``None``.
+        """
+        viewport = self.viewport()
+        local_pos = viewport.mapFromGlobal(global_pos)
+        if not viewport.rect().contains(local_pos):
+            return None
+        return self._receiver_name_at_pos(local_pos)
+
     def dragEnterEvent(self, event):  # noqa: N802
         if self._is_internal_order_event(event):
             event.acceptProposedAction()
@@ -1822,6 +1842,13 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
         self._drop_callback = drop_callback
         self._remove_callback = remove_callback
         self._icon_click_active = False
+        # A resolver maps a global pointer to a Work Shape receiver; a callback
+        # connects the dragged sliders as drivers of that receiver. When both
+        # are set, releasing the drag over a Work Shape connects instead of
+        # removing, and the sliders stay in the box.
+        self._driver_drop_resolver = None
+        self._driver_drop_callback = None
+        self._removal_drag_over_driver = False
 
         self.setColumnCount(1)
         self.setHeaderHidden(True)
@@ -1845,6 +1872,47 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
             if shape_name:
                 shape_names.append(shape_name)
         return shape_names
+
+    def set_driver_drop_resolver(self, resolver) -> None:
+        """Set the callable that resolves a Work Shape receiver under a point.
+
+        Parameters:
+            resolver (Callable[[object], Optional[str]]): Receives a global
+                position and returns the Work Shape name under it, or ``None``.
+        """
+        self._driver_drop_resolver = resolver
+
+    def set_driver_drop_callback(self, callback) -> None:
+        """Set the callable that connects dragged sliders as drivers.
+
+        Parameters:
+            callback (Callable[[str, Sequence[str]], None]): Receives the
+                receiver work-shape name and the dragged shape names.
+        """
+        self._driver_drop_callback = callback
+
+    def _driver_drop_receiver(self, global_pos) -> Optional[str]:
+        """Return the Work Shape receiver under ``global_pos`` when droppable."""
+        if self._driver_drop_resolver is None or self._driver_drop_callback is None:
+            return None
+        return self._driver_drop_resolver(global_pos)
+
+    @staticmethod
+    def _driver_drop_cursor() -> QCursor:
+        return QCursor(Qt.DragCopyCursor)
+
+    def _set_driver_hover(self, over_driver: bool) -> None:
+        """Swap the override cursor to reflect a valid driver drop target."""
+        if over_driver == self._removal_drag_over_driver:
+            return
+        self._removal_drag_over_driver = over_driver
+        if not self._removal_drag_active:
+            return
+        if over_driver:
+            QApplication.changeOverrideCursor(self._driver_drop_cursor())
+        else:
+            cursor = self._removal_cursor() if self._removal_drag_outside else QCursor(Qt.ClosedHandCursor)
+            QApplication.changeOverrideCursor(cursor)
 
     def _shape_names_from_mime(self, mime_data: QMimeData) -> List[str]:
         if mime_data is None:
@@ -1913,7 +1981,9 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
             return
         if self._removal_drag_outside:
             self._clear_drop_indicator()
+            self._set_driver_hover(self._driver_drop_receiver(global_pos) is not None)
             return
+        self._set_driver_hover(False)
         pos = self.viewport().mapFromGlobal(global_pos)
         item, position = self._internal_drop_target(pos)
         if item is not self._drop_target_item or position != self._drop_position:
@@ -1923,6 +1993,7 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
 
     def _cancel_removal_drag(self) -> None:
         self._clear_drop_indicator()
+        self._removal_drag_over_driver = False
         super()._cancel_removal_drag()
 
     def _finish_removal_drag(self, global_pos) -> None:
@@ -1933,6 +2004,14 @@ class PrimaryDropTreeWidget(OutsideRemovalDragMixin, PrimaryTreeWidget):
             and not self._outside_removal_panel(global_pos)
         )
         if not reorder:
+            receiver = self._driver_drop_receiver(global_pos)
+            if self._removal_drag_active and target is not None and receiver:
+                names = list(target)
+                self._cancel_removal_drag()
+                self._removal_press_active = False
+                self.viewport().update()
+                self._driver_drop_callback(receiver, names)
+                return
             super()._finish_removal_drag(global_pos)
             return
         target_name, position = self._in_view_drop_target(global_pos)

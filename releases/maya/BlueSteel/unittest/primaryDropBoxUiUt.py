@@ -260,6 +260,92 @@ class PrimaryDropBoxTests(unittest.TestCase):
         self.remove.assert_not_called()
 
     # ------------------------------------------------------------------
+    # Driver drops (release over a Work Shape receiver)
+    # ------------------------------------------------------------------
+    def test_release_over_driver_connects_and_keeps_entry(self):
+        callback = mock.Mock()
+        self.view.set_driver_drop_resolver(lambda _pos: "mouthFix_workShape")
+        self.view.set_driver_drop_callback(callback)
+
+        self.press(self.name_pos("beta"))
+        outside = self.outside_pos()
+        self.move_mouse(outside)
+        self.assertTrue(self.view._removal_drag_active)
+        self.assertTrue(self.view._removal_drag_over_driver)
+        self.assertEqual(APP.overrideCursor().shape(), Qt.DragCopyCursor)
+
+        self.release(outside)
+        self.remove.assert_not_called()
+        self.drop.assert_not_called()
+        callback.assert_called_once()
+        receiver, names = callback.call_args[0]
+        self.assertEqual(receiver, "mouthFix_workShape")
+        self.assertEqual(list(names), ["beta"])
+        # Copy semantics: the slider stays in the drop box.
+        self.assertIsNotNone(self.index_for("beta"))
+        self.assertIsNone(self.view._removal_drag_target)
+        self.assertIsNone(APP.overrideCursor())
+
+    def test_multi_select_driver_drop_connects_every_selected(self):
+        callback = mock.Mock()
+        self.view.set_driver_drop_resolver(lambda _pos: "target_work_shape")
+        self.view.set_driver_drop_callback(callback)
+
+        self.select_all()
+        self.press(self.name_pos("beta"))
+        outside = self.outside_pos()
+        self.move_mouse(outside)
+        self.release(outside)
+
+        self.remove.assert_not_called()
+        callback.assert_called_once()
+        receiver, names = callback.call_args[0]
+        self.assertEqual(receiver, "target_work_shape")
+        self.assertCountEqual(list(names), self.names)
+        for name in self.names:
+            self.assertIsNotNone(self.index_for(name))
+
+    def test_release_outside_without_driver_target_still_removes(self):
+        callback = mock.Mock()
+        self.view.set_driver_drop_resolver(lambda _pos: None)
+        self.view.set_driver_drop_callback(callback)
+
+        self.press(self.name_pos("beta"))
+        outside = self.outside_pos()
+        self.move_mouse(outside)
+        self.assertFalse(self.view._removal_drag_over_driver)
+        self.assertFalse(APP.overrideCursor().pixmap().isNull())
+
+        self.release(outside)
+        self.remove.assert_called_once()
+        callback.assert_not_called()
+
+    def test_driver_hover_clears_when_reentering_box(self):
+        self.view.set_driver_drop_resolver(lambda _pos: "target_work_shape")
+        self.view.set_driver_drop_callback(mock.Mock())
+
+        inside = self.press(self.name_pos("beta"))
+        self.move_mouse(self.outside_pos())
+        self.assertTrue(self.view._removal_drag_over_driver)
+
+        self.move_mouse(inside)
+        self.assertFalse(self.view._removal_drag_over_driver)
+        self.assertEqual(APP.overrideCursor().shape(), Qt.ClosedHandCursor)
+        self.release(inside)
+        self.remove.assert_not_called()
+
+    def test_resolver_only_without_callback_still_removes(self):
+        self.view.set_driver_drop_resolver(lambda _pos: "target_work_shape")
+
+        self.press(self.name_pos("beta"))
+        outside = self.outside_pos()
+        self.move_mouse(outside)
+        self.assertFalse(self.view._removal_drag_over_driver)
+
+        self.release(outside)
+        self.remove.assert_called_once()
+
+    # ------------------------------------------------------------------
     # Drag-to-reorder (inside release)
     # ------------------------------------------------------------------
     def test_drag_inside_emits_reorder_request(self):

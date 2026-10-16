@@ -1018,6 +1018,24 @@ class ShapesFeatureMixin(MainWindowMixin):
         self._update_info_labels()
         self._set_status("Reordered Sliders Drop Box.")
 
+    def _resolve_primary_drop_driver_target(self, global_pos) -> Optional[str]:
+        """Return the Work Shape under a Sliders Drop Box drag pointer.
+
+        Used by ``PrimaryDropTreeWidget`` to decide whether dragging a slider
+        out of the box connects it as a driver (released over a Work Shape) or
+        removes it (released anywhere else).
+
+        Parameters:
+            global_pos: A global position (``QPoint``).
+
+        Returns:
+            Optional[str]: The receiver work-shape name, or ``None``.
+        """
+        view = getattr(self, "work_shapes_view", None)
+        if view is None:
+            return None
+        return view.driver_drop_receiver_at(global_pos)
+
 
     def _active_primary_names(self) -> List[str]:
         """Return the primary shape names with a non-zero blendshape weight.

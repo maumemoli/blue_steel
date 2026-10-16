@@ -309,11 +309,13 @@ Views that participate in slider double-click value editing set `_enable_slider_
 
 The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`: its sliders display values and follow scene updates but cannot be scrubbed or value-edited. `_enable_slider_value_edit` is not set there, and a read-only view also forces the delegate's `_slider_value_edit_enabled()` to `False`.
 
-- `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`. Its custom drag gesture doubles as an in-view reorder: releasing inside the box emits `primaryMoveRequested(names, target, position)` (the inherited signal), drawing the shared `ReorderableTreeWidgetMixin` insertion indicator while dragging; releasing outside still requests removal.
+- `PrimaryDropTreeWidget(PrimaryTreeWidget)` — flat, drop-enabled primaries tree used by the Sliders Drop Box. `_flat_mode = True`; inherits slider drag and keyboard navigation from `PrimaryTreeWidget`/`SliderDragViewMixin`. Its custom drag gesture doubles as an in-view reorder: releasing inside the box emits `primaryMoveRequested(names, target, position)` (the inherited signal), drawing the shared `ReorderableTreeWidgetMixin` insertion indicator while dragging. Releasing over a Work Shape connects the dragged sliders as that work shape's drivers (the sliders stay in the box and the cursor becomes a copy cursor); releasing anywhere else still requests removal. The window supplies the receiver lookup and connection handler through `set_driver_drop_resolver` / `set_driver_drop_callback`.
   - `__init__(drop_callback, remove_callback=None, parent=None)`
   - `_selected_shape_names()`
+  - `set_driver_drop_resolver(resolver)` / `set_driver_drop_callback(callback)` — wire the Work Shapes receiver lookup and the driver-connection handler.
+  - `_driver_drop_receiver(global_pos)` / `_set_driver_hover(over_driver)` — resolve a Work Shape receiver under the pointer and swap the drag cursor.
   - `_in_view_drop_target(global_pos)` — `(target_name, position)` for a pointer inside the view (`"root"` over empty space).
-  - `_move_removal_drag(global_pos)` / `_cancel_removal_drag()` / `_finish_removal_drag(global_pos)` — reorder when released inside, remove when released outside, and clear the indicator on cancel.
+  - `_move_removal_drag(global_pos)` / `_cancel_removal_drag()` / `_finish_removal_drag(global_pos)` — reorder when released inside, connect drivers when released over a Work Shape, remove when released outside, and clear the indicator on cancel.
   - `_show_context_menu(pos)`
   - `_shape_names_from_mime(mime_data)`
   - `_can_accept_drop(mime_data)`
@@ -343,7 +345,7 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
 - `WorkShapesListView(ReorderableTreeWidgetMixin, SliderIconClickMixin, SliderDragViewMixin, QTreeWidget)` — item-based Work Shapes tree.
   - Signals: `driverPoseRequested(str)`, `driverRemovalRequested(str, str)`, `workShapeMoveRequested(object, str, str)`, `groupRequested()`, `renameGroupRequested(object)`, `ungroupRequested()`.
   - `__init__(...)`
-  - `_shape_names_from_mime(mime_data)` / `_receiver_name_at_pos(pos)`
+  - `_shape_names_from_mime(mime_data)` / `_receiver_name_at_pos(pos)` / `driver_drop_receiver_at(global_pos)` — the last maps a global pointer to the leaf receiver under it (groups, headers and driver rows return `None`), used by the Sliders Drop Box drag.
   - `dragEnterEvent` / `dragMoveEvent` / `dropEvent` — internal reorder first, then external shape-name drops (driver connections).
   - `_show_context_menu(pos)` — leaf actions plus Group / Rename Group / Ungroup.
   - `__init__(...)` hides the native Qt branch indicator and sets the folder icon size, so the delegate-painted chevron is the only disclosure control and nested rows indent by `PRIMARY_TREE_INDENT` like the Primaries tree.

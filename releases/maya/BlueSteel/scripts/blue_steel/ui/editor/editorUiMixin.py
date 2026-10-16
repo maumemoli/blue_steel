@@ -873,6 +873,8 @@ class EditorUiMixin(MainWindowMixin):
         self.primary_drop_view.setToolTip(
             "<b>Sliders Drop Box:</b><br>"
             "<b>Drag</b> a row within the box to reorder it.<br>"
+            "<b>Drag onto a Work Shape</b> and release to connect the selected "
+            "sliders as its drivers (they stay in the box).<br>"
             "<b>Drag outside</b> the box and release to remove the selected entries."
         )
         self._primary_drop_delegate = SliderItemDelegate(self.primary_drop_view)
@@ -943,6 +945,10 @@ class EditorUiMixin(MainWindowMixin):
         self._work_shapes_delegate = WorkShapeItemDelegate(self.work_shapes_view)
         self.work_shapes_view.setItemDelegate(self._work_shapes_delegate)
         work_shapes_layout.addWidget(self.work_shapes_view, 1)
+        # Dragging a Sliders Drop Box row over a Work Shape connects it as a
+        # driver instead of removing it from the box.
+        self.primary_drop_view.set_driver_drop_resolver(self._resolve_primary_drop_driver_target)
+        self.primary_drop_view.set_driver_drop_callback(self._connect_work_shape_drivers)
 
         active_shapes_section = QGroupBox("Active Shapes")
         active_shapes_layout = QVBoxLayout(active_shapes_section)

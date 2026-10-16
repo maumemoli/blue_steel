@@ -1042,13 +1042,35 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         Returns:
             None
         """
+        self._connect_work_shape_drivers(work_shape_name, [source_shape_name])
+
+
+    def _connect_work_shape_drivers(self, work_shape_name: str, source_shape_names: Sequence[str]) -> None:
+        """Connect one or more source shapes as drivers of a work shape.
+
+        Shared by the Work Shapes drop target and the Sliders Drop Box drag: the
+        latter passes every selected slider so a multi-selection connects in a
+        single reload.
+
+        Parameters:
+            work_shape_name (str): The work shape receiving the connections.
+            source_shape_names (Sequence[str]): The dropped source shape names.
+
+        Returns:
+            None
+        """
+        source_names = [str(name) for name in source_shape_names if name]
+        if not source_names:
+            return
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
         try:
             self._stop_active_blendshape_trackers()
-            self.current_editor.connect_work_blendshape_weight_to_blendshape_weight(work_shape_name,
-                                                                           source_shape_name)
+            for source_shape_name in source_names:
+                self.current_editor.connect_work_blendshape_weight_to_blendshape_weight(
+                    work_shape_name, source_shape_name
+                )
         except Exception as exc:
             self._set_status(f"Error connecting work shape '{work_shape_name}': {exc}", error=True)
             return
@@ -1057,7 +1079,12 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._reload_work_shapes_from_editor()
         self._set_work_shape_driver_connected_local(work_shape_name, True)
         self._select_work_shape(work_shape_name)
-        self._set_status(f"Connected work shape '{work_shape_name}' to '{source_shape_name}'.")
+        if len(source_names) == 1:
+            self._set_status(f"Connected work shape '{work_shape_name}' to '{source_names[0]}'.")
+        else:
+            self._set_status(
+                f"Connected work shape '{work_shape_name}' to {len(source_names)} drivers."
+            )
 
 
     def _on_work_shape_break_link_requested(self, work_shape_name: str) -> None:
