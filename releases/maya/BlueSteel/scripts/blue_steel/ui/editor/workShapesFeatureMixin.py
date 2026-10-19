@@ -855,6 +855,33 @@ class WorkShapesFeatureMixin(MainWindowMixin):
         self._set_status(f"Committed {len(applied_work_shapes)} linked shape(s). Check the Script Editor for the list.")
 
 
+    def _on_apply_selected_work_shapes_requested(self, shape_names) -> None:
+        """Apply the work shapes requested by the row apply icon.
+
+        Parameters:
+            shape_names (list): Work-shape names to commit to their drivers.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+        names = [str(name) for name in (shape_names or []) if name]
+        if not names:
+            return
+        try:
+            self._stop_active_blendshape_trackers()
+            self.current_editor.apply_selected_work_shapes(names)
+        except Exception as exc:
+            self._set_status(f"Error applying work shapes: {exc}", error=True)
+            return
+        finally:
+            self._start_active_blendshape_trackers()
+        self._reload_shapes_from_editor()
+        self._set_status(f"Applied {len(names)} work shape(s) to their drivers.")
+
+
     def _on_work_shape_edit_mode_toggle_requested(self, shape_name: str, _state: bool) -> None:
         """Handle a work-shape edit-mode icon toggle.
 

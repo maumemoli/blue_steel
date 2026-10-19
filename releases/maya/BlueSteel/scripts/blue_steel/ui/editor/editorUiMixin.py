@@ -1408,6 +1408,9 @@ class EditorUiMixin(MainWindowMixin):
         self._work_shapes_delegate.muteToggleRequested.connect(self._on_work_shapes_mute_toggle_requested)
         self._work_shapes_delegate.connectedMeshRequested.connect(self._on_work_shape_connected_mesh_requested)
         self._work_shapes_delegate.workEditModeToggleRequested.connect(self._on_work_shape_edit_mode_toggle_requested)
+        self._work_shapes_delegate.applySelectedWorkShapesRequested.connect(
+            self._on_apply_selected_work_shapes_requested
+        )
         self.primaries_search.searchChanged.connect(self._on_primaries_search_changed)
         self.shapes_search.searchChanged.connect(self._on_shapes_search_changed)
         self.active_shapes_search.searchChanged.connect(self._on_active_shapes_search_changed)

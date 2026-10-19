@@ -16,6 +16,8 @@ from typing import Dict, List, Optional
 from maya import cmds
 
 from ..common.icons import (
+    APPLY_SELECTED_DISABLED_ICON,
+    APPLY_SELECTED_ICON,
     CONNECTED_MESH_DISABLED_ICON,
     CONNECTED_MESH_ENABLED_ICON,
     EDIT_ICON,
@@ -95,6 +97,7 @@ class SliderItemDelegate(QStyledItemDelegate):
     lockToggleRequested = Signal(str, bool)
     connectedMeshRequested = Signal(str)
     workEditModeToggleRequested = Signal(str, bool)
+    applySelectedWorkShapesRequested = Signal(list)
 
     VALUE_COLUMN_WIDTH = 86
     VALUE_TEXT_PADDING = 8
@@ -218,8 +221,6 @@ class SliderItemDelegate(QStyledItemDelegate):
 
     def _area_rects(self, option, index):
         rect = option.rect
-        shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
-        is_work_shape = shape_type == "WorkShape"
         left_margin = self.LEFT_MARGIN + self._tree_row_indent(index)
         if bool(getattr(self.parent(), "_primary_slider_layout", False)):
             value_rect = rect.adjusted(left_margin, 0, -self.RIGHT_MARGIN, 0)
@@ -241,10 +242,16 @@ class SliderItemDelegate(QStyledItemDelegate):
 
         icon_left = value_rect.right() + 1 + self.VALUE_TO_ICON_GAP
         text_left = icon_left + (self.ICON_SIZE * icon_slots) + (self.ICON_GAP * icon_slots)
-        right_margin = self.RIGHT_MARGIN + (self.ICON_SIZE + self.ICON_GAP if is_work_shape else 0)
+        trailing_slots = self._trailing_icon_slots(index)
+        right_margin = self.RIGHT_MARGIN + ((self.ICON_SIZE + self.ICON_GAP) * trailing_slots)
         text_width = max(self.MIN_TEXT_WIDTH, rect.right() - text_left - right_margin)
         text_rect = QRect(text_left, rect.top(), text_width, rect.height())
         return value_rect, text_rect
+
+    def _trailing_icon_slots(self, index) -> int:
+        """Return how many right-aligned icon slots this row reserves."""
+        shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+        return 1 if shape_type == "WorkShape" else 0
 
     def _tree_row_indent(self, index) -> int:
         parent_view = self.parent()
@@ -327,9 +334,25 @@ class SliderItemDelegate(QStyledItemDelegate):
     def _edit_mode_icon_rect(self, option, index) -> QRect:
         if not self._is_work_edit_mode_icon_visible(index):
             return QRect()
-        x = option.rect.right() - self.RIGHT_MARGIN - self.ICON_SIZE + 1
+        return self._right_aligned_icon_rect(option, index, 0)
+
+    def _right_aligned_icon_rect(self, option, index, slot: int = 0) -> QRect:
+        """Return a right-aligned icon rect; slot 0 is the rightmost icon."""
+        x = option.rect.right() - self.RIGHT_MARGIN - self.ICON_SIZE + 1 - (slot * (self.ICON_SIZE + self.ICON_GAP))
         y = option.rect.top() + (option.rect.height() - self.ICON_SIZE) // 2
         return QRect(x, y, self.ICON_SIZE, self.ICON_SIZE)
+
+    def _is_apply_selected_icon_visible(self, index) -> bool:
+        shape_type = str(index.model().data(index, ShapeItemsModel.TypeRole) or "")
+        return shape_type == "WorkShape"
+
+    def _is_apply_selected_icon_enabled(self, index) -> bool:
+        return bool(index.model().data(index, WorkShapeRoles.DriverNamesRole))
+
+    def _apply_selected_icon_rect(self, option, index) -> QRect:
+        if not self._is_apply_selected_icon_visible(index):
+            return QRect()
+        return self._right_aligned_icon_rect(option, index, 1)
 
     def _lock_icon_rect(self, option, index) -> QRect:
         if not self._is_lock_icon_visible(index):
@@ -505,6 +528,20 @@ class SliderItemDelegate(QStyledItemDelegate):
             painter.restore()
             if not EDIT_ICON.isNull():
                 self._draw_icon_pixmap(painter, edit_mode_rect.adjusted(3, 3, -3, -3), EDIT_ICON)
+
+        apply_selected_rect = self._apply_selected_icon_rect(option, index)
+        if not apply_selected_rect.isNull():
+            apply_selected_enabled = self._is_apply_selected_icon_enabled(index)
+            apply_selected_icon = APPLY_SELECTED_ICON if apply_selected_enabled else APPLY_SELECTED_DISABLED_ICON
+            if not apply_selected_icon.isNull():
+                button_color = QColor(82, 82, 82) if apply_selected_enabled else QColor(58, 58, 58)
+                painter.save()
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setPen(QColor(35, 35, 35))
+                painter.setBrush(button_color)
+                painter.drawRoundedRect(apply_selected_rect.adjusted(1, 1, -1, -1), 3, 3)
+                painter.restore()
+                self._draw_icon_pixmap(painter, apply_selected_rect.adjusted(3, 3, -3, -3), apply_selected_icon)
 
         lock_rect = self._lock_icon_rect(option, index)
         if not lock_rect.isNull():
@@ -779,13 +816,22 @@ class WorkShapeItemDelegate(SliderItemDelegate):
     def _edit_mode_icon_rect(self, option, index) -> QRect:
         return super()._edit_mode_icon_rect(self._parent_option(option, index), index)
 
+    def _apply_selected_icon_rect(self, option, index) -> QRect:
+        return super()._apply_selected_icon_rect(self._parent_option(option, index), index)
+
+    def _trailing_icon_slots(self, index) -> int:
+        return 2
+
     def disclosure_rect(self, option, index) -> QRect:
         if not index.data(WorkShapeRoles.DriverNamesRole):
             return QRect()
         _, text_rect = self._area_rects(option, index)
         left = text_rect.left() - self.DISCLOSURE_WIDTH
-        # At very narrow widths, never let disclosure steal the edit-mode icon.
-        right = self._edit_mode_icon_rect(option, index).left()
+        # At very narrow widths, never let disclosure steal the trailing icons.
+        trailing_rect = self._apply_selected_icon_rect(option, index)
+        if trailing_rect.isNull():
+            trailing_rect = self._edit_mode_icon_rect(option, index)
+        right = trailing_rect.left()
         width = max(0, min(self.DISCLOSURE_WIDTH, right - left))
         return QRect(left, text_rect.top(), width, text_rect.height())
 

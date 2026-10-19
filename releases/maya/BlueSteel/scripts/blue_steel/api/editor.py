@@ -1047,7 +1047,7 @@ class BlueSteelEditor(object):
                 connected_work_shapes[work_weight] = primary_shape_names[0]
         return connected_work_shapes
 
-
+    @undoable
     def apply_selected_work_shapes(self, selected_work_shapes: list):
         """
         Apply the selected work shapes to their linked primary shapes.
@@ -1056,17 +1056,33 @@ class BlueSteelEditor(object):
             selected_work_shapes (list): A list of work shape names to apply.
         """
         self._store_current_pose()
+        work_shapes_to_delete = []
         for work_shape in selected_work_shapes:
             driver_shapes = self.get_work_shape_driver_shapes(work_shape)
             if not driver_shapes:
                 continue
+            work_shapes_to_delete.append(work_shape)
             delta_multiplier = 1.0 / len(driver_shapes)
+            work_weight = self.work_blendshape.get_weight_by_name(work_shape)
+            work_shape_weight_map = np.asarray(
+                self.work_blendshape.get_weight_map_values(work_weight.id), dtype=np.float64
+            ).reshape(-1)
+            work_delta = self.work_blendshape.get_target_delta(work_weight.id)
+            if work_shape_weight_map.size != work_delta.shape[0]:
+                raise ValueError(
+                    f"Weight map for work shape '{work_shape}' has {work_shape_weight_map.size} values "
+                    f"but its delta has {work_delta.shape[0]} vertices."
+                )
+            # Scale each vertex delta by its per-vertex weight, matching
+            # Blendshape.apply_weight_map_to_target.
+            masked_delta = work_delta * work_shape_weight_map[:, np.newaxis]
+            masked_delta *= delta_multiplier
             for driver_shape in driver_shapes:
-                work_weight = self.work_blendshape.get_weight_by_name(work_shape)
-                work_delta = self.work_blendshape.get_target_delta(work_weight.id) * delta_multiplier
+
                 shape_weight = self.blendshape.get_weight_by_name(driver_shape)
                 shape_delta = self.blendshape.get_target_delta(shape_weight.id)
-                self.blendshape.set_target_delta(shape_weight.id, shape_delta + work_delta)
+                self.blendshape.set_target_delta(shape_weight.id, shape_delta + masked_delta)
+        self.delete_work_shapes(work_shapes_to_delete)
 
     @undoable
     def apply_active_work_shapes(self):

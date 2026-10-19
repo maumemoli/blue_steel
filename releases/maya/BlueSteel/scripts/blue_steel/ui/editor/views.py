@@ -491,9 +491,9 @@ class SplitMapWeightsList(SliderDragViewMixin, QListWidget):
 class SliderIconClickMixin:
     """Icon hit-testing shared by slider-style list and tree views.
 
-    Resolves clicks on the connected-mesh, mute, lock, and work edit-mode
-    icons and returns the delegate signal plus its arguments. Views that do
-    not want this behavior override :meth:`_resolve_icon_click`.
+    Resolves clicks on the connected-mesh, mute, lock, apply-selected, and
+    work edit-mode icons and returns the delegate signal plus its arguments.
+    Views that do not want this behavior override :meth:`_resolve_icon_click`.
     """
 
     def _resolve_mute_icon_click(self, event_pos) -> Optional[tuple]:
@@ -601,6 +601,54 @@ class SliderIconClickMixin:
         in_edit_mode = bool(index.data(WorkShapeRoles.InEditModeRole))
         return shape_name, (not in_edit_mode)
 
+    def _resolve_apply_selected_work_shapes_icon_click(self, event_pos) -> Optional[tuple]:
+        """Return (signal, shape_names) when the apply-selected icon is clicked.
+
+        Clicking the icon on a selected row applies every selected work shape;
+        clicking it on a non-selected row applies only that row's shape.
+        """
+        delegate = self.itemDelegate()
+        if not _is_slider_delegate(delegate):
+            return None
+        icon_rect_for = getattr(delegate, "_apply_selected_icon_rect", None)
+        if icon_rect_for is None:
+            return None
+
+        index = self.indexAt(event_pos)
+        if not index.isValid():
+            return None
+        if bool(index.data(ShapeItemsModel.IsHeaderRole)):
+            return None
+
+        option = OptionRect()
+        option.rect = self.visualRect(index)
+        icon_rect = icon_rect_for(option, index)
+        if icon_rect.isNull() or not icon_rect.contains(event_pos):
+            return None
+
+        shape_name = str(index.data(ShapeItemsModel.NameRole) or "")
+        if not shape_name:
+            return None
+        if not delegate._is_apply_selected_icon_enabled(index):
+            return None
+
+        selection_model = self.selectionModel()
+        selected_indexes = selection_model.selectedIndexes() if selection_model is not None else []
+        if index in selected_indexes:
+            shape_names = [
+                str(candidate.data(ShapeItemsModel.NameRole) or "")
+                for candidate in selected_indexes
+                if candidate.isValid()
+                and not bool(candidate.data(ShapeItemsModel.IsHeaderRole))
+                and str(candidate.data(ShapeItemsModel.TypeRole) or "") == "WorkShape"
+            ]
+        else:
+            shape_names = [shape_name]
+        shape_names = [name for name in dict.fromkeys(shape_names) if name]
+        if not shape_names:
+            return None
+        return delegate.applySelectedWorkShapesRequested, shape_names
+
     def _resolve_icon_click(self, event_pos):
         delegate = self.itemDelegate()
         if not _is_slider_delegate(delegate):
@@ -619,6 +667,10 @@ class SliderIconClickMixin:
         if lock_payload is not None:
             shape_name, next_state = lock_payload
             return delegate.lockToggleRequested, shape_name, next_state
+
+        apply_payload = self._resolve_apply_selected_work_shapes_icon_click(event_pos)
+        if apply_payload is not None:
+            return apply_payload
 
         edit_payload = self._resolve_work_edit_mode_icon_click(event_pos)
         if edit_payload is not None:
@@ -989,6 +1041,8 @@ class WorkShapesListView(OutsideRemovalDragMixin, ReorderableTreeWidgetMixin, Sl
             "<b>Work shapes:</b><br>"
             "<b>Double-click</b> a work shape to rename it.<br>"
             "<b>Double-click</b> a driver to set its pose.<br>"
+            "<b>Click the apply icon</b> on a work shape to commit that shape to its drivers; "
+            "when the row is selected, every selected work shape is applied.<br>"
             "<b>Drag</b> a work shape onto the middle of a group to nest it, its top/bottom "
             "edge to reorder, or empty space to move it to the top level.<br>"
             "<b>Drag outside</b> a driver row and release to remove that driver connection.<br>"
