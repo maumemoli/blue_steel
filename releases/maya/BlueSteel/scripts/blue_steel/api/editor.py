@@ -1009,14 +1009,20 @@ class BlueSteelEditor(object):
             return connected_shapes
         return connected_shapes
 
-    def get_shapes_with_connected_work_shapes(self):
+    def get_shapes_with_connected_work_shapes(self, unmuted_only: bool=False) -> dict:
         """
-        Create a dictionary with the primary shapes that have work shapes connected to them
-        where the key is the primary shape name and the value is a list of work shape names that are connected to it.
+        Create a dictionary with the primary shapes that have work shapes connected to them.
+        Parameters:
+            unmuted_only (bool): If True, only include work shapes that are unmuted.
+        Returns:
+            dict: A dictionary where the key is the primary shape name and the value is a list of work shape
+            names that are connected to it.
         """
         shapes_with_connected_work_shapes = {}
         work_weights = self.work_blendshape.get_weights() or []
         for work_weight in work_weights:
+            if unmuted_only and self.get_work_shape_muted_state(work_weight):
+                continue
             primary_shape_names = self.get_work_shape_driver_shapes(work_weight)
             if primary_shape_names:
                 for primary_shape_name in primary_shape_names:
@@ -1026,10 +1032,12 @@ class BlueSteelEditor(object):
         return shapes_with_connected_work_shapes
 
     
-    def get_connected_work_shapes(self):
+    def get_connected_work_shapes(self)->dict:
         """
-        Create a dictionary with the work shapes that are connected to the main blendshape
-        where the key is the work shape name and the value is the primary shape name that is driving it.
+        Create a dictionary with the work shapes that are connected to the main blendshape.
+
+        Returns:
+            dict: A dictionary where the key is the work shape name and the value is the primary shape name that is driving it.
         """
         connected_work_shapes = {}
         work_weights = self.work_blendshape.get_weights() or []
@@ -1039,14 +1047,35 @@ class BlueSteelEditor(object):
                 connected_work_shapes[work_weight] = primary_shape_names[0]
         return connected_work_shapes
 
+
+    def apply_selected_work_shapes(self, selected_work_shapes: list):
+        """
+        Apply the selected work shapes to their linked primary shapes.
+
+        Parameters:
+            selected_work_shapes (list): A list of work shape names to apply.
+        """
+        self._store_current_pose()
+        for work_shape in selected_work_shapes:
+            driver_shapes = self.get_work_shape_driver_shapes(work_shape)
+            if not driver_shapes:
+                continue
+            delta_multiplier = 1.0 / len(driver_shapes)
+            for driver_shape in driver_shapes:
+                work_weight = self.work_blendshape.get_weight_by_name(work_shape)
+                work_delta = self.work_blendshape.get_target_delta(work_weight.id) * delta_multiplier
+                shape_weight = self.blendshape.get_weight_by_name(driver_shape)
+                shape_delta = self.blendshape.get_target_delta(shape_weight.id)
+                self.blendshape.set_target_delta(shape_weight.id, shape_delta + work_delta)
+
     @undoable
     def apply_active_work_shapes(self):
         """
         Apply the active work shapes to their linked primary shapes.
         """
         self._store_current_pose()
-        connected_shapes = self.get_shapes_with_connected_work_shapes()
-        # we need to get all the work shapes values
+        connected_shapes = self.get_shapes_with_connected_work_shapes(unmuted_only=True)
+        # we need to get all the work shapes valuesget_shapes_with_connected_work_shapes
         unlinked_work_shapes_values= {}
         committed_connected_shapes = set()
         shapes_to_commit = {}
