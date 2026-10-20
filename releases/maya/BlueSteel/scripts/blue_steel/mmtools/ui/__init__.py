@@ -5,6 +5,7 @@ from .. import smartCluster as smc
 from .. import meshTools as mt
 from .. import shape_editor_tools
 from .. import connectionTools as ct
+from . import blendshape_transfer_ui
 from ... import env
 from ...ui.common.frameLayout import FrameLayout
 from ...ui.common.icons import *
@@ -164,6 +165,16 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
 
         # Blendshape Editor Tools frame layout
         blendshape_editor_frame_layout = FrameLayout( 'Blendshape Editor Tools' )
+        transfer_weight_maps_btn = QtWidgets.QPushButton( 'Transfer Weight Maps by UV' )
+        transfer_weight_maps_btn.setToolTip(
+            'Transfer blendShape target weight maps between two meshes by UV.'
+        )
+        transfer_weight_maps_btn.clicked.connect(
+            lambda: blendshape_transfer_ui.show_window(
+                get_maya_main_window()
+            )
+        )
+        blendshape_editor_frame_layout.addWidget(transfer_weight_maps_btn)
         split_selected_target_btn = QtWidgets.QPushButton( 'Split XYZ Selected Target' )
         split_selected_target_btn.clicked.connect(shape_editor_tools.split_on_axis_selected_blendshape_targets)
         blendshape_editor_frame_layout.addWidget(split_selected_target_btn)
