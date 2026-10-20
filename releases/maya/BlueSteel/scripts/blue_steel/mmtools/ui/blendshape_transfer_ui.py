@@ -394,6 +394,17 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
         )
         self.weight_list.setMinimumHeight(180)
         weights_layout.addWidget(self.weight_list)
+
+        self.organize_target_directories_check = QtWidgets.QCheckBox(
+            "Match Source Target Directories"
+        )
+        self.organize_target_directories_check.setChecked(False)
+        self.organize_target_directories_check.setToolTip(
+            "Recreate or reuse nested source folders in the destination blendShape "
+            "and move transferred targets into them. Ungrouped source targets "
+            "move to the root. Unrelated targets and folder settings are unchanged."
+        )
+        weights_layout.addWidget(self.organize_target_directories_check)
         main_layout.addWidget(weights_group, 1)
 
         self.status_label = QtWidgets.QLabel("")
@@ -844,6 +855,9 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
                 ),
                 destination_blendshape=self._destination_blendshape_value(),
                 selected_weights=self._checked_weight_names(),
+                organize_target_directories=(
+                    self.organize_target_directories_check.isChecked()
+                ),
             )
         except Exception as exc:
             cmds.warning(str(exc))

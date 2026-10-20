@@ -796,7 +796,7 @@ class Blendshape(object):
         cmds.setAttr(f"{self.name}.targetDirectory[{new_id}].directoryName", name, type="string")
         cmds.setAttr(f"{self.name}.targetDirectory[{new_id}].parentIndex", parent_index)
         parent_child_indices = cmds.getAttr(f"{self.name}.targetDirectory[{parent_index}].childIndices") or []
-        if new_id not in parent_child_indices:
+        if -new_id not in parent_child_indices:
             parent_child_indices.append(-new_id)
             cmds.setAttr(f"{self.name}.targetDirectory[{parent_index}].childIndices",
                          parent_child_indices,

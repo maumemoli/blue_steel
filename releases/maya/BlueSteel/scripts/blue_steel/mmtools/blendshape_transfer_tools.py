@@ -22,6 +22,7 @@ from maya import cmds
 from ..api.blendshape import Blendshape
 from ..api.mayaUtils import undoable
 from ..api.skinCluster import SkinCluster
+from ..api.targetDirectory import TargetDirectory
 
 
 @dataclass
@@ -406,6 +407,76 @@ def _get_source_targets(
     return targets
 
 
+def _get_source_target_directory_paths(
+    blendshape_name: str,
+    targets: Sequence[_TargetWeightMap],
+) -> list[tuple[str, ...]]:
+    """Collect root-relative folder paths for selected targets only.
+
+    The root is implicit, regardless of its display name. Reject broken or
+    cyclic ancestry before creating any destination or temporary nodes.
+    """
+
+    if not targets:
+        return []
+
+    blendshape = Blendshape(blendshape_name)
+    directories = {
+        directory.index: directory
+        for directory in blendshape.get_target_dirs()
+    }
+    authored_parents = set(cmds.getAttr(
+        f"{blendshape_name}.parentDirectory", multiIndices=True,
+    ) or [])
+    paths: list[tuple[str, ...]] = []
+    for target in targets:
+        index = (
+            cmds.getAttr(f"{blendshape_name}.parentDirectory[{target.index}]")
+            if target.index in authored_parents else 0
+        )
+        names: list[str] = []
+        visited: set[int] = set()
+        while index != 0:
+            if index in visited or index not in directories:
+                raise ValueError(
+                    f"Invalid target directory ancestry for '{target.name}' "
+                    f"on '{blendshape_name}' at directory index {index}."
+                )
+            visited.add(index)
+            names.append(directories[index].name)
+            index = cmds.getAttr(
+                f"{blendshape_name}.targetDirectory[{index}].parentIndex"
+            )
+        paths.append(tuple(reversed(names)))
+    return paths
+
+
+def _resolve_target_directory(
+    blendshape: Blendshape,
+    path: tuple[str, ...],
+    cache: dict[tuple[str, ...], TargetDirectory],
+) -> TargetDirectory:
+    """Create/reuse a folder path by parent and name, caching resolved paths."""
+
+    parent = cache.setdefault(
+        (), TargetDirectory(index=0, blendshape=blendshape.name),
+    )
+    for depth, name in enumerate(path, 1):
+        prefix = path[:depth]
+        if prefix not in cache:
+            matches = [
+                directory
+                for directory in blendshape.get_target_dir_child_target_dirs(parent)
+                if directory.name == name
+            ]
+            cache[prefix] = (
+                min(matches, key=lambda directory: directory.index)
+                if matches else blendshape.add_target_dir(name, parent.index)
+            )
+        parent = cache[prefix]
+    return parent
+
+
 def _safe_temp_name(name: str, index: int) -> str:
     """Return a Maya-safe temporary joint name for a target.
 
@@ -751,6 +822,7 @@ def _create_destination_blendshape(
     target_names: Sequence[str],
     weight_maps: Sequence[Sequence[float]],
     destination_blendshape: Optional[str],
+    target_directory_paths: Optional[Sequence[tuple[str, ...]]] = None,
 ) -> str:
     """Reuse or create the destination blendShape and write its weight maps.
 
@@ -764,6 +836,9 @@ def _create_destination_blendshape(
         weight_maps (Sequence[Sequence[float]]): Transferred weight maps.
         destination_blendshape (str | None): Existing destination blendShape
             name, or a name to use for a newly created blendShape.
+        target_directory_paths (Sequence[tuple[str, ...]] | None): Root-relative
+            source folder paths aligned with targets. ``None`` leaves existing
+            organization unchanged; an empty tuple places a target at the root.
 
     Returns:
         str: The destination blendShape name.
@@ -779,6 +854,15 @@ def _create_destination_blendshape(
             "The number of destination target names and weight maps must match."
         )
 
+    if (
+        target_directory_paths is not None
+        and len(target_directory_paths) != len(target_names)
+    ):
+        raise ValueError(
+            "The number of target directory paths and targets must match."
+        )
+
+    directory_cache: dict[tuple[str, ...], TargetDirectory] = {}
     created_new = False
     if destination_blendshape and cmds.objExists(destination_blendshape):
         if cmds.nodeType(destination_blendshape) != "blendShape":
@@ -833,6 +917,11 @@ def _create_destination_blendshape(
                 weight.id,
                 list(weight_maps[index]),
             )
+            if target_directory_paths is not None:
+                directory = _resolve_target_directory(
+                    blendshape, target_directory_paths[index], directory_cache,
+                )
+                blendshape.set_weight_parent_directory(weight, directory)
     except Exception:
         if created_new:
             _delete_node(blendshape.name)
@@ -937,6 +1026,7 @@ def transfer_blendshape_weight_maps_by_uv(
     destination_uv_set: Optional[str] = None,
     destination_blendshape: Optional[str] = None,
     selected_weights: Optional[Sequence[str]] = None,
+    organize_target_directories: bool = False,
 ) -> str:
     """Transfer blendShape target weight maps from one mesh to another by UV.
 
@@ -966,6 +1056,11 @@ def transfer_blendshape_weight_maps_by_uv(
             transfer. ``None`` transfers every source target. Missing names
             are warned about and skipped. An empty list creates a destination
             blendShape with no targets.
+        organize_target_directories (bool): When True, recreate/reuse the source
+            folder hierarchy for transferred targets, including moving existing
+            matching targets. Root-level source targets move to the destination
+            root. Only needed folders are created; unrelated destination targets
+            and folder settings are unchanged. Defaults to False.
 
     Returns:
         str: Name of the destination blendShape (existing or newly created).
@@ -984,6 +1079,7 @@ def transfer_blendshape_weight_maps_by_uv(
         ...     destination_uv_set="map1",
         ...     destination_blendshape="destinationWeightMaps_BS",
         ...     selected_weights=["Smile", "Frown"],
+        ...     organize_target_directories=True,
         ... )
         'destinationWeightMaps_BS'
     """
@@ -1013,6 +1109,10 @@ def transfer_blendshape_weight_maps_by_uv(
     )
     target_names = [target.name for target in targets]
     source_weight_maps = [target.weights for target in targets]
+    target_directory_paths = (
+        _get_source_target_directory_paths(blendshape_name, targets)
+        if organize_target_directories else None
+    )
 
     original_selection = cmds.ls(selection=True) or []
     if not targets:
@@ -1091,6 +1191,7 @@ def transfer_blendshape_weight_maps_by_uv(
             target_names,
             destination_weight_maps,
             destination_blendshape,
+            target_directory_paths=target_directory_paths,
         )
         return created_blendshape
     finally:
