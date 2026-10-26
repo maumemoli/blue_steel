@@ -17,7 +17,7 @@ import os
 
 from maya import cmds
 
-from ...api.editor import BlueSteelEditor, ShapeImportCancelled
+from ...api.editor import BlueSteelEditor, ShapeImportCancelled, WeightsTransferMethod
 from ...api.mayaUtils import undoable
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
@@ -1052,7 +1052,8 @@ class EditorOpsMixin(MainWindowMixin):
         self._clear_trackers_for_scene_operation()
         try:
             self.current_editor.import_split_data(
-                directory,
+                import_path = directory,
+                transfer_method = None,
                 import_weights=import_weights,
                 import_settings=import_settings,
             )

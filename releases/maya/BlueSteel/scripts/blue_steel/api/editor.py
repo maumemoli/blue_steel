@@ -7,6 +7,7 @@ import sys
 import json
 import re
 import itertools
+import enum
 
 from . import attrUtils
 from .treeViewOrderingManager import TreeViewOrderingManager
@@ -20,6 +21,7 @@ from ..logic.network import Network
 from ..logic.splitMap import SplitMap
 from ..logic.splitData import SplitData
 from ..logic import utilities
+from ..mmtools.blendshape_transfer_tools import transfer_blendshape_weight_maps, WeightsTransferMethod
 from . import mayaUtils
 from . import blendshapeHUD
 from contextlib import contextmanager
@@ -4998,19 +5000,37 @@ class BlueSteelEditor(object):
         """
         self.export_split_settings(export_path)
         self.export_split_maps_weights(export_path)
+        self.export_neutral_mesh_as_obj(export_path)
 
     @pause_shape_editor
     @undoable
-    def import_split_data(self, import_path: str, import_weights: bool = True, import_settings: bool = True):
+    def import_split_data(self,
+                          import_path: str,
+                          transfer_method: WeightsTransferMethod|None = None,
+                          import_settings: bool = True,
+                          import_weights: bool = True):
         """
         Import the split data from a directory.
         Parameters:
             import_path (str): The path to import the split data from.
+            transfer_method (WeightsTransferMethod): Vertex-ID or UV transfer.
+            import_settings (bool): Import split groups and associations.
+            import_weights (bool): Import maps; False imports only settings.
+                Retained for the editor UI's existing keyword calls.
         Returns:
             None
         """
+        # Preserve the former positional (path, import_weights, import_settings)
+        # API as well as the new enum-based transfer method.
         if import_weights:
-            self.import_split_maps_weights(import_path)
+            if transfer_method is None:
+                print("Transferring split maps weights by vertex ID")
+                self.import_split_maps_weights(import_path)
+            else:
+                print("Transferring split maps weights by UVs")
+                self.import_and_transfer_split_maps_weights(import_path,
+                                                            transfer_method = transfer_method,)
+
         if import_settings:
             self.import_split_settings(import_path)
             self._ensure_split_shape_name_item_in_groups()
@@ -5327,9 +5347,142 @@ class BlueSteelEditor(object):
                     continue
                 self.set_primaries_split_group([primary], group)
             # we need to check if the split maps in the split_groups are valid. If not, we need to remove them from the split_groups.
-            
 
-            
+    def import_neutral_mesh_from_obj(self, import_path: str, namespace: str = None):
+        """
+        Import the neutral mesh from an OBJ file.
+        Parameters:
+            import_path (str): The path to import the neutral mesh from.
+            namespace (str | None): Optional namespace for temporary ownership.
+        Returns:
+            list[str] | None: Imported nodes, or None if the OBJ is missing.
+        """
+        import_file = os.path.join(import_path, "neutral.obj")
+        if os.path.exists(import_file):
+            options = (
+                {"namespace": namespace, "mergeNamespacesOnClash": True}
+                if namespace else {}
+            )
+            imported_nodes = cmds.file(import_file,
+                                       i=True,
+                                       type="OBJ",
+                                       options="mo=1",
+                                       ignoreVersion=True,
+                                       returnNewNodes=True,
+                                       **options)
+            return imported_nodes
+        return None
+
+
+    def export_neutral_mesh_as_obj(self, export_path: str):
+        """
+        Export the neutral mesh as an OBJ file.
+        Parameters:
+            export_path (str): The path to export the neutral mesh to.
+        Returns:
+            None
+        """
+        if not os.path.exists(export_path):
+            os.makedirs(export_path)
+        export_file = os.path.join(export_path, "neutral.obj")
+        neutral = self.duplicate_base_mesh_neutral_state("neutral")
+        cmds.select(neutral)
+        cmds.file(export_file,
+                  force=True,
+                  options="groups=0;ptgroups=0;materials=0;smoothing=0;normals=0",
+                  type="OBJexport",
+                  exportSelected=True)
+        cmds.delete(neutral)
+
+
+    @undoable
+    def import_and_transfer_split_maps_weights(self,
+                                               import_path: str,
+                                               transfer_method: WeightsTransferMethod = WeightsTransferMethod.UVS):
+        """
+        Import the split maps from a directory and transfer their weights.
+        Parameters:
+            import_path (str): The path to import the split maps from.
+            uv_set (str | None): The UV set to use for transferring the weights.
+            transfer_method (WeightsTransferMethod): The method to use for transferring the weights.
+        Returns:
+            None
+        """
+        for filename in ("neutral.obj", "split_maps_weights.json"):
+            if not os.path.isfile(os.path.join(import_path, filename)):
+                raise FileNotFoundError(f"{filename} not found in {import_path}")
+
+        # Everything created during import belongs to this namespace, including
+        # partial editor construction if create_new raises. Never reuse or
+        # delete an existing user's temp_editor or an arbitrary imported node.
+        namespace = "bsSplitMapImport"
+        suffix = 1
+        while cmds.namespace(exists=f":{namespace}"):
+            namespace = f"bsSplitMapImport{suffix}"
+            suffix += 1
+        namespace = f":{namespace}"
+        selection = cmds.ls(selection=True, long=True) or []
+        cmds.namespace(add=namespace)
+        editor_name = f"{namespace}:temp_editor"
+        directory_name = f"{editor_name}_Blendshapes_GRP"
+        try:
+            imported_nodes = self.import_neutral_mesh_from_obj(import_path, namespace)
+            mesh_shapes = [
+                node for node in imported_nodes or []
+                if cmds.nodeType(node) == "mesh"
+                and not cmds.getAttr(f"{node}.intermediateObject")
+            ]
+            if len(mesh_shapes) != 1:
+                raise ValueError(
+                    f"neutral.obj must contain exactly one mesh; found {len(mesh_shapes)}."
+                )
+            imported_mesh = cmds.listRelatives(
+                mesh_shapes[0], parent=True, fullPath=True,
+            )[0]
+            temp_editor = BlueSteelEditor.create_new(
+                editor_name, imported_mesh, self.separator,
+            )
+            # Fail on incompatible source data instead of transferring default
+            # maps left behind by a skipped vertex-count mismatch.
+            temp_editor.import_split_maps_weights(import_path, strict=True)
+            print(f"Using transfer method: {transfer_method}")
+            transfer_blendshape_weight_maps(
+                source_mesh=imported_mesh,
+                destination_mesh=self.base_mesh,
+                transfer_method=transfer_method,
+                source_blendshape=temp_editor.split_blendshape.name,
+                destination_blendshape=self.split_blendshape.name,
+                organize_target_directories=True,
+                
+            )
+        finally:
+            # Shape Editor folders live on a shared node, outside the namespace.
+            # Remove only our folder, also when editor construction failed.
+            try:
+                directories = cmds.getAttr(
+                    "shapeEditorManager.blendShapeDirectory", multiIndices=True,
+                ) or []
+                for index in directories:
+                    if cmds.getAttr(
+                        f"shapeEditorManager.blendShapeDirectory[{index}].directoryName"
+                    ) == directory_name:
+                        self.remove_shape_editor_directory(index)
+            except Exception as exc:
+                cmds.warning(f"Could not remove temporary Shape Editor folder: {exc}")
+            try:
+                if cmds.namespace(exists=namespace):
+                    cmds.namespace(removeNamespace=namespace, deleteNamespaceContent=True)
+            except Exception as exc:
+                cmds.warning(f"Could not remove temporary namespace '{namespace}': {exc}")
+            try:
+                if selection:
+                    cmds.select(selection, replace=True)
+                else:
+                    cmds.select(clear=True)
+            except RuntimeError as exc:
+                cmds.warning(f"Could not restore selection after split-map import: {exc}")
+
+
     def export_split_maps_weights(self, export_path: str):
         """
         Export the split maps to a directory.
@@ -5353,22 +5506,36 @@ class BlueSteelEditor(object):
         with open(export_file, "w") as f:
             json.dump(split_maps_weights, f, indent=4)
 
-    def import_split_maps_weights(self, import_path: str):
+    def import_split_maps_weights(self, import_path: str, strict: bool = False):
         """
         Import the split maps from a directory.
         Parameters:
             import_path (str): The path to import the split maps from.
+            strict (bool): Reject missing files and incompatible weight arrays
+                before creating maps. Used for the temporary UV-transfer source.
         Returns:
-            None    
+            None
         """
-        self.clear_all_split_maps()
         import_file = os.path.join(import_path, "split_maps_weights.json")
         base_mesh_vertex_count = cmds.polyEvaluate(self.base_mesh, vertex=True)
+        if strict and not os.path.isfile(import_file):
+            raise FileNotFoundError(f"Split map weights not found: {import_file}")
         if os.path.exists(import_file):
             with open(import_file, "r") as f:
                 split_maps_weights = json.load(f)
+            if strict:
+                for split_map, split_map_data in split_maps_weights.items():
+                    for weight, values in split_map_data.items():
+                        if not weight.startswith(f"{split_map}_") or weight == f"{split_map}_":
+                            raise ValueError(f"Invalid target name '{weight}' for split map '{split_map}'.")
+                        if not isinstance(values, list) or len(values) != base_mesh_vertex_count:
+                            raise ValueError(
+                                f"Weight map '{weight}' must have {base_mesh_vertex_count} "
+                                "values to match neutral.obj."
+                            )
+            self.clear_all_split_maps()
             for split_map, split_map_data in split_maps_weights.items():
-                split_map_areas = [x.split("_")[-1] for x in split_map_data.keys()]
+                split_map_areas = [x[len(split_map) + 1:] for x in split_map_data.keys()]
                 self.create_split_map(split_map, split_map_areas)
                 for weight, weight_map_values in split_map_data.items():
                     weight = self.split_blendshape.get_weight_by_name(weight)

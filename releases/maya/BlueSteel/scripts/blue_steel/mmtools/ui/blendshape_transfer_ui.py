@@ -1,7 +1,7 @@
 """UI for transferring blendShape target weight maps between meshes by UV.
 
 The dialog exposes every argument of
-:func:`blue_steel.mmtools.blendshape_transfer_tools.transfer_blendshape_weight_maps_by_uv`.
+:func:`blue_steel.mmtools.blendshape_transfer_tools.transfer_blendshape_weight_maps`.
 The selected meshes prefill the source and destination fields, while blendShape
 and UV-set choices are derived from each mesh and remain editable.
 
@@ -17,7 +17,7 @@ from maya import cmds
 import maya.OpenMayaUI as omui
 
 from ... import env
-from ..blendshape_transfer_tools import transfer_blendshape_weight_maps_by_uv
+from ..blendshape_transfer_tools import transfer_blendshape_weight_maps, WeightsTransferMethod
 
 if env.ENVIRONMENT.MAYA_VERSION > 2024:
     from PySide6 import QtCore, QtWidgets
@@ -845,9 +845,10 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
             return
 
         try:
-            result = transfer_blendshape_weight_maps_by_uv(
+            result = transfer_blendshape_weight_maps(
                 source_mesh=source_mesh,
                 destination_mesh=destination_mesh,
+                transfer_method=WeightsTransferMethod.UVS,
                 source_blendshape=source_blendshape,
                 source_uv_set=self.source_uv_combo.currentText() or None,
                 destination_uv_set=(

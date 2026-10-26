@@ -16,13 +16,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence
-
+import enum
 from maya import cmds
+from maya.api import OpenMaya as om
 
 from ..api.blendshape import Blendshape
 from ..api.mayaUtils import undoable
 from ..api.skinCluster import SkinCluster
 from ..api.targetDirectory import TargetDirectory
+
+class WeightsTransferMethod(enum.Enum):
+    UVS = "uvs"
+    CLOSEST_POINT = "closestPoint"
+    CLOSEST_COMPONENT = "closestComponent"
+    RAY_CAST = "rayCast"
+
 
 
 @dataclass
@@ -256,7 +264,8 @@ def _get_target_name(blendshape_name: str, target_index: int) -> str:
         target_index (int): Logical target index.
 
     Returns:
-        str: Target alias or ``target_<index>`` when no alias is authored.
+        str: Target alias, or ``target_<index>`` when the weight attribute
+            exists without an alias.
     """
 
     try:
@@ -276,6 +285,10 @@ def _get_source_weight_map(
     vertex_count: int,
 ) -> list[float]:
     """Read the target weight map for one source blendShape target.
+
+    Unreadable maps fall back to a fully weighted map, and maps whose length
+    does not match the mesh are padded with ``1.0`` or truncated so that the
+    result always holds exactly ``vertex_count`` values.
 
     Parameters:
         blendshape (Blendshape): Source blendShape wrapper.
@@ -411,10 +424,23 @@ def _get_source_target_directory_paths(
     blendshape_name: str,
     targets: Sequence[_TargetWeightMap],
 ) -> list[tuple[str, ...]]:
-    """Collect root-relative folder paths for selected targets only.
+    """Collect root-relative folder paths for the selected targets only.
 
-    The root is implicit, regardless of its display name. Reject broken or
-    cyclic ancestry before creating any destination or temporary nodes.
+    The root is implicit regardless of its display name, so a target stored at
+    the root maps to an empty tuple. Broken or cyclic ancestry is rejected
+    before any destination or temporary node is created.
+
+    Parameters:
+        blendshape_name (str): Source blendShape node name.
+        targets (Sequence[_TargetWeightMap]): Targets to collect paths for.
+
+    Returns:
+        list[tuple[str, ...]]: Folder names per target, ordered from the
+            outermost folder to the target's direct parent.
+
+    Raises:
+        ValueError: If a target references a missing parent directory or the
+            ancestry contains a cycle.
     """
 
     if not targets:
@@ -456,7 +482,22 @@ def _resolve_target_directory(
     path: tuple[str, ...],
     cache: dict[tuple[str, ...], TargetDirectory],
 ) -> TargetDirectory:
-    """Create/reuse a folder path by parent and name, caching resolved paths."""
+    """Resolve a folder path on the destination blendShape.
+
+    Each folder is reused when a sibling with the same name already exists and
+    created under its parent otherwise. Resolved prefixes are cached so that
+    shared ancestors are only looked up or created once.
+
+    Parameters:
+        blendshape (Blendshape): Destination blendShape wrapper.
+        path (tuple[str, ...]): Root-relative folder names from outermost to
+            innermost. An empty path resolves to the root folder.
+        cache (dict[tuple[str, ...], TargetDirectory]): Resolved folder cache,
+            keyed by path prefix and updated in place.
+
+    Returns:
+        TargetDirectory: The innermost directory of ``path``.
+    """
 
     parent = cache.setdefault(
         (), TargetDirectory(index=0, blendshape=blendshape.name),
@@ -755,10 +796,17 @@ def _get_uv_set(mesh_name: str, requested_uv_set: Optional[str]) -> str:
         str: The UV set to use for the transfer.
 
     Raises:
-        ValueError: If the mesh has no UV sets or the requested set is missing.
+        ValueError: If the evaluated mesh has no UV sets, the requested set is
+            missing, or the selected set has no assigned UVs.
     """
 
-    uv_sets = cmds.polyUVSet(mesh_name, q=True, allUVSets=True) or []
+    # Query the evaluated, non-intermediate shape. A transform's UV-set
+    # attributes can also list stale sets from upstream/intermediate meshes.
+    _, mesh_shape = _get_mesh_transform_and_shape(mesh_name)
+    selection = om.MSelectionList()
+    selection.add(mesh_shape)
+    mesh_fn = om.MFnMesh(selection.getDagPath(0))
+    uv_sets = list(mesh_fn.getUVSetNames())
     if not uv_sets:
         raise ValueError(f"Mesh '{mesh_name}' has no UV sets.")
 
@@ -768,36 +816,48 @@ def _get_uv_set(mesh_name: str, requested_uv_set: Optional[str]) -> str:
                 f"UV set '{requested_uv_set}' does not exist on "
                 f"'{mesh_name}'. Available UV sets: {', '.join(uv_sets)}."
             )
-        return requested_uv_set
+        resolved_uv_set = requested_uv_set
+    else:
+        resolved_uv_set = mesh_fn.currentUVSetName()
+        if resolved_uv_set not in uv_sets:
+            cmds.warning(
+                f"Could not determine the current UV set on '{mesh_name}'; "
+                f"using '{uv_sets[0]}'."
+            )
+            resolved_uv_set = uv_sets[0]
 
-    current_uv_sets = cmds.polyUVSet(
-        mesh_name,
-        q=True,
-        currentUVSet=True,
-    ) or []
-    if current_uv_sets and current_uv_sets[0] in uv_sets:
-        return current_uv_sets[0]
-
-    cmds.warning(
-        f"Could not determine the current UV set on '{mesh_name}'; "
-        f"using '{uv_sets[0]}'."
-    )
-    return uv_sets[0]
+    _, assigned_uvs = mesh_fn.getAssignedUVs(resolved_uv_set)
+    if mesh_fn.numUVs(resolved_uv_set) == 0 or len(assigned_uvs) == 0:
+        raise ValueError(
+            f"UV set '{resolved_uv_set}' on '{mesh_name}' has no assigned UVs."
+        )
+    return resolved_uv_set
 
 
-def _copy_skin_weights_by_uv(
+def _copy_skin_weights(
     source_skin: str,
     destination_skin: str,
     source_uv_set: str,
     destination_uv_set: str,
+    transfer_method: WeightsTransferMethod
 ) -> None:
-    """Copy skin weights between two temporary skinClusters by UV.
+    """Copy the temporary skinCluster weights onto the destination one.
+
+    Influences are matched one-to-one by joint name, so the joint order of the
+    two temporary skinClusters does not matter.
 
     Parameters:
         source_skin (str): Source skinCluster name.
         destination_skin (str): Destination skinCluster name.
-        source_uv_set (str): UV set on the source mesh.
-        destination_uv_set (str): UV set on the destination mesh.
+        source_uv_set (str): UV set on the source mesh, used for the UV-space
+            transfer.
+        destination_uv_set (str): UV set on the destination mesh, used for the
+            UV-space transfer.
+        transfer_method (WeightsTransferMethod): Surface association passed to
+            ``copySkinWeights``. ``WeightsTransferMethod.UVS`` (the default) transfers in UV space
+            using the given UV sets; any other value, such as
+            ``WeightsTransferMethod.CLOSEST_POINT``, ``WeightsTransferMethod.CLOSEST_COMPONENT``, or ``WeightsTransferMethod.RAY_CAST``, is
+            used as-is and ignores the UV sets.
 
     Returns:
         None
@@ -806,14 +866,16 @@ def _copy_skin_weights_by_uv(
     # Maya uses the uvSpace flag together with the closestPoint surface mode
     # to enable the UV-space transfer path. There is no separate "uvSpace"
     # surface-association value in Maya 2026.
-    cmds.copySkinWeights(
-        ss=source_skin,
-        ds=destination_skin,
-        noMirror=True,
-        surfaceAssociation="closestPoint",
-        uvSpace=[source_uv_set, destination_uv_set],
-        influenceAssociation="oneToOne",
-    )
+    args = {"ss": source_skin,
+            "ds": destination_skin,
+            "noMirror": True,
+            "influenceAssociation": "oneToOne",
+            "surfaceAssociation": transfer_method.value}
+    if transfer_method == WeightsTransferMethod.UVS:
+        args["surfaceAssociation"] = "closestPoint"
+        args["uvSpace"] = [source_uv_set, destination_uv_set]
+
+    cmds.copySkinWeights(**args)
 
 
 def _create_destination_blendshape(
@@ -1018,9 +1080,10 @@ def _restore_selection(selection: Sequence[str]) -> None:
 
 
 @undoable
-def transfer_blendshape_weight_maps_by_uv(
+def transfer_blendshape_weight_maps(
     source_mesh: str,
     destination_mesh: str,
+    transfer_method: WeightsTransferMethod,
     source_blendshape: Optional[str] = None,
     source_uv_set: Optional[str] = None,
     destination_uv_set: Optional[str] = None,
@@ -1045,9 +1108,15 @@ def transfer_blendshape_weight_maps_by_uv(
         destination_mesh (str): Destination mesh transform or shape.
         source_blendshape (str | None): Explicit source blendShape node. When
             omitted, the blendShape affecting ``source_mesh`` is auto-detected.
-        source_uv_set (str | None): Source UV set. Defaults to the current set.
+        source_uv_set (str | None): Source UV set. Defaults to the current set
+            on the original source mesh, not its temporary duplicate.
         destination_uv_set (str | None): Destination UV set. Defaults to the
-            current set.
+            current set on the original destination mesh.
+        transfer_method (WeightsTransferMethod): Surface association requested for the copy.
+            Only ``WeightsTransferMethod.UVS`` (the default) is currently honoured; other values
+            such as ``WeightsTransferMethod.CLOSEST_POINT``, ``WeightsTransferMethod.CLOSEST_COMPONENT``, or
+            ``WeightsTransferMethod.RAY_CAST`` are accepted but the transfer still runs in UV
+            space using the resolved UV sets.
         destination_blendshape (str | None): Destination blendShape name.
             When the node exists it is reused and matching target weight maps
             are overwritten; when it does not exist it is created. ``None``
@@ -1072,7 +1141,7 @@ def transfer_blendshape_weight_maps_by_uv(
         RuntimeError: If temporary skin construction or target creation fails.
 
     Example:
-        >>> transfer_blendshape_weight_maps_by_uv(
+        >>> transfer_blendshape_weight_maps(
         ...     "sourceMesh",
         ...     "destinationMesh",
         ...     source_uv_set="map1",
@@ -1127,6 +1196,12 @@ def transfer_blendshape_weight_maps_by_uv(
         finally:
             _restore_selection(original_selection)
 
+    # Duplicating/deleting history can change a mesh's current UV set (and
+    # expose stale UV-set attributes). Capture the user's choices before that
+    # happens, just as the transfer UI does on the original meshes.
+    resolved_source_uv = _get_uv_set(source_shape, source_uv_set)
+    resolved_destination_uv = _get_uv_set(destination_shape, destination_uv_set)
+
     source_duplicate: Optional[str] = None
     destination_duplicate: Optional[str] = None
     source_skin: Optional[str] = None
@@ -1136,6 +1211,7 @@ def transfer_blendshape_weight_maps_by_uv(
     source_namespace: Optional[str] = None
     destination_namespace: Optional[str] = None
     created_blendshape: Optional[str] = None
+    transfer_method: WeightsTransferMethod = WeightsTransferMethod.UVS
 
     try:
         (
@@ -1167,17 +1243,16 @@ def transfer_blendshape_weight_maps_by_uv(
             "dst",
         )
 
-        resolved_source_uv = _get_uv_set(source_duplicate, source_uv_set)
-        resolved_destination_uv = _get_uv_set(
-            destination_duplicate,
-            destination_uv_set,
-        )
+        # Validate that the selected sets survived duplication and binding.
+        _get_uv_set(source_duplicate, resolved_source_uv)
+        _get_uv_set(destination_duplicate, resolved_destination_uv)
 
-        _copy_skin_weights_by_uv(
+        _copy_skin_weights(
             source_skin,
             destination_skin,
             resolved_source_uv,
             resolved_destination_uv,
+            transfer_method=transfer_method,
         )
 
         destination_weight_maps = _read_skin_weight_maps(
@@ -1210,4 +1285,4 @@ def transfer_blendshape_weight_maps_by_uv(
         _restore_selection(original_selection)
 
 
-__all__ = ["transfer_blendshape_weight_maps_by_uv"]
+__all__ = ["transfer_blendshape_weight_maps"]
