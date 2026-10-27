@@ -141,6 +141,8 @@ class MainWindow(
         self.rename_editor_action: Optional[QAction] = None
         self.explode_container_action: Optional[QAction] = None
         self.fix_invisible_blendshapes_action: Optional[QAction] = None
+        self.create_editor_from_proxy_mesh_action: Optional[QAction] = None
+        self.update_base_mesh_action: Optional[QAction] = None
         self.convert_simplex_action: Optional[QAction] = None
         self.connect_simplex_controllers_action: Optional[QAction] = None
         self.prepare_for_publishing_action: Optional[QAction] = None
@@ -150,6 +152,7 @@ class MainWindow(
         self._primary_rename_editor: Optional[QLineEdit] = None
         self._primary_rename_old_name: str = ""
         self._controller_layout_window: Optional[ControllerLayoutWindow] = None
+        self._last_split_data_import_path: str = ""
         self.heat_map_switch: Optional[QPushButton] = None
         self.collapse_toggle_button: Optional[QPushButton] = None
         self.menu_bar: Optional[QMenuBar] = None

@@ -22,25 +22,27 @@ from ...api.mayaUtils import undoable
 from ...converters.simplex.ui.dialog import show_simplex_converter_dialog
 from ...converters.simplex import commands as simplex_commands
 from ...mmtools import ui
+from .importSplitDataDialog import (
+    NEUTRAL_OBJ_FILENAME,
+    ImportSplitDataDialog,
+    transfer_method_label,
+)
 from .mainWindowMixin import MainWindowMixin
 from .controllerLayoutWindow import ControllerLayoutWindow
 from .qt import (
     QAction,
-    QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QGuiApplication,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
     QMenuBar,
     QMessageBox,
     QPushButton,
     QSize,
     QSizePolicy,
-    QVBoxLayout,
     QWidget,
     Qt,
+    exec_dialog,
     get_maya_main_window,
 )
 
@@ -808,6 +810,22 @@ class EditorOpsMixin(MainWindowMixin):
         self.fix_invisible_blendshapes_action.setEnabled(self.current_editor is not None)
         utilities_menu.addAction(self.fix_invisible_blendshapes_action)
 
+        self.update_base_mesh_action = QAction("Update Base Mesh", self)
+        self.update_base_mesh_action.setToolTip(
+            "Update the base mesh with the selection. The new base mesh should have the same vertex count and vertex order of the original one."
+        )
+        self.update_base_mesh_action.triggered.connect(self._on_update_base_mesh_requested)
+        self.update_base_mesh_action.setEnabled(self.current_editor is not None)
+        utilities_menu.addAction(self.update_base_mesh_action)
+
+        self.create_editor_from_proxy_mesh_action = QAction("Create Editor From Proxy Mesh", self)
+        self.create_editor_from_proxy_mesh_action.setToolTip(
+            "Bake a new editor on the selected proxy mesh. The proxy mesh should be deformed by the current editor."
+        )
+        self.create_editor_from_proxy_mesh_action.triggered.connect(self._on_create_editor_from_proxy_mesh_requested)
+        self.create_editor_from_proxy_mesh_action.setEnabled(self.current_editor is not None)
+        utilities_menu.addAction(self.create_editor_from_proxy_mesh_action)
+
         conversion_cleanup_menu = menu_bar.addMenu("Converters/Clean-Up")
         simplex_menu = conversion_cleanup_menu.addMenu("Simplex Facial System")
         self.convert_simplex_action = QAction("Convert Simplex", self)
@@ -997,7 +1015,11 @@ class EditorOpsMixin(MainWindowMixin):
     def _import_split_data(self) -> None:
         """Import split groups and/or split maps from a directory.
 
-        The directory is chosen with Maya's native file dialog.
+        The folder, the weight transfer method, and the split data to import
+        are collected in :class:`ImportSplitDataDialog` instead of a bare
+        directory dialog. The transfer method defaults to ``None`` (vertex ID)
+        and the neutral.obj-based methods are only selectable when the folder
+        contains ``neutral.obj``.
 
         Returns:
             None
@@ -1006,54 +1028,50 @@ class EditorOpsMixin(MainWindowMixin):
             self._set_status("No system selected.", warning=True)
             return
 
-        directory = _maya_directory_dialog("Select Split Data Directory")
-        if not directory:
-            self._set_status("Import cancelled.")
-            return
-
-        choice_dialog = QDialog(self)
-        choice_dialog.setWindowTitle("Import Split Data")
-        choice_layout = QVBoxLayout(choice_dialog)
-        choice_layout.addWidget(QLabel("Choose the split data to import:", choice_dialog))
-        split_groups_checkbox = QCheckBox("Split Groups", choice_dialog)
-        split_groups_checkbox.setChecked(True)
-        choice_layout.addWidget(split_groups_checkbox)
-        split_maps_checkbox = QCheckBox("Split Maps", choice_dialog)
-        split_maps_checkbox.setChecked(True)
-        choice_layout.addWidget(split_maps_checkbox)
-        dialog_buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
-            parent=choice_dialog,
+        import_dialog = ImportSplitDataDialog(
+            self,
+            initial_path=self._last_split_data_import_path,
+            directory_picker=_maya_directory_dialog,
         )
-        dialog_buttons.button(QDialogButtonBox.Ok).setText("Import")
-        dialog_buttons.accepted.connect(choice_dialog.accept)
-        dialog_buttons.rejected.connect(choice_dialog.reject)
-        choice_layout.addWidget(dialog_buttons)
-        if hasattr(choice_dialog, "exec"):
-            result = choice_dialog.exec()
-        else:
-            result = choice_dialog.exec_()
-        if result != QDialog.Accepted:
+        if exec_dialog(import_dialog) != QDialog.Accepted:
             self._set_status("Import cancelled.")
             return
 
-        import_settings = split_groups_checkbox.isChecked()
-        import_weights = split_maps_checkbox.isChecked()
+        directory = import_dialog.import_path()
+        transfer_method = import_dialog.transfer_method()
+        import_settings = import_dialog.import_settings()
+        import_weights = import_dialog.import_weights()
         if not import_settings and not import_weights:
             self._set_status("Select at least one split data type to import.", warning=True)
             return
+        self._last_split_data_import_path = directory
+
+        # The dialog disables these methods without neutral.obj, but a typed
+        # or externally built call could still ask for one: fall back instead
+        # of letting the transfer raise once the import is already running.
+        if (import_weights and transfer_method is not None
+                and not os.path.isfile(os.path.join(directory, NEUTRAL_OBJ_FILENAME))):
+            transfer_method = None
+            cmds.warning(
+                f"{NEUTRAL_OBJ_FILENAME} not found in '{directory}'. "
+                "Transferring split maps by vertex ID instead.")
+
         if import_settings and import_weights:
             import_label = "split groups and split maps"
         elif import_settings:
             import_label = "split groups"
         else:
             import_label = "split maps"
+        if import_weights:
+            import_label = (
+                f"{import_label} (transfer method: "
+                f"{transfer_method_label(transfer_method)})")
 
         self._clear_trackers_for_scene_operation()
         try:
             self.current_editor.import_split_data(
                 import_path = directory,
-                transfer_method = None,
+                transfer_method = transfer_method,
                 import_weights=import_weights,
                 import_settings=import_settings,
             )
@@ -1294,6 +1312,106 @@ class EditorOpsMixin(MainWindowMixin):
             return
 
         self._set_status("Fixed invisible blendshapes in the Shape Editor.")
+
+
+    @undoable
+    def _on_update_base_mesh_requested(self) -> None:
+        """Update the active editor's base mesh from the selected mesh.
+
+        The selected mesh must have the same vertex count and vertex order as
+        the current base mesh, otherwise the update is rejected.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        mesh = self._resolve_selected_poly_mesh()
+        if mesh is None:
+            return
+
+        try:
+            self.current_editor.update_base_mesh(mesh)
+        except Exception as exc:
+            self._set_status(f"Error updating base mesh: {exc}", error=True)
+            return
+
+        self._set_status(f"Updated base mesh with '{mesh}'.")
+
+
+    def _on_create_editor_from_proxy_mesh_requested(self) -> None:
+        """Bake a new editor from the selected proxy mesh.
+
+        The proxy mesh is expected to be driven by the active editor, so every
+        shape pose of the current editor is baked onto a duplicate of it.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            self._set_status("No system selected.", warning=True)
+            return
+
+        proxy_mesh = self._resolve_selected_poly_mesh()
+        if proxy_mesh is None:
+            return
+
+        self._clear_trackers_for_scene_operation()
+        new_editor_name = None
+        try:
+            new_editor_name = self.current_editor.create_editor_from_proxy_mesh(proxy_mesh)
+        except ShapeImportCancelled as exc:
+            self._set_status(str(exc), warning=True)
+        except Exception as exc:
+            self._set_status(f"Error creating editor from proxy mesh: {exc}", error=True)
+        finally:
+            self._restart_trackers_after_scene_operation()
+
+        if new_editor_name:
+            self.set_current_editor(new_editor_name)
+            self._set_status(f"Created editor '{new_editor_name}' baked from '{proxy_mesh}'.")
+
+
+    def _resolve_selected_poly_mesh(self) -> Optional[str]:
+        """Resolve the first polygon mesh transform in the current selection.
+
+        Components are resolved to their parent transform, and transforms are
+        only accepted when they own a polygon mesh shape node.
+
+        Returns:
+            Optional[str]: The proxy mesh transform, or ``None`` when the
+                selection contains no polygon mesh.
+        """
+        selected = cmds.ls(selection=True, flatten=True) or []
+        if not selected:
+            self._set_status("No items selected in the scene.", warning=True)
+            return None
+
+        selected_components = cmds.filterExpand(selected, selectionMask=(31, 32, 34)) or None
+        if selected_components:
+            transform = selected_components[0].split(".")[0]
+            if cmds.nodeType(transform) == "mesh":
+                parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+                transform = parents[0] if parents else None
+            if transform:
+                return transform
+
+        for transform in selected:
+            if cmds.nodeType(transform) == "mesh":
+                parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+                transform = parents[0] if parents else None
+                if transform:
+                    return transform
+                continue
+            shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
+            for shape in shapes:
+                if cmds.nodeType(shape) == "mesh":
+                    return transform
+
+        self._set_status("No polygon meshes found in selection.", warning=True)
+        return None
 
 
     def _toggle_exploded_container_action_state(self, collapsed: bool) -> None:

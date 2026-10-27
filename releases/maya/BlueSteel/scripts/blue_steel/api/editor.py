@@ -2326,6 +2326,130 @@ class BlueSteelEditor(object):
         # finally we can delete the temporary blendshape as it is no longer needed
         cmds.delete(temp_blendshape)
 
+    def update_base_mesh(self, new_base_mesh: str):
+        """
+        Update the base mesh of the editor.
+
+        Parameters:
+            new_base_mesh (str): The name of the new base mesh to use.
+
+        Returns:
+            None
+        """
+        if not cmds.objExists(new_base_mesh):
+            raise ValueError(f"Mesh '{new_base_mesh}' does not exist.")
+        source_mesh = new_base_mesh
+        target_mesh = self.base_mesh
+        source_num_vertices = cmds.polyEvaluate (source_mesh, vertex=True)
+        target_num_vertices = cmds.polyEvaluate (target_mesh, vertex=True)
+        if source_num_vertices != target_num_vertices:
+            cmds.warning (f"Source mesh has {source_num_vertices} vertices, but target mesh has {target_num_vertices} vertices. Please select meshes with the same number of vertices.")
+            return
+        # check if the target mesh has an intermediate object, if it does, we will update the intermediate object, if it doesn't, we will create an intermediate object and connect it to the target mesh
+        target_shapes = cmds.listRelatives (target_mesh, shapes=True, fullPath=True)
+        intermediate_objects = []
+        for shape in target_shapes:
+            if cmds.objectType (shape) == "mesh" and cmds.getAttr (f"{shape}.intermediateObject"):
+                intermediate_objects.append(shape)
+        if not intermediate_objects:
+            raise RuntimeError (f"Target mesh {target_mesh} has no intermediate object. Please create an intermediate object for the target mesh and try again.")
+        for intermediate_object in intermediate_objects:
+            cmds.setAttr (f"{intermediate_object}.intermediateObject", False)
+            cmds.blendShape (source_mesh, intermediate_object, weight=(0, 1.0))  
+            cmds.delete (intermediate_object, ch=True)
+            cmds.setAttr (f"{intermediate_object}.intermediateObject", True)
+
+
+    def create_editor_from_proxy_mesh(self, proxy_mesh: str)->str:
+        """
+        Create a new BlueSteel Editor baking all the shapes from a proxy mesh.
+
+        Parameters:
+            proxy_mesh (str): The name of the proxy mesh to use.
+
+        Returns:
+            str: The name of the newly created editor mesh.
+
+        Raises:
+            ShapeImportCancelled: If the user cancelled the progress bar.
+        """
+        self.zero_out()
+        editor_mesh = cmds.duplicate(proxy_mesh, name=f"{proxy_mesh.split('|')[-1]}_Baked")[0]
+        shapes = self.get_all_shapes().sort_for_insertion()
+        total_shapes = len(shapes)
+        new_editor = None
+        processed = 0
+        # directories already in the Shape Editor, so a cleanup only removes the
+        # ones created by this bake
+        existing_directories = set(cmds.getAttr(
+            "shapeEditorManager.blendShapeDirectory", multiIndices=True,
+        ) or []) if cmds.objExists("shapeEditorManager") else set()
+        # --- Start the progress bar ---
+        gMainProgressBar = mel.eval('$tmp = $gMainProgressBar')
+        cmds.progressBar(gMainProgressBar, edit=True,
+                        beginProgress=True,
+                        isInterruptable=True,
+                        status=f'Baking {total_shapes} shapes...',
+                        maxValue=total_shapes)
+        try:
+            new_editor = self.create_new(proxy_mesh, editor_mesh, self.separator)
+            for shape in shapes:
+                if cmds.progressBar(gMainProgressBar,
+                                    query=True,
+                                    isCancelled=True):
+                    raise ShapeImportCancelled(
+                        f"Baking cancelled after {processed} of {total_shapes} shapes.",
+                        processed=processed,
+                        total=total_shapes,
+                    )
+                # we need to advance the progress bar for each shape
+                cmds.progressBar(gMainProgressBar,
+                                 edit=True,
+                                 step=1,
+                                 status=f'Baking shape: {shape}...')
+                self.set_shape_pose(shape)
+                new_editor.commit_shape(shape, proxy_mesh)
+                processed += 1
+        except Exception:
+            # a cancelled or failed bake must not leave a half baked editor behind
+            try:
+                directory_name = f"{proxy_mesh}_Blendshapes_GRP"
+                if cmds.objExists("shapeEditorManager"):
+                    directories = cmds.getAttr(
+                        "shapeEditorManager.blendShapeDirectory", multiIndices=True,
+                    ) or []
+                    for index in directories:
+                        if index in existing_directories:
+                            continue
+                        if cmds.getAttr(
+                            f"shapeEditorManager.blendShapeDirectory[{index}].directoryName"
+                        ) == directory_name:
+                            self.remove_shape_editor_directory(index)
+                if new_editor is not None and cmds.objExists(new_editor.container.name):
+                    # the network container name lives on the main container, so we
+                    # need it before the container itself is deleted
+                    network_container = new_editor.node_network_container
+                    network_container_name = network_container.name if network_container else None
+                    # deleting the container also removes its members (blendshapes,
+                    # controls, network container, ...)
+                    cmds.delete(new_editor.container.name)
+                    # safety net in case the network container survived the deletion
+                    if network_container_name and cmds.objExists(network_container_name):
+                        cmds.delete(network_container_name)
+                if cmds.objExists(editor_mesh):
+                    cmds.delete(editor_mesh)
+            except Exception as cleanup_error:
+                cmds.warning(f"Could not clean up the partial editor baked from '{proxy_mesh}': {cleanup_error}")
+            raise
+        finally:
+            # --- End the progress bar ---
+            cmds.progressBar(gMainProgressBar, edit=True, endProgress=True)
+            # refreshing the viewport to remove the progress bar artifacts
+            cmds.refresh(force=True)
+
+        return new_editor.name
+
+
 
     def ingest_shapes_from_blendshape_node(self, blendshape_node: str,
                                            absolute_delta: bool,
@@ -5013,7 +5137,11 @@ class BlueSteelEditor(object):
         Import the split data from a directory.
         Parameters:
             import_path (str): The path to import the split data from.
-            transfer_method (WeightsTransferMethod): Vertex-ID or UV transfer.
+            transfer_method (WeightsTransferMethod | None): How to transfer
+                the split map weights. ``None`` (the default) imports them by
+                vertex ID and needs no ``neutral.obj``; a
+                :class:`WeightsTransferMethod` member imports ``neutral.obj``
+                and transfers the maps from it with that method.
             import_settings (bool): Import split groups and associations.
             import_weights (bool): Import maps; False imports only settings.
                 Retained for the editor UI's existing keyword calls.
@@ -5027,7 +5155,7 @@ class BlueSteelEditor(object):
                 print("Transferring split maps weights by vertex ID")
                 self.import_split_maps_weights(import_path)
             else:
-                print("Transferring split maps weights by UVs")
+                print(f"Transferring split maps weights using {transfer_method.value}")
                 self.import_and_transfer_split_maps_weights(import_path,
                                                             transfer_method = transfer_method,)
 

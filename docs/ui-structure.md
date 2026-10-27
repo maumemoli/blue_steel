@@ -118,6 +118,7 @@ All files live in `blue_steel/ui/editor/`.
 | `splitSettingsUiMixin.py` | Split tab UI and split maps/groups/weights logic. |
 | `workShapesFeatureMixin.py` | Work-shapes panel behavior. |
 | `editorOpsMixin.py` | Menu-bar actions and import/export operations. |
+| `importSplitDataDialog.py` | Split data import dialog (path, transfer method, payload). |
 
 ---
 
@@ -690,12 +691,56 @@ Shared base and utilities for all feature mixins.
 - `extract_selected(selected_shapes)` / `duplicate_at_value()`
 - `launch_mmtools()` / `_on_toggle_hud_clicked()` / `compare_shapes_debug()`
 - `_create_menu_bar()` — build the menu bar and wire actions.
-- `_create_new_editor()` / `_import_objs()` / `_import_shapes_from_blendshape_node(absolute_delta=False)` / `_import_split_data()`
+- `_create_new_editor()` / `_import_objs()` / `_import_shapes_from_blendshape_node(absolute_delta=False)` / `_import_split_data()` — the latter opens `importSplitDataDialog.ImportSplitDataDialog` for the folder, transfer method, and payload, and remembers the last folder in `_last_split_data_import_path`.
 - `_on_create_split_shapes_editor_requested()` / `_export_split_data()` / `_export_objs()` / `_export_shapes_as_blendshape_node(absolute_delta=False)`
-- `_rename_current_editor()` / `_on_fix_invisible_blendshapes_requested()`
+- `_rename_current_editor()` / `_on_fix_invisible_blendshapes_requested()` / `_on_create_editor_from_proxy_mesh_requested()` / `_resolve_selected_poly_mesh()` — the latter two bake an editor from the selected proxy mesh via `BlueSteelEditor.create_editor_from_proxy_mesh()`.
 - `_toggle_exploded_container_action_state(collapsed)` / `_toggle_node_editor_container_view()`
 - `_on_connect_simplex_controller_requested()` / `_on_simplex_converter_requested()` / `_on_prepare_for_publishing_requested()`
 - `show_about()`
+
+---
+
+### `importSplitDataDialog.py`
+
+Modal dialog used by `EditorOpsMixin._import_split_data()` to collect every
+split data import setting in one panel instead of chaining a directory dialog
+with a second checkbox dialog.
+
+**Module-level API**
+
+- `NEUTRAL_OBJ_FILENAME = "neutral.obj"` — neutral mesh the source-mesh
+transfer methods are built from.
+- `TRANSFER_METHOD_ITEMS` — ordered `(WeightsTransferMethod | None, label)`
+tuples for the combo box; `None` ("None (Vertex ID)") is the default entry.
+- `transfer_method_label(transfer_method)` — label of a transfer method,
+falling back to the vertex-ID entry.
+- `_maya_directory_picker(caption)` — default folder picker (`fileDialog2`,
+mode 3), replaceable through `directory_picker`.
+
+**Classes**
+
+- `ImportSplitDataDialog(QDialog)`
+  - `__init__(parent=None, initial_path="", directory_picker=None)`
+  - `import_path()` — expanded folder typed/browsed into the field.
+  - `transfer_method()` — selected `WeightsTransferMethod`, or `None` for
+vertex ID.
+  - `import_settings()` / `import_weights()` — Split Groups / Split Maps
+checkboxes.
+  - `_build_ui()` / `_browse_for_path()` / `_on_path_changed(_text)`
+  - `_refresh_state()` — re-checks `neutral.obj`, the method items, and the
+Import button.
+  - `_update_transfer_method_items()` — keeps `None` selectable, disables the
+`neutral.obj` methods and resets to vertex ID when that file is missing.
+  - `_is_selection_valid()` — folder exists and at least one payload type is
+ticked.
+
+**Behaviour**
+
+- The Import button stays disabled until the folder exists and at least one of
+Split Groups / Split Maps is checked.
+- Without `neutral.obj` the dialog shows a hint label and only "None (Vertex
+ID)" can be selected; `_import_split_data()` still downgrades to vertex ID as
+a safety net for manually typed paths.
 
 ---
 

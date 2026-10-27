@@ -425,6 +425,11 @@ Split maps/groups/weights: `get_split_maps`, `create_split_map`,
 Data/IO: `export_split_data`, `import_split_data`, `export_split_settings`,
 `import_split_settings`, `export_split_maps_weights`,
 `import_split_maps_weights`, `connect_shape_to_split_map_blendshapes`.
+`import_split_data(import_path, transfer_method=None, import_settings=True,
+import_weights=True)` transfers split map weights by vertex ID when
+`transfer_method` is `None` and goes through `neutral.obj` +
+`import_and_transfer_split_maps_weights(...)` for any
+`WeightsTransferMethod` member.
 
 ### `split/splitBake.py` (lines 4249–4460, 4552–4965)
 

@@ -1856,6 +1856,10 @@ class EditorUiMixin(MainWindowMixin):
             self.explode_container_action.setEnabled(activate)
         if self.fix_invisible_blendshapes_action is not None:
             self.fix_invisible_blendshapes_action.setEnabled(activate)
+        if self.create_editor_from_proxy_mesh_action is not None:
+            self.create_editor_from_proxy_mesh_action.setEnabled(activate)
+        if self.update_base_mesh_action is not None:
+            self.update_base_mesh_action.setEnabled(activate)
         if self.convert_simplex_action is not None:
             self.convert_simplex_action.setEnabled(activate)
         if self.connect_simplex_controllers_action is not None:
