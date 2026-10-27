@@ -256,7 +256,7 @@ Row painting and slider-drag logic.
   - `eventFilter(watched, event)` — route events to `delegate.external_drag_*`.
 
 - `SliderItemDelegate(QStyledItemDelegate)` — paints a shape row (name, value bar, mute/lock/connected-mesh/work-edit icons) and owns the value drag interaction.
-  - Signals: `valueDragStarted()`, `valueDragEnded()`, `valueDragDelta(float)`, `valueDragSelectionContext(bool)`, `muteToggleRequested(str, bool)`, `lockToggleRequested(str, bool)`, `connectedMeshRequested(str)`, `workEditModeToggleRequested(str, bool)`.
+  - Signals: `valueDragStarted()`, `valueDragEnded()`, `valueDragDelta(float)`, `valueDragSelectionContext(bool)`, `muteToggleRequested(str, bool)`, `lockToggleRequested(str, bool)`, `connectedMeshRequested(str)`, `workEditModeToggleRequested(str, bool)`, `applySelectedWorkShapesRequested(list)`.
   - `_is_primary_tree_view()` — detect which view kind this delegate serves.
   - `_slider_value_edit_enabled()` — whether the hosting view opted into slider double-click value editing (`_enable_slider_value_edit`); always `False` for read-only views (`_sliders_read_only`).
   - `_allows_value_editor_without_view_opt_in()` — override hook for delegates with their own numeric field.
@@ -270,6 +270,7 @@ Row painting and slider-drag logic.
   - `folder_disclosure_rect(option, index)` — the delegate-painted group chevron rectangle (null for leaves/views that keep the native branch). Shared by the header painter and view hit-testing.
   - `_connected_mesh_icon_rect(option, index)` / `_mute_icon_rect(...)` / `_edit_mode_icon_rect(...)` / `_lock_icon_rect(...)` — icon hit rectangles.
   - `_is_lock_icon_visible(index)` / `_shows_mute_icon(index)` / `_is_work_edit_mode_icon_visible(index)` / `_panel_reserved_icon_slots()` / `_reserved_icon_slots(index)` — visibility helpers.
+  - `_apply_selected_icon_rect(option, index)` / `_is_apply_selected_icon_visible(index)` / `_is_apply_selected_icon_enabled(index)` — the per-row **Apply Selected** button (`APPLY_SELECTED_ICON`, desaturated `APPLY_SELECTED_DISABLED_ICON` when disabled); it is only enabled when the row has connected driver shapes, and the Work Shapes delegate reserves two trailing icon slots (`_trailing_icon_slots`) so the driver disclosure never overlaps it.
   - `_draw_icon_pixmap(painter, icon_rect, icon)`
   - `paint(painter, option, index)` — main paint routine.
   - `createEditor(parent, option, index)` / `setEditorData(...)` / `setModelData(...)` / `updateEditorGeometry(...)` — inline editing. `createEditor` only builds an editor when the row is editable and the view opted in (or the delegate allows editing without the opt-in).
@@ -283,6 +284,10 @@ Row painting and slider-drag logic.
   - `is_drag_active()`
   - `external_drag_move(x_pos)` / `external_drag_end(x_pos)` / `external_drag_start(model, index, event_pos, item_rect)` — the "external drag" API used by the views.
   - `editorEvent(event, model, option, index)` — handle icon clicks within rows.
+
+- `WorkShapeItemDelegate(SliderItemDelegate)` — Work Shapes rows: keeps one model index per work shape with a collapsible driver section.
+  - `_trailing_icon_slots(index)` returns `2` so the edit-mode and **Apply Selected** buttons both fit; `disclosure_rect(...)` is clamped against the leftmost trailing icon at narrow widths.
+  - `_parent_option(option, index)` / `parent_rect(option, index)` — map a child driver band back to the parent row option; `driver_at_pos(...)` / `sizeHint(...)` / `_area_rects(...)` account for the painted driver rows.
 
 - `SplitMapWeightSliderDelegate(SliderItemDelegate)` — variant for split-map weight rows.
   - `sizeHint(...)`, `_row_rects(...)`, `_area_rects(...)`, `paint(...)`, `editorEvent(...)`, `updateEditorGeometry(...)`, `_shows_mute_icon(...)`, `_panel_reserved_icon_slots()`.
@@ -327,7 +332,7 @@ The Active Shapes panel (`active_shapes_view`) sets `_sliders_read_only = True`:
 - `SplitMapWeightsList(SliderDragViewMixin, QListWidget)` — weight list for split maps (delegate-driven drag only).
 
 - `SliderIconClickMixin` — icon hit-testing shared by slider-style list and tree views. Resolves connected-mesh / mute / lock / work edit-mode clicks.
-  - `_resolve_mute_icon_click(event_pos)` / `_resolve_connected_mesh_icon_click(event_pos)` / `_resolve_lock_icon_click(event_pos)` / `_resolve_work_edit_mode_icon_click(event_pos)` / `_resolve_icon_click(event_pos)`
+  - `_resolve_mute_icon_click(event_pos)` / `_resolve_connected_mesh_icon_click(event_pos)` / `_resolve_lock_icon_click(event_pos)` / `_resolve_work_edit_mode_icon_click(event_pos)` / `_resolve_apply_selected_work_shapes_icon_click(event_pos)` / `_resolve_icon_click(event_pos)` — the apply-selected hit test resolves every selected work-shape row when the clicked row is selected, otherwise only the clicked row, and returns `(delegate.applySelectedWorkShapesRequested, shape_names)`.
 
 - `ReorderableTreeWidgetMixin` — internal drag-reorder/group behavior shared by orderable trees (`PrimaryTreeWidget`, `WorkShapesListView`). Subclasses emit their own move/group signals.
   - `_init_internal_reorder()` / `_selected_order_names()` / `startDrag(supportedActions)`
@@ -667,6 +672,7 @@ Shared base and utilities for all feature mixins.
 - Group/order handlers: `_on_work_shapes_move_requested(names, target, position)` / `_group_selected_work_shapes()` / `_rename_work_shape_folder(item)` / `_ungroup_selected_work_shapes()` (Ctrl+G emits `groupRequested`).
 - `_on_add_work_shape_clicked()` / `_on_remove_work_shapes_clicked()` / `_on_paint_work_shape_clicked()` / `_on_apply_work_shapes_clicked()`
 - `_on_work_shape_edit_mode_toggle_requested(shape_name, state)` / `_on_toggle_work_shape_edit_mode(shape_name=None)`
+- `_on_apply_selected_work_shapes_requested(shape_names)` — the per-row **Apply Selected** handler: stops the blendshape trackers, calls `BlueSteelEditor.apply_selected_work_shapes(shape_names)`, restarts the trackers, reloads the trees and reports status/errors.
 - `_on_work_shapes_double_clicked(item, column)`
 - `_on_work_shape_drop_received(work_shape_name, source_shape_name)` / `_on_work_shape_break_link_requested(work_shape_name)`
 - `_has_copied_work_weight_map_values()`

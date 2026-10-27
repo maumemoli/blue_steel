@@ -194,8 +194,10 @@ duplicate map usage across primaries.
 #### MMTools Button
 
 - Opens the MMTools utility window.
-- See the [MMTools Wiki](MMTOOLS_WIKI.md) for its cluster, mesh, and vertex
-  copy/paste workflows.
+- See the [MMTools Wiki](MMTOOLS_WIKI.md) for its cluster, mesh, attribute, and
+  vertex copy/paste workflows, and for **Blendshape Editor Tools > Transfer
+  Weight Maps** (blendShape target weight maps transferred between meshes by
+  UV, closest point, closest component or ray cast).
 
 #### Editor Group
 

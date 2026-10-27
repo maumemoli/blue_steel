@@ -1,8 +1,61 @@
-## What's new in v1.7.3
+## What's new in v1.7.4
+
+Full diff of `v1.7.2` → `v1.7.4` (22 files, +3737 / -76).
 
 ### Sliders Drop Box
 
 - **Drag onto a Work Shape to connect drivers** - dragging a slider row out of the box and releasing over a Work Shape now connects the selected sliders as that work shape's drivers (matching the Shapes/Primaries → Work Shapes drop) and keeps them in the box. The drag cursor becomes a copy cursor over a valid Work Shape; releasing anywhere else still removes the entries. Multi-selections connect together in one reload. `PrimaryDropTreeWidget` resolves the receiver through a window-supplied `driver_drop_resolver` and connects through `driver_drop_callback` (`_connect_work_shape_drivers`).
+
+### Work Shapes
+
+- **Per-row Apply Selected button** - every work-shape row now has an apply button right-aligned immediately left of the edit-mode button. It reuses `APPLY_SELECTED_ICON` (a `COMMIT_ICON` copy) with a desaturated `APPLY_SELECTED_DISABLED_ICON` variant for the disabled state, and paints matching button chrome (rounded rect, border, darker fill when unavailable). The button is greyed out and ignores clicks while the shape has no connected driver shapes (`WorkShapeRoles.DriverNamesRole` is empty). `SliderIconClickMixin` hit-tests it and emits the new `applySelectedWorkShapesRequested(list)` signal: clicking the button on a selected row applies every selected work shape, clicking it on an unselected row applies only that shape. `_on_apply_selected_work_shapes_requested` stops/restarts the blendshape trackers, calls the editor API, reloads the trees and reports status/errors. The delegate reserves a second trailing icon slot and clamps the driver disclosure against the leftmost trailing icon.
+- **Apply API rework** - `apply_selected_work_shapes` is now `@undoable` and deletes only the work shapes that were actually applied. Each weight map is applied per vertex by broadcasting it as `(N, 1)` against the `(N, 3)` delta (matching `Blendshape.apply_weight_map_to_target`), fixing the `operands could not be broadcast together with shapes (N,3) (N,)` `ValueError`; the map length is validated against the delta vertex count and a descriptive error names the offending work shape.
+- **Unmuted filtering** - `get_shapes_with_connected_work_shapes(unmuted_only=...)` can now return unmuted work shapes only, and `apply_active_work_shapes` uses that filter so muted work shapes are no longer applied.
+
+### Editor utilities
+
+- **Update Base Mesh** - new **Utilities** menu entry that replaces the active editor's base mesh with the selected mesh through `BlueSteelEditor.update_base_mesh(new_base_mesh)`, wrapped in an undo chunk with status-bar feedback (its tooltip states the new mesh must match the vertex count and vertex order of the original). The API warns and returns when the vertex count differs, then blends the new mesh onto each intermediate object at weight 1 and bakes it in (temporarily unflagging and re-flagging the intermediate object), so shapes and vertex order stay intact; it raises when the target has no intermediate object.
+- **Create Editor From Proxy Mesh** - new **Utilities** entry that bakes every shape pose of the active editor onto a duplicate of the selected proxy mesh and switches to the baked editor (`BlueSteelEditor.create_editor_from_proxy_mesh(proxy_mesh)`). The bake runs behind an interruptible progress bar per shape; a cancel or failure rolls back the partial editor, its Shape Editor folder and the duplicate. New `_resolve_selected_poly_mesh()` resolves the first polygon mesh transform in the selection (components and mesh shape nodes resolve to their transform).
+- Both actions are declared on `MainWindow` and enabled/disabled together with the other editor tools.
+
+### Split data
+
+- **One-step split data import** - new `importSplitDataDialog.ImportSplitDataDialog` collects the folder, the weight transfer method (**None (Vertex ID)** by default, plus UVs, Closest Point, Closest Component and Ray Cast) and the payload (split groups / split maps) in a single modal dialog, replacing the chained directory dialog followed by a second checkbox dialog. Transfer methods that need `neutral.obj` are disabled while the chosen folder lacks it, `_import_split_data()` downgrades to vertex ID with a warning instead of failing mid-import, the **Import** button stays disabled until the folder exists and at least one payload type is checked, and the last used folder is remembered in `_last_split_data_import_path`.
+- **`import_split_data(import_path, transfer_method=None, import_settings=True, import_weights=True)`** - `transfer_method=None` imports split map weights by vertex ID without requiring `neutral.obj`, while any `WeightsTransferMethod` imports `neutral.obj` and transfers through `import_and_transfer_split_maps_weights`; the progress message reports the method actually used. The former positional `(path, import_weights, import_settings)` call style keeps working.
+- **`import_and_transfer_split_maps_weights`** - imports `neutral.obj` into a unique `bsSplitMapImport` namespace, builds a temporary editor on it, imports the split maps with `strict=True` (rejecting missing files, wrongly prefixed targets and weight arrays that do not match the imported vertex count), transfers the maps onto the current editor with `organize_target_directories=True`, then always removes the temporary Shape Editor folder, the namespace content and restores the previous selection.
+- **Split data export writes `neutral.obj`** - `export_split_data` now also calls the new `export_neutral_mesh_as_obj()`, so a documented split data folder can round-trip through the source-mesh transfer methods. `import_neutral_mesh_from_obj()` is the matching importer helper.
+- **Split map area names** - `import_split_maps_weights` strips the `"<split_map>_"` prefix to derive area names instead of splitting on the last underscore, so split maps whose names contain underscores import correctly. It also gained `strict` validation and clears existing split maps only after the file has been read (and validated in strict mode) instead of before.
+
+### MMTOOLS
+
+- **Transfer Weight Maps** - new **Blendshape Editor Tools** button that opens the `mmtools/ui/blendshape_transfer_ui.py` dialog, backed by `mmtools/blendshape_transfer_tools.py` (`transfer_blendshape_weight_maps`, `WeightsTransferMethod`).
+- **How it transfers** - each blendShape target is represented by a joint named after its weight alias; the source weight maps are written to a temporary skinCluster and `copySkinWeights` transfers them to a matching destination skinCluster, which is then read back into the destination blendShape. All temporary work happens on history-free duplicates of both meshes, so existing skinClusters and deformers are never modified; temporary meshes, skinClusters, joints and namespaces are removed and the selection is restored afterwards.
+- **Destination handling** - the source blendShape is auto-detected (or picked explicitly). The destination blendShape is either an existing node (matching targets are overwritten, missing ones added) or a new node with an optional custom name. Targets to transfer are listed with checkboxes (all checked by default, Ctrl/Shift selection toggles several at once).
+- **Transfer methods** - the **Method** combo exposes UV, Closest Point, Closest Component and Ray Cast. Only UV uses the source/destination UV sets (their fields are disabled for the world-space methods, and the defaults are resolved on the original meshes before duplication); the temporary skinCluster envelope is disabled so transferred weights are not scaled.
+- **Match Source Target Directories** - optional checkbox that recreates or reuses the nested source folder hierarchy in the destination blendShape and moves the transferred targets into them (root-level source targets move to the destination root). Only the needed folders are created; unrelated destination targets and folder settings are untouched.
+
+### Fixes
+
+- `Blendshape.add_target_child` now records `-new_id` in the parent's `childIndices` (it previously stored `new_id`), so a child that is already grouped is not appended twice.
+
+### Docs & tests
+
+- `docs/ui-structure.md` documents the split data import dialog, the ordered drop-box model with the Work Shape driver drop, the per-row apply button, and the **Update Base Mesh** / **Create Editor From Proxy Mesh** operations; `docs/api-editor-structure.md` documents the new `import_split_data()` transfer-method semantics. `releases/MMTOOLS_WIKI.md` and `releases/WIKI.md` document the **Transfer Weight Maps** tool.
+- New tests in `releases/maya/BlueSteel/unittest/primaryDropBoxUiUt.py` cover the driver drop (`test_release_over_driver_connects_and_keeps_entry`, `test_multi_select_driver_drop_connects_every_selected`, `test_release_outside_without_driver_target_still_removes`, `test_driver_hover_clears_when_reentering_box`, `test_resolver_only_without_callback_still_removes`), and `workShapesUiUt.py` adds `test_driver_drop_receiver_at_maps_global_and_ignores_non_leaves`.
+
+<details>
+<summary>Full commit list (v1.7.2 → v1.7.4)</summary>
+
+- 96cc0b9 feat(mmtools): expose blendShape weight map transfer methods in UI
+- 6545086 feat(editor): add Update Base Mesh and Create Editor From Proxy Mesh utilities
+- f3580ab First draft on split map transfer
+- 0997caf bump version to 1.7.4
+- 5e24e84 feat(mmtools): add blendshape weight map transfer tool by UV
+- 57f7d61 feat(work-shapes): add per-row Apply Selected button and harden apply API
+- 13f435a feat(api): enhance work shape management in BlueSteelEditor
+- 2c817d1 Workshapes now accept items from the sliders drop box as drivers
+
+</details>
 
 ## What's new in v1.7.2
 

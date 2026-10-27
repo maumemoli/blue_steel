@@ -10,6 +10,7 @@ It focuses on:
 - Cluster creation, painting, mirroring, and linking.
 - Fast and reliable vertex position copy/paste workflows.
 - Intermediate object updates.
+- BlendShape target weight-map transfer between meshes.
 - Fast attribute connection between selected nodes.
 
 The standout workflow is **Copy Vtx Positions -> Paste Vtx Positions** for
@@ -127,17 +128,77 @@ Available action:
 - Connect Same Name Attributes: connects keyable attributes with matching names
   from source node to target node.
 
+## BlendShape Weight Map Transfer
+
+Open it from **Blendshape Editor Tools > Transfer Weight Maps**. It copies the
+per-vertex weight maps of every blendShape target from one mesh to another, so a
+sculpted weight-map pass can be reused on a different (for example
+retopologized) mesh.
+
+Implemented in:
+
+- [releases/maya/BlueSteel/scripts/blue_steel/mmtools/blendshape_transfer_tools.py](maya/BlueSteel/scripts/blue_steel/mmtools/blendshape_transfer_tools.py) — the transfer engine (`transfer_blendshape_weight_maps`, `WeightsTransferMethod`).
+- [releases/maya/BlueSteel/scripts/blue_steel/mmtools/ui/blendshape_transfer_ui.py](maya/BlueSteel/scripts/blue_steel/mmtools/ui/blendshape_transfer_ui.py) — the `BlendshapeTransferUI` dialog and its `show_window()` entry point.
+
+Dialog fields:
+
+- **Source Mesh** / **Destination Mesh**: the meshes that receive and provide the
+  weight maps (`Pick` fills the field from the current selection). Both meshes
+  prefill from the scene selection when the dialog opens.
+- **Source BlendShape**: the blendShapes found in the source mesh history (the
+  first one is selected by default).
+- **Destination BlendShape**: an existing blendShape on the destination mesh
+  (matching target weight maps are overwritten, missing targets are added) or
+  **Create New...**.
+- **New BlendShape Name**: optional name for the created destination blendShape;
+  an automatic name is used when empty.
+- **Method**: surface association used by `copySkinWeights` — **UV** (default),
+  **Closest Point**, **Closest Component** or **Ray Cast**.
+- **Source UV Set** / **Destination UV Set**: used by the UV method only; these
+  fields are disabled for the world-space methods. Defaults are read from the
+  original meshes before any duplication happens.
+- **Weights to Transfer**: every source target, all checked by default. Ctrl/Shift
+  select several entries and click a checkbox to toggle them together.
+- **Match Source Target Directories**: recreates or reuses the nested folder
+  hierarchy of the source blendShape in the destination blendShape and moves the
+  transferred targets into it. Root-level source targets move to the destination
+  root; only the needed folders are created and unrelated destination targets or
+  folder settings are left untouched.
+
+### Notes
+
+- The transfer never touches the original meshes' deformers: each side is built
+  on a history-free duplicate, with one temporary joint per target name, a
+  temporary skinCluster per duplicate, and `copySkinWeights` doing the actual
+  transfer. The temporary duplicate meshes, skinClusters, joints and namespaces
+  are removed and the previous selection is restored afterwards.
+- The temporary skinCluster envelope is disabled so the transferred weights are
+  not scaled, and the read-back values are written straight into the destination
+  blendShape targets.
+- The source and destination meshes must be different objects. A supplied
+  existing destination blendShape must be connected to the destination mesh.
+- The dialog window title is **Transfer BlendShape Weight Maps**.
+- Weight maps are per-vertex: the transferred maps are resampled onto the
+  destination by the chosen method (UV space or world-space association), so the
+  destination does not need the same vertex count. UV transfer needs a valid UV
+  set on both meshes; the world-space methods ignore UV sets entirely.
+- The same engine powers **Split Data import** with a weight transfer method: it
+  is fed by the `neutral.obj` written next to the split data, and reuses the
+  destination blendShape instead of creating a new one.
+
 ## UI Module
 
 The MMTools window is built in:
 
-- [releases/maya/BlueSteel/scripts/blue_steel/ui/mmtools/__init__.py](maya/BlueSteel/scripts/blue_steel/ui/mmtools/__init__.py)
+- [releases/maya/BlueSteel/scripts/blue_steel/mmtools/ui/__init__.py](maya/BlueSteel/scripts/blue_steel/mmtools/ui/__init__.py)
 
 UI sections map directly to function modules:
 
 - Cluster Tools -> smartCluster
 - Mesh Tools -> meshTools
 - Attribute Tools -> connectionTools
+- Blendshape Editor Tools -> blendshape_transfer_ui (Transfer Weight Maps),
+  shape_editor_tools
 
 ## Typical Workflows
 
