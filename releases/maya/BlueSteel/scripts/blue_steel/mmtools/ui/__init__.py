@@ -165,9 +165,10 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
 
         # Blendshape Editor Tools frame layout
         blendshape_editor_frame_layout = FrameLayout( 'Blendshape Editor Tools' )
-        transfer_weight_maps_btn = QtWidgets.QPushButton( 'Transfer Weight Maps by UV' )
+        transfer_weight_maps_btn = QtWidgets.QPushButton( 'Transfer Weight Maps' )
         transfer_weight_maps_btn.setToolTip(
-            'Transfer blendShape target weight maps between two meshes by UV.'
+            'Transfer blendShape target weight maps between two meshes using '
+            'UV, closest point, closest component, or ray cast.'
         )
         transfer_weight_maps_btn.clicked.connect(
             lambda: blendshape_transfer_ui.show_window(

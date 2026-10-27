@@ -1,9 +1,12 @@
-"""UI for transferring blendShape target weight maps between meshes by UV.
+"""UI for transferring blendShape target weight maps between meshes.
 
 The dialog exposes every argument of
-:func:`blue_steel.mmtools.blendshape_transfer_tools.transfer_blendshape_weight_maps`.
+:func:`blue_steel.mmtools.blendshape_transfer_tools.transfer_blendshape_weight_maps`,
+including every :class:`~blue_steel.mmtools.blendshape_transfer_tools.WeightsTransferMethod`
+(UV, closest point, closest component, and ray cast).
 The selected meshes prefill the source and destination fields, while blendShape
-and UV-set choices are derived from each mesh and remain editable.
+and UV-set choices are derived from each mesh and remain editable. UV sets are
+only used by the UV transfer method.
 
 Attributes:
     WINDOW (BlendshapeTransferUI | None): The current dialog instance.
@@ -27,6 +30,21 @@ else:
     from shiboken2 import wrapInstance
 
 WINDOW: Optional["BlendshapeTransferUI"] = None
+
+TRANSFER_METHOD_LABELS: dict[WeightsTransferMethod, str] = {
+    WeightsTransferMethod.UVS: "UV",
+    WeightsTransferMethod.CLOSEST_POINT: "Closest Point",
+    WeightsTransferMethod.CLOSEST_COMPONENT: "Closest Component",
+    WeightsTransferMethod.RAY_CAST: "Ray Cast",
+}
+TRANSFER_METHODS_BY_LABEL: dict[str, WeightsTransferMethod] = {
+    label: method for method, label in TRANSFER_METHOD_LABELS.items()
+}
+TRANSFER_METHOD_TOOLTIP = (
+    "Surface association used to match the destination surface: 'UV' "
+    "transfers in UV space using the selected UV sets, 'Closest Point', "
+    "'Closest Component', and 'Ray Cast' match in world space."
+)
 
 
 def _get_maya_main_window() -> Optional[QtWidgets.QWidget]:
@@ -255,6 +273,10 @@ def _selected_mesh() -> Optional[str]:
 class BlendshapeTransferUI(QtWidgets.QDialog):
     """Dialog for transferring blendShape weight maps between two meshes.
 
+    The dialog exposes every argument of
+    :func:`blue_steel.mmtools.blendshape_transfer_tools.transfer_blendshape_weight_maps`,
+    including the ``WeightsTransferMethod`` used for the surface association.
+
     Attributes:
         CREATE_NEW_LABEL (str): Destination combo item used to create a new
             blendShape.
@@ -264,7 +286,7 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
     """
 
     CREATE_NEW_LABEL = "Create New..."
-    WINDOW_TITLE = "Transfer BlendShape Weight Maps by UV"
+    WINDOW_TITLE = "Transfer BlendShape Weight Maps"
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         """Initialize the transfer dialog and populate it from the selection.
@@ -363,20 +385,39 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
         main_layout.addWidget(blendshape_group)
 
         uv_group = QtWidgets.QGroupBox("UV Sets")
+        self.uv_group = uv_group
         uv_form = QtWidgets.QFormLayout(uv_group)
         uv_form.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.AllNonFixedFieldsGrow
         )
 
         self.source_uv_combo = QtWidgets.QComboBox()
-        self.source_uv_combo.setToolTip("UV set used on the source mesh.")
+        self.source_uv_combo.setToolTip(
+            "UV set used on the source mesh by the UV transfer method."
+        )
         uv_form.addRow("Source UV Set:", self.source_uv_combo)
 
         self.destination_uv_combo = QtWidgets.QComboBox()
         self.destination_uv_combo.setToolTip(
-            "UV set used on the destination mesh."
+            "UV set used on the destination mesh by the UV transfer method."
         )
         uv_form.addRow("Destination UV Set:", self.destination_uv_combo)
+
+        method_group = QtWidgets.QGroupBox("Transfer Method")
+        method_form = QtWidgets.QFormLayout(method_group)
+        method_form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.AllNonFixedFieldsGrow
+        )
+
+        self.transfer_method_combo = QtWidgets.QComboBox()
+        self.transfer_method_combo.addItems(list(TRANSFER_METHODS_BY_LABEL))
+        self.transfer_method_combo.setCurrentText(
+            TRANSFER_METHOD_LABELS[WeightsTransferMethod.UVS]
+        )
+        self.transfer_method_combo.setToolTip(TRANSFER_METHOD_TOOLTIP)
+        method_form.addRow("Method:", self.transfer_method_combo)
+
+        main_layout.addWidget(method_group)
         main_layout.addWidget(uv_group)
 
         weights_group = QtWidgets.QGroupBox("Weights to Transfer")
@@ -436,9 +477,14 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
         self.destination_blendshape_combo.currentTextChanged.connect(
             self._on_destination_blendshape_changed
         )
+        self.transfer_method_combo.currentTextChanged.connect(
+            self._on_transfer_method_changed
+        )
         self.weight_list.itemChanged.connect(self._on_weight_item_changed)
         self.transfer_button.clicked.connect(self._transfer)
         self.close_button.clicked.connect(self.close)
+
+        self._update_uv_group_state()
 
     def _create_mesh_row(
         self,
@@ -672,6 +718,40 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
         )
         self.new_blendshape_name_edit.setEnabled(create_new)
 
+    def _selected_transfer_method(self) -> WeightsTransferMethod:
+        """Return the transfer method chosen in the method combo.
+
+        Returns:
+            WeightsTransferMethod: The selected surface association, falling
+                back to ``WeightsTransferMethod.UVS`` when the combo holds an
+                unknown entry.
+        """
+
+        return TRANSFER_METHODS_BY_LABEL.get(
+            self.transfer_method_combo.currentText(),
+            WeightsTransferMethod.UVS,
+        )
+
+    def _update_uv_group_state(self) -> None:
+        """Enable the UV-set fields only for the UV transfer method.
+
+        Returns:
+            None
+        """
+
+        uses_uvs = (
+            self._selected_transfer_method() == WeightsTransferMethod.UVS
+        )
+        self.uv_group.setEnabled(uses_uvs)
+        if uses_uvs:
+            self.uv_group.setToolTip(
+                "UV sets are used by the UV transfer method."
+            )
+        else:
+            self.uv_group.setToolTip(
+                "UV sets are only used by the UV transfer method."
+            )
+
     # ------------------------------------------------------------------
     # UI callbacks
     # ------------------------------------------------------------------
@@ -699,6 +779,18 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
         """
 
         self._update_new_blendshape_state()
+
+    def _on_transfer_method_changed(self, _text: str) -> None:
+        """Enable or disable the UV-set fields for the chosen method.
+
+        Parameters:
+            _text (str): Current transfer-method combo text.
+
+        Returns:
+            None
+        """
+
+        self._update_uv_group_state()
 
     def _on_weight_item_changed(
         self,
@@ -845,10 +937,11 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
             return
 
         try:
+            transfer_method = self._selected_transfer_method()
             result = transfer_blendshape_weight_maps(
                 source_mesh=source_mesh,
                 destination_mesh=destination_mesh,
-                transfer_method=WeightsTransferMethod.UVS,
+                transfer_method=transfer_method,
                 source_blendshape=source_blendshape,
                 source_uv_set=self.source_uv_combo.currentText() or None,
                 destination_uv_set=(
@@ -870,7 +963,8 @@ class BlendshapeTransferUI(QtWidgets.QDialog):
             return
 
         self.status_label.setText(
-            f"Transferred weight maps to '{result}'."
+            f"Transferred weight maps to '{result}' using "
+            f"{TRANSFER_METHOD_LABELS[transfer_method]}."
         )
         self._refresh_destination_mesh_context(select_name=result)
 

@@ -658,6 +658,7 @@ def _create_temp_side(
         try:
             cmds.setAttr(f"{skin_cluster}.normalizeWeights", 0)
             cmds.setAttr(f"{skin_cluster}.maxInfluences", len(joints))
+            cmds.setAttr(f"{skin_cluster}.envelope", 0)
         except RuntimeError as exc:
             cmds.warning(
                 f"Could not disable normalization on '{skin_cluster}': {exc}"
@@ -1091,12 +1092,13 @@ def transfer_blendshape_weight_maps(
     selected_weights: Optional[Sequence[str]] = None,
     organize_target_directories: bool = False,
 ) -> str:
-    """Transfer blendShape target weight maps from one mesh to another by UV.
+    """Transfer blendShape target weight maps from one mesh to another.
 
     Two temporary skinClusters are created on history-free duplicates of the
     source and destination meshes, with one joint per blendShape target. The
     source target weight maps are written to the source skinCluster,
-    ``copySkinWeights`` transfers them to the destination skinCluster by UV, and
+    ``copySkinWeights`` transfers them to the destination skinCluster using the
+    requested ``WeightsTransferMethod`` (UV space by default), and
     the transferred maps are written to a destination blendShape. An existing
     destination blendShape is reused: matching target aliases are overwritten
     and missing targets are added. Existing skinClusters on the original meshes
@@ -1113,10 +1115,10 @@ def transfer_blendshape_weight_maps(
         destination_uv_set (str | None): Destination UV set. Defaults to the
             current set on the original destination mesh.
         transfer_method (WeightsTransferMethod): Surface association requested for the copy.
-            Only ``WeightsTransferMethod.UVS`` (the default) is currently honoured; other values
-            such as ``WeightsTransferMethod.CLOSEST_POINT``, ``WeightsTransferMethod.CLOSEST_COMPONENT``, or
-            ``WeightsTransferMethod.RAY_CAST`` are accepted but the transfer still runs in UV
-            space using the resolved UV sets.
+            ``WeightsTransferMethod.UVS`` (the default) transfers in UV space using the resolved
+            UV sets; any other value, such as ``WeightsTransferMethod.CLOSEST_POINT``,
+            ``WeightsTransferMethod.CLOSEST_COMPONENT``, or ``WeightsTransferMethod.RAY_CAST``,
+            is passed to ``copySkinWeights`` as the surface association and ignores the UV sets.
         destination_blendshape (str | None): Destination blendShape name.
             When the node exists it is reused and matching target weight maps
             are overwritten; when it does not exist it is created. ``None``
@@ -1211,7 +1213,6 @@ def transfer_blendshape_weight_maps(
     source_namespace: Optional[str] = None
     destination_namespace: Optional[str] = None
     created_blendshape: Optional[str] = None
-    transfer_method: WeightsTransferMethod = WeightsTransferMethod.UVS
 
     try:
         (
@@ -1252,7 +1253,7 @@ def transfer_blendshape_weight_maps(
             destination_skin,
             resolved_source_uv,
             resolved_destination_uv,
-            transfer_method=transfer_method,
+            transfer_method,
         )
 
         destination_weight_maps = _read_skin_weight_maps(
