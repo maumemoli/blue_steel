@@ -8,6 +8,7 @@ mesh-editing operations.
 It focuses on:
 
 - Cluster creation, painting, mirroring, and linking.
+- Mirror and symmetry tools for shapes, driven by a rest pose and a seam edge.
 - Fast and reliable vertex position copy/paste workflows.
 - Intermediate object updates.
 - BlendShape target weight-map transfer between meshes.
@@ -82,6 +83,76 @@ Available actions:
 - If a history mesh has no tweak connection, paste is blocked and MMTools shows
   an in-view warning.
 - Update Intermediate Object expects exactly two selected transforms.
+
+## Mirror Tools
+
+Open them from **Mirror Tools > Mirror / Symmetry Tools**. They are the Python
+port of the MM Tools `mirTools` MEL script and keep the same workflow: define a
+rest pose from a mesh plus its middle (seam) edge, then mirror, flip or
+symmetrize the selected shapes on top of that rest pose.
+
+Implemented in:
+
+- [releases/maya/BlueSteel/scripts/blue_steel/mmtools/mirror_tools.py](maya/BlueSteel/scripts/blue_steel/mmtools/mirror_tools.py) — the mirror engine (`create_proxy`, `flip`, `symmetrize`, `side_to_side`, `invert_merge_mesh`, ...).
+- [releases/maya/BlueSteel/scripts/blue_steel/mmtools/ui/mirror_tools_ui.py](maya/BlueSteel/scripts/blue_steel/mmtools/ui/mirror_tools_ui.py) — the `MirrorToolsUI` dialog and its `show_window()` entry point.
+
+Dialog fields and actions:
+
+- **Selected geometry**: the rest-pose proxy (`<mesh>_mirrorProxy`) stored in
+  the hidden `GRP_mirrorToolsProxyShapes` group. Read-only.
+- **Seam edge**: index of the middle edge used to split the mesh into halves.
+  Read-only.
+- **Define Rest Pose**: duplicates the selected mesh into the hidden group and
+  stores the selected middle edge. Requires a mesh with one edge selected.
+- **Update Rest Pose**: re-duplicates the selected mesh over the stored proxy
+  and keeps the current seam edge. Use it after changing the rest shape.
+- **Actions > Mirror**: mirrors the selected shapes onto the opposite side and
+  keeps the rest pose on the side chosen by the `L<<R` / `L>>R` checkbox.
+- **Actions > Flip**: replaces the selected shapes with their flipped version.
+- **Discard Rest pose and > Symmetrize**: averages the selected mesh with its
+  mirrored copy in place (no rest pose transfer).
+- **Discard Rest pose and > Flip**: replaces the selected mesh with its
+  mirrored copy in place.
+- **Discard Rest pose and > Mirror**: mirrors the selected mesh onto its
+  opposite side in place.
+- **Mirror Axis**: `X`, `Y` or `Z` (default `X`) used by every operation.
+- **`L<<R` / `L>>R`**: which side of the axis the mirror operations keep
+  (unchecked keeps the positive side, checked keeps the negative side).
+- **Seam Gradient %**: width of the smooth blend across the symmetry plane as a
+  percentage of the rest-pose bounding box along the mirror axis (default
+  `10 %`). `0 %` produces a hard split, `100 %` blends across the whole model.
+
+Runtime command slots (assignable in the Hotkey Editor): `MirrorTools`,
+`DefineMirrorRestPose`, `MirrorShape`, `FlipShape`, `SymmetrizeMesh`,
+`MirrorShapeSideToSide`.
+
+### Notes
+
+- The engine is a faithful port: the rest pose is symmetrized, combined with
+  each selected shape, inverted across the seam and baked by deleting the
+  history.
+- The one-half transfer (**Mirror**) no longer uses paint mode. The per-vertex
+  blend weight is a bounding-box gradient of the symmetrised rest pose: `0` on
+  the kept side, `1` on the flipped side, and a smoothstep band centred on the
+  symmetry plane (the bbox centre) blends the two across **Seam Gradient %** of
+  the bbox width. The map is written directly into the temporary blendShape
+  target weights (`inputTarget[...].targetWeights`), so the result is
+  deterministic and no `artAttr` paint context is involved.
+- **Flip** is unaffected by the gradient: it transfers the flipped shape at
+  full weight.
+- Mirroring uses the `meshRemap` command from the `meshReorder` plugin. The
+  plugin is loaded on demand; the operations fail with a clear message when it
+  is not installed.
+- The rest pose and the seam edge live in the Maya session, exactly like the
+  MEL globals: the proxy survives a reload because it is a scene object, but
+  the seam edge has to be re-picked with **Define Rest Pose** after reopening a
+  scene.
+- The dialog selection is read when a button is pressed, so the selected shapes
+  can change between operations.
+- The rest pose and every processed shape must share the same vertex count and
+  vertex order; the tools raise a clear error otherwise (the rest-pose proxy is
+  a duplicate of the mesh, so a matching shape is the normal case).
+- All modifying actions run in a single undo chunk.
 
 ## Why Copy/Paste Is So Useful For Blendshape Work
 
@@ -197,6 +268,7 @@ UI sections map directly to function modules:
 - Cluster Tools -> smartCluster
 - Mesh Tools -> meshTools
 - Attribute Tools -> connectionTools
+- Mirror Tools -> mirror_tools (Mirror Tools dialog in mirror_tools_ui)
 - Blendshape Editor Tools -> blendshape_transfer_ui (Transfer Weight Maps),
   shape_editor_tools
 
@@ -215,6 +287,16 @@ UI sections map directly to function modules:
 1. Select source mesh and run Copy Vtx Positions.
 2. Select target mesh with matching topology.
 3. Run Paste Vtx Positions.
+
+### Mirror shape workflow
+
+1. Select the mesh and one middle edge, then click **Define Rest Pose** in the
+   Mirror Tools dialog.
+2. Set **Mirror Axis** and, if needed, `L<<R` / `L>>R`.
+3. Select the shapes to mirror and click **Mirror** (one half) or **Flip**
+   (whole shape).
+4. Optional: select a mesh and use **Discard Rest pose and > Symmetrize** to
+   make it symmetric in place.
 
 ### Facial blendshape non-destructive workflow
 
@@ -248,3 +330,16 @@ UI sections map directly to function modules:
 
 - Only keyable attributes are considered.
 - Names must match exactly between source and target.
+
+### Mirror tools report a missing meshRemap command
+- Mirroring needs the `meshRemap` command from the `meshReorder` plugin; it is
+  loaded on demand from `MAYA_PLUG_IN_PATH`.
+- If the plugin is not installed, **Define Rest Pose** and the in-place
+  symmetrize actions still work, but **Mirror** and **Flip** cannot remap the
+  mirrored shape.
+
+### Mirror tools warn about a missing rest pose
+- Click **Define Rest Pose** with the mesh and one middle edge selected.
+- After reopening a scene the proxy is recovered from
+  `GRP_mirrorToolsProxyShapes`, but the seam edge is session-only; re-pick it
+  with **Define Rest Pose**.

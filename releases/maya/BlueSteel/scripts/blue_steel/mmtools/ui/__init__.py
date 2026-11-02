@@ -6,6 +6,7 @@ from .. import meshTools as mt
 from .. import shape_editor_tools
 from .. import connectionTools as ct
 from . import blendshape_transfer_ui
+from . import mirror_tools_ui
 from ... import env
 from ...ui.common.frameLayout import FrameLayout
 from ...ui.common.icons import *
@@ -163,6 +164,18 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
         connect_same_name_btn.clicked.connect(ct.connect_same_name_attributes)
         attribute_tools_frame_layout.addWidget(connect_same_name_btn)
 
+        # Mirror tools frame layout
+        mirror_tools_frame_layout = FrameLayout( 'Mirror Tools' )
+        open_mirror_tools_btn = QtWidgets.QPushButton( 'Mirror / Symmetry Tools' )
+        open_mirror_tools_btn.setToolTip(
+            'Define a rest pose from the selected mesh and seam edge, then '
+            'mirror, flip or symmetrize the selected shapes.'
+        )
+        open_mirror_tools_btn.clicked.connect(
+            lambda: mirror_tools_ui.show_window(get_maya_main_window())
+        )
+        mirror_tools_frame_layout.addWidget(open_mirror_tools_btn)
+
         # Blendshape Editor Tools frame layout
         blendshape_editor_frame_layout = FrameLayout( 'Blendshape Editor Tools' )
         transfer_weight_maps_btn = QtWidgets.QPushButton( 'Transfer Weight Maps' )
@@ -240,6 +253,7 @@ class MmToolsUI (MayaQWidgetDockableMixin , QtWidgets.QMainWindow):
         mainLayout.addWidget(mesh_tools_frame_layout)
         mainLayout.addWidget(clusters_frame_layout)
         mainLayout.addWidget(attribute_tools_frame_layout)
+        mainLayout.addWidget(mirror_tools_frame_layout)
         mainLayout.addWidget(bake_shapes_frame_layout)
         mainLayout.addWidget(blendshape_editor_frame_layout)
 

@@ -14,6 +14,12 @@ COMMANDS = [
         f"SmoothFloodDeformer,from {_PACKAGE_NAME}.mmtools.smartCluster import smooth_flood\nsmooth_flood(),Smooth flood deformer",
         f"LinkMirroredClusters,from {_PACKAGE_NAME}.mmtools.smartCluster import link_mirrored_cluster\nlink_mirrored_cluster(),Link mirrored clusters",
         f"ResetAttributesAndTransformations,from {_PACKAGE_NAME}.mmtools.smartCluster import reset_transformations\nreset_transformations(),Reset attributes and transformations",
+        f"MirrorTools,from {_PACKAGE_NAME}.mmtools.ui import mirror_tools_ui\nmirror_tools_ui.show_window(),Open Mirror Tools",
+        f"DefineMirrorRestPose,from {_PACKAGE_NAME}.mmtools.mirror_tools import create_proxy\ncreate_proxy('c'),Define/paint mirror rest pose",
+        f"MirrorShape,from {_PACKAGE_NAME}.mmtools.mirror_tools import flip\nflip('mirror'),Mirror selected shapes on one half",
+        f"FlipShape,from {_PACKAGE_NAME}.mmtools.mirror_tools import flip\nflip('flip'),Flip selected shapes",
+        f"SymmetrizeMesh,from {_PACKAGE_NAME}.mmtools.mirror_tools import symmetrize\nsymmetrize('sym'),Symmetrize selected mesh",
+        f"MirrorShapeSideToSide,from {_PACKAGE_NAME}.mmtools.mirror_tools import side_to_side\nside_to_side(),Mirror selected mesh to the other side",
 
           ]
 

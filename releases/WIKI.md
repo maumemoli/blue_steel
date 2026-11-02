@@ -198,6 +198,10 @@ duplicate map usage across primaries.
   vertex copy/paste workflows, and for **Blendshape Editor Tools > Transfer
   Weight Maps** (blendShape target weight maps transferred between meshes by
   UV, closest point, closest component or ray cast).
+- **Mirror Tools > Mirror / Symmetry Tools** opens the Python port of the MM
+  Tools `mirTools` window: define a rest pose from a mesh and its seam edge,
+  then mirror, flip or symmetrize the selected shapes using the stored rest
+  pose.
 
 #### Editor Group
 
