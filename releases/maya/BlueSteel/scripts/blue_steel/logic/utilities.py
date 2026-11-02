@@ -202,7 +202,11 @@ def is_valid(shape_name: str, separator=SEPARATOR):
     """
     primaries = get_primaries(shape_name, separator)
     parents = get_parents(shape_name, separator)
-    
+
+    for primary in primaries:
+        if any(char.isdigit() for char in primary):
+            return False
+
     if len(primaries) != len(shape_name.split(separator)):
         # This means there is an incremental of the same primary shape
         return False

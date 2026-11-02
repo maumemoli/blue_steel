@@ -211,6 +211,7 @@ class BlueSteelEditor(object):
         self.split_maps_mesh = None
         self.deformers_node_states = {}
 
+        self.face_ctrl_needs_reordering = False
         self._stored_pose = {}
 
         # these are used to store information when the creatte_split_maps function is called.
@@ -403,6 +404,43 @@ class BlueSteelEditor(object):
         blendshape.connect_target_to_blendshape_target(input_target_index=input_weight_id,
                                                         output_blendshape_name=output_blendshape_name,
                                                         output_target_index=output_weight_id)
+
+    def reoreder_face_ctrl_attributes(self, attributes_list: list[str]|None = None):
+        """Reorder the face control attributes in the channel box based on a given attribute list.
+        if the attribute list is not provided, the method should use a default alphabetical ordering.
+        """
+        input_connections = {}
+        out_put_connections = {}
+        primaries = self.get_primary_shapes()
+        attributes = cmds.listAttr(self.face_ctrl, ud=True) or []
+        if attributes_list is None:
+            attributes_list = sorted(attributes)
+        # we need to store the input and output connections for each attribute before reordering them
+        for attr in attributes:
+            self.container.unbind_attribute(f"{self.face_ctrl}.{attr}")
+            input_connections[attr] = cmds.listConnections(f"{self.face_ctrl}.{attr}",
+                                                           source=True,
+                                                           destination=False,
+                                                           p=True) or []
+            out_put_connections[attr] = cmds.listConnections(f"{self.face_ctrl}.{attr}",
+                                                             source=False,
+                                                             destination=True,
+                                                             p=True) or []
+
+            attrUtils.remove_attribute(self.face_ctrl, attr)
+            
+        # now we can recreate the attributes and sort them based on the provided attributes list
+        for attr in attributes_list:
+            ctrl_attr = attrUtils.add_float_attr(self.face_ctrl, attr)
+            self.container.bind_attribute(f"{self.face_ctrl}.{attr}")
+        for attr in attributes_list:
+            for input_conn in input_connections.get(attr, []):
+                cmds.connectAttr(input_conn, f"{self.face_ctrl}.{attr}")
+            for output_conn in out_put_connections.get(attr, []):
+                cmds.connectAttr(f"{self.face_ctrl}.{attr}", output_conn)
+        self.face_ctrl_needs_reordering = False
+
+
 
     def reorder_blendshapes_deformation_history(self):
         """
@@ -1753,6 +1791,7 @@ class BlueSteelEditor(object):
             self.add_primary_shape(mesh=mesh,
                                    shape=shape,
                                    invert_shape=invert_shape)
+            self.face_ctrl_needs_reordering = True
         elif shape.type == "InbetweenShape":
             # setting the pose of the rig to the inbetween shape
             self.add_inbetween_shape(mesh=mesh,
@@ -1797,6 +1836,7 @@ class BlueSteelEditor(object):
             self.add_primary_shape(mesh, shape)
             # if the mesh is the base mesh that means that we are adding a shape with no delta, we need to reset the delta of this shape to avoid any issues with the remap nodes
             self.reset_delta_for_shapes([shape_name])
+            self.reoreder_face_ctrl_attributes()
         else:
             raise ValueError(f"Shape '{shape_name}' already exists in the network.")
         return shape
@@ -1955,6 +1995,8 @@ class BlueSteelEditor(object):
             if invalid_shapes:
                 cmds.warning(f"Could not commit the following shapes because the naming was invalid: {', '.join(set(invalid_shapes))}")
             self.enable_all_deformers()
+            if self.face_ctrl_needs_reordering:
+                self.reoreder_face_ctrl_attributes()
             return invalid_shapes
 
     @undoable
