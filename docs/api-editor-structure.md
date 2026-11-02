@@ -346,7 +346,10 @@ read/written through `read_sorting_attribute(name)` /
 `write_sorting_attribute(name, data)` and owned by `api/treeViewOrderingManager.py`
 (`TreeViewOrderingManager`, parameterized by attribute name). Work-shape
 add/remove/rename keep `workShapeSorting` current, mirroring the primary hooks
-that maintain `faceCtrlSorting`.
+that maintain `faceCtrlSorting`. The primaries store is created with
+`sort_new_primaries=True`, so `add_primary()` and `sync()` insert newly added
+primaries alphabetically among their sibling leaves instead of appending them
+last; the Work Shapes store keeps the append behaviour.
 
 ### `shapeBuilder.py` (lines 1433–1750, 2535–3058, 3367–3448)
 

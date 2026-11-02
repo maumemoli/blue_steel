@@ -59,10 +59,18 @@ class TreeViewOrderingManager:
         attribute_name (str): Name of the editor attribute this store reads
             and writes. Defaults to the primaries tree (``faceCtrlSorting``);
             pass ``workShapeSorting`` for the Work Shapes tree.
+        sort_new_primaries (bool): When ``True``, primaries added through
+            :meth:`add_primary` or discovered by :meth:`sync` are inserted in
+            case-insensitive alphabetical order among their sibling leaves
+            instead of being appended last. Existing nodes keep their positions,
+            so user-made drag/drop orderings survive. Defaults to ``False``
+            (append), which is what the Work Shapes tree uses.
     """
 
-    def __init__(self, attribute_name: str = DEFAULT_ATTRIBUTE_NAME) -> None:
+    def __init__(self, attribute_name: str = DEFAULT_ATTRIBUTE_NAME,
+                 sort_new_primaries: bool = False) -> None:
         self._attribute_name = str(attribute_name or DEFAULT_ATTRIBUTE_NAME)
+        self._sort_new_primaries = bool(sort_new_primaries)
         self._items: List[dict] = []
         self._index: Dict[str, dict] = {}
         self._parent: Dict[str, Optional[str]] = {}
@@ -162,8 +170,10 @@ class TreeViewOrderingManager:
         """Reconcile the tree with the rig's actual primary names.
 
         Removes primaries that no longer exist, optionally drops groups left
-        empty by the removal, and appends newly added primaries at the root in
-        case-insensitive alphabetical order.
+        empty by the removal, and adds primaries missing from the tree at the
+        root. Missing primaries are appended last, or placed in case-insensitive
+        alphabetical order among the root leaves when ``sort_new_primaries`` is
+        enabled.
 
         Parameters:
             primary_names (Sequence[str]): Names of the primaries currently in
@@ -198,9 +208,10 @@ class TreeViewOrderingManager:
         self._items = prune(self._items, None)
 
         existing = set(self._index)
-        missing = sorted((name for name in actual if name not in existing), key=str.lower)
+        missing = sorted((name for name in actual if name not in existing),
+                         key=self._sort_key)
         for name in missing:
-            self._items.append({"name": name, "type": PRIMARY_TYPE})
+            self._insert_primary(name, None)
             removed = True
 
         if removed:
@@ -237,7 +248,11 @@ class TreeViewOrderingManager:
     # Mutations
     # ------------------------------------------------------------------
     def add_primary(self, name: str, parent: Optional[str] = None) -> bool:
-        """Append a primary leaf to ``parent`` (or the root).
+        """Add a primary leaf to ``parent`` (or the root).
+
+        With ``sort_new_primaries`` enabled the leaf is inserted in
+        case-insensitive alphabetical order among its sibling leaves; otherwise
+        it is appended last.
 
         Parameters:
             name (str): Primary name.
@@ -251,10 +266,7 @@ class TreeViewOrderingManager:
             return False
         if parent is not None and not self.is_group(parent):
             return False
-        node = {"name": name, "type": PRIMARY_TYPE}
-        self._sibling_list(parent).append(node)
-        self._index[name] = node
-        self._parent[name] = parent
+        self._insert_primary(name, parent)
         return True
 
     def move(self, names: Sequence[str], target: str, position: str) -> bool:
@@ -545,6 +557,43 @@ class TreeViewOrderingManager:
             return self._items
         node.setdefault("children", [])
         return node["children"]
+
+    @staticmethod
+    def _sort_key(name) -> tuple:
+        """Return the case-insensitive key used for alphabetical insertion."""
+        name = str(name)
+        return (name.lower(), name)
+
+    def _insert_primary(self, name: str, parent: Optional[str]) -> dict:
+        """Create a primary leaf and place it inside ``parent``'s children.
+
+        When ``sort_new_primaries`` is enabled the leaf is inserted before the
+        first leaf sibling that sorts after it, ignoring folder siblings so
+        existing folders keep their slots. When it sorts after every leaf it is
+        appended last. With the option disabled the leaf is always appended.
+
+        Parameters:
+            name (str): Primary name (assumed not to exist yet).
+            parent (Optional[str]): Existing folder name, or ``None`` for root.
+
+        Returns:
+            dict: The inserted node.
+        """
+        node = {"name": str(name), "type": PRIMARY_TYPE}
+        siblings = self._sibling_list(parent)
+        insert_index = len(siblings)
+        if self._sort_new_primaries:
+            key = self._sort_key(node["name"])
+            for index, sibling in enumerate(siblings):
+                if sibling.get("type") != PRIMARY_TYPE:
+                    continue
+                if self._sort_key(sibling.get("name") or "") > key:
+                    insert_index = index
+                    break
+        siblings.insert(insert_index, node)
+        self._index[node["name"]] = node
+        self._parent[node["name"]] = parent
+        return node
 
     def _detach(self, names: Sequence[str]) -> List[dict]:
         detached: List[dict] = []

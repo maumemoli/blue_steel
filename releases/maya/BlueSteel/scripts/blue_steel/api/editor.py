@@ -4157,10 +4157,13 @@ class BlueSteelEditor(object):
     def _face_ctrl_sorting_store(self) -> TreeViewOrderingManager:
         """Return a store loaded from the container sorting attribute.
 
+        New primaries are inserted alphabetically among their sibling leaves so
+        the Primaries panel shows freshly added shapes in name order.
+
         Returns:
             TreeViewOrderingManager: The current ordering/grouping tree.
         """
-        store = TreeViewOrderingManager()
+        store = TreeViewOrderingManager(sort_new_primaries=True)
         try:
             store.load(self)
         except Exception:
@@ -4254,7 +4257,10 @@ class BlueSteelEditor(object):
                 print(f"Could not update work shape sorting rename: {exc}")
 
     def _add_primary_to_face_ctrl_sorting(self, primary_name: str) -> None:
-        """Append a newly added primary to the persisted sorting tree.
+        """Insert a newly added primary into the persisted sorting tree.
+
+        The store places the primary alphabetically among its sibling primaries,
+        so the Primaries panel does not park new shapes at the bottom.
 
         Parameters:
             primary_name (str): The primary shape name that was added.

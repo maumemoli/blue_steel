@@ -1398,8 +1398,12 @@ class ShapesFeatureMixin(MainWindowMixin):
 
 
     def _primary_sorting_store(self) -> TreeViewOrderingManager:
-        """Return the ordering store loaded from the active editor."""
-        store = TreeViewOrderingManager()
+        """Return the ordering store loaded from the active editor.
+
+        Mirrors the editor-side primaries store: new primaries are inserted
+        alphabetically among their sibling leaves during ``sync()`` as well.
+        """
+        store = TreeViewOrderingManager(sort_new_primaries=True)
         try:
             store.load(self.current_editor)
         except Exception:

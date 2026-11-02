@@ -36,6 +36,7 @@ Full diff of `v1.7.2` → `v1.7.4` (22 files, +3737 / -76).
 
 ### Fixes
 
+- **New primaries land in alphabetical order** - a primary added through the Primaries panel (**Add Primary Placeholder**), a commit, or a batch commit is now inserted alphabetically among its sibling rows instead of being parked at the bottom of the tree. `TreeViewOrderingManager` gained an opt-in `sort_new_primaries` flag (enabled for the `faceCtrlSorting` store, off for `workShapeSorting`), so `add_primary()` and the `sync()` fallback both place unknown names among the sibling leaves (folders keep their slots, case-insensitive, existing user order is never re-sorted). Covered by `tests/test_tree_view_ordering_manager.py`.
 - `Blendshape.add_target_child` now records `-new_id` in the parent's `childIndices` (it previously stored `new_id`), so a child that is already grouped is not appended twice.
 
 ### Docs & tests

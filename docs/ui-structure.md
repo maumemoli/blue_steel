@@ -808,8 +808,8 @@ store against the `workShapeSorting` attribute. `TreeViewOrderingManager` owns t
 nested tree (folders containing leaves), reconciles it against the rig's
 actual names, and exposes all mutations:
 
-- `TreeViewOrderingManager(attribute_name="faceCtrlSorting")` — `load(editor)` / `save(editor)` call the editor's generic `read_sorting_attribute(name)` / `write_sorting_attribute(name, data)` accessors (with a legacy fallback for the primaries attribute). `to_dict()` / `from_dict(data)`.
-- `sync(primary_names, drop_empty_groups=True)` — prune removed leaves, drop empty groups, append new leaves at the root.
+- `TreeViewOrderingManager(attribute_name="faceCtrlSorting", sort_new_primaries=False)` — `load(editor)` / `save(editor)` call the editor's generic `read_sorting_attribute(name)` / `write_sorting_attribute(name, data)` accessors (with a legacy fallback for the primaries attribute). `to_dict()` / `from_dict(data)`. The Primaries panel enables `sort_new_primaries`, so newly added primaries are inserted alphabetically among their sibling leaves (folders keep their slots); the Work Shapes panel leaves it off and appends.
+- `sync(primary_names, drop_empty_groups=True)` — prune removed leaves, drop empty groups, add new leaves at the root. New leaves are appended, or, with `sort_new_primaries`, inserted in case-insensitive alphabetical order among the root leaves. Existing order (including drag/drop customisation) is never re-sorted.
 - `add_primary(name, parent=None)` / `remove(name)` / `rename(old, new)`
 - `move(names, target, position)` — `before` / `after` / `inside` reorder and reparent.
 - `move_to_root(names)` — move nodes (with their subtrees) to the end of the top level.
