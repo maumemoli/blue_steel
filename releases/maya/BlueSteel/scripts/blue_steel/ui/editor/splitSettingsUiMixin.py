@@ -1260,12 +1260,18 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._mirror_weights_settings = dialog.state()
         settings = dialog.settings()
         try:
-            self.current_editor.mirror_edit_split_weight_map_values(weight_name, **settings)
+            mirrored = self.current_editor.mirror_edit_split_weight_map_values(weight_name, **settings)
         except Exception as exc:
             self._set_status(f"Error mirroring weight map: {exc}", error=True)
             return
         self._sync_split_map_weight_slider_values()
         self._update_split_map_weight_operation_buttons()
+        if mirrored is None:
+            # The weight map mirror was cancelled from Maya's main progress bar
+            # and nothing was written.
+            self._set_status(f"Mirror cancelled: '{weight_name}' was not changed.",
+                             warning=True)
+            return
         self._set_status(
             f"Mirrored weight map '{weight_name}' "
             f"({settings['action']} on {str(settings['mirror_axis']).upper()}, "

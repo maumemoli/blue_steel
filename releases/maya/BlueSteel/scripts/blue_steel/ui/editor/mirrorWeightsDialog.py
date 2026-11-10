@@ -63,7 +63,8 @@ MIRROR_DIRECTION_ITEMS: Tuple[Tuple[object, str], ...] = (
 """tuple[tuple[object, str], ...]: Mirror direction combo entries."""
 
 MIRROR_MAPPING_ITEMS: Tuple[Tuple[object, str], ...] = (
-    (mayaUtils.MirrorMapping.GEOMETRIC, "Object Space (Geometric)"),
+    (mayaUtils.MirrorMapping.SURFACE, "Surface Sample (interpolated, fast)"),
+    (mayaUtils.MirrorMapping.GEOMETRIC, "Object Space (Exact Vertex Pairing)"),
     (mayaUtils.MirrorMapping.TOPOLOGICAL, "Topological Symmetry"),
 )
 """tuple[tuple[object, str], ...]: Vertex pairing combo entries."""
@@ -74,7 +75,7 @@ DEFAULT_MIRROR_SETTINGS = {
     "mirror_direction": mayaUtils.MirrorDirection.LEFT_TO_RIGHT,
     "mirror_blend_falloff": mayaUtils.DEFAULT_MIRROR_BLEND_FALLOFF,
     "tolerance": mayaUtils.DEFAULT_MIRROR_TOLERANCE,
-    "mapping": mayaUtils.MirrorMapping.GEOMETRIC,
+    "mapping": mayaUtils.MirrorMapping.SURFACE,
     "symmetry_edge": None,
 }
 """dict: Options of every opening when the caller remembers none.
@@ -231,9 +232,11 @@ class MirrorWeightsDialog(QDialog):
         self._mapping_combo = QComboBox(self)
         _fill_combo(self._mapping_combo, MIRROR_MAPPING_ITEMS)
         self._mapping_combo.setToolTip(
-            "Object space pairs every vertex with the nearest vertex to its "
-            "reflected position; topological symmetry pairs the vertices "
-            "through the symmetry edge")
+            "Surface sample mirrors the position on the surface with a "
+            "temporary skinCluster transfer (fast, interpolated); object space "
+            "pairs each vertex with the nearest vertex to its reflected "
+            "position; topological symmetry pairs the vertices through the "
+            "symmetry edge")
         self._mapping_label = QLabel("Mapping:", self)
         form.addRow(self._mapping_label, self._mapping_combo)
 
@@ -259,7 +262,8 @@ class MirrorWeightsDialog(QDialog):
         self._tolerance_spin.setSingleStep(0.001)
         self._tolerance_spin.setToolTip(
             "Maximum distance between a vertex and the reflected position of "
-            "its counterpart, in object units (object-space mapping only)")
+            "its counterpart, in object units (object-space exact pairing "
+            "only)")
         tolerance_row = QHBoxLayout()
         tolerance_row.setContentsMargins(0, 0, 0, 0)
         tolerance_row.addWidget(self._tolerance_spin, 1)
@@ -591,6 +595,17 @@ class MirrorWeightsDialog(QDialog):
 
         return self._mapping_combo.currentData() == mayaUtils.MirrorMapping.TOPOLOGICAL
 
+    def _is_exact_pairing(self) -> bool:
+        """Return whether the exact object-space pairing is selected.
+
+        Only that mapping uses the vertex match tolerance.
+
+        Returns:
+            bool: ``True`` when the mapping combo holds the geometric entry.
+        """
+
+        return self._mapping_combo.currentData() == mayaUtils.MirrorMapping.GEOMETRIC
+
     def _is_flip(self) -> bool:
         """Return whether the flip action is selected.
 
@@ -609,6 +624,7 @@ class MirrorWeightsDialog(QDialog):
 
         flip = self._is_flip()
         topological = self._is_topological()
+        exact_pairing = self._is_exact_pairing()
 
         # Flip swaps both sides, so there is no source side to copy from and no
         # copy to blend across the falloff band.
@@ -617,8 +633,11 @@ class MirrorWeightsDialog(QDialog):
         self._set_row_enabled(self._falloff_spin, self._falloff_label,
                               not flip)
 
+        # The tolerance only matters when a counterpart has to be searched in
+        # space: surface sampling always finds a point and the topological
+        # pairing uses vertex ids.
         self._set_row_enabled(self._tolerance_spin, self._tolerance_label,
-                              not topological)
+                              exact_pairing)
         self._set_row_enabled(self._edge_edit, self._edge_label, topological)
         self._pick_edge_button.setEnabled(topological)
         self._clear_edge_button.setEnabled(topological)
@@ -661,9 +680,17 @@ class MirrorWeightsDialog(QDialog):
                            "and blends the copy across the falloff band.")
 
         if not topological:
-            return (f"{action_hint} Object-space mapping pairs each vertex with "
-                    f"the nearest vertex to its reflected position; vertices "
-                    f"outside the tolerance keep their values.")
+            if self._is_exact_pairing():
+                mapping_hint = ("Object-space pairing copies the weight of the "
+                                "nearest vertex to the reflected position; "
+                                "vertices outside the tolerance keep their "
+                                "values.")
+            else:
+                mapping_hint = ("Surface sampling mirrors the position through "
+                                "a temporary skinCluster transfer: fast and "
+                                "smooth, and approximate on meshes that are "
+                                "not exactly symmetric.")
+            return f"{action_hint} {mapping_hint}"
 
         if self._edge_armed:
             mapping_hint = ("Edge selection mode is on: select an edge on the "

@@ -21,7 +21,11 @@ from ..logic.network import Network
 from ..logic.splitMap import SplitMap
 from ..logic.splitData import SplitData
 from ..logic import utilities
-from ..mmtools.blendshape_transfer_tools import transfer_blendshape_weight_maps, WeightsTransferMethod
+from ..mmtools.blendshape_transfer_tools import (
+    WeightsTransferMethod,
+    sample_mirrored_weight_maps,
+    transfer_blendshape_weight_maps,
+)
 from . import mayaUtils
 from . import blendshapeHUD
 from contextlib import contextmanager
@@ -5860,9 +5864,9 @@ class BlueSteelEditor(object):
             tolerance (float): Geometric match tolerance in object units.
             mapping: ``MirrorMapping`` member or its string value.
             symmetry_edge: Seed edge of the topological mapping.
-
         Returns:
-            numpy.ndarray: The weight map written for ``shape_name``.
+            numpy.ndarray: The weight map written for ``shape_name``, or
+            ``None`` when the mirror was cancelled from the progress bar.
 
         Raises:
             ValueError: If the blendshape, the shape or its base mesh is
@@ -5890,8 +5894,9 @@ class BlueSteelEditor(object):
             mirror_blend_falloff=mirror_blend_falloff,
             tolerance=tolerance,
             mapping=mapping,
-            symmetry_edge=symmetry_edge)
-        return mirrored_maps[weight.id]
+            symmetry_edge=symmetry_edge,
+            sampler=sample_mirrored_weight_maps)
+        return mirrored_maps.get(weight.id)
 
     def mirror_split_weight_map_values(self,
                                        shape_name: str,
@@ -5900,7 +5905,7 @@ class BlueSteelEditor(object):
                                        mirror_direction=mayaUtils.MirrorDirection.LEFT_TO_RIGHT,
                                        mirror_blend_falloff: float = None,
                                        tolerance: float = mayaUtils.DEFAULT_MIRROR_TOLERANCE,
-                                       mapping=mayaUtils.MirrorMapping.GEOMETRIC,
+                                       mapping=mayaUtils.MirrorMapping.SURFACE,
                                        symmetry_edge=None) -> np.ndarray:
         """Mirror or flip the weight map of a split shape on the base mesh.
 
@@ -5930,8 +5935,11 @@ class BlueSteelEditor(object):
                 Defaults to :data:`mayaUtils.DEFAULT_MIRROR_TOLERANCE`
                 (``0.001``); only used by ``MirrorMapping.GEOMETRIC``.
             mapping (MirrorMapping | str): Source of the vertex pairing,
-                ``MirrorMapping.GEOMETRIC`` (default) or
-                ``MirrorMapping.TOPOLOGICAL``.
+                ``MirrorMapping.SURFACE`` (default, samples the
+                mirrored position through a temporary skinCluster
+                transfer: fast and interpolated),
+                ``MirrorMapping.GEOMETRIC`` (exact vertex pairing
+                within ``tolerance``) or ``MirrorMapping.TOPOLOGICAL``.
             symmetry_edge (None | int | str | tuple | list): Edge lying on the
                 symmetry line, required by ``MirrorMapping.TOPOLOGICAL``.
                 ``None`` falls back to the first selected edge.
@@ -5965,7 +5973,7 @@ class BlueSteelEditor(object):
                                             mirror_direction=mayaUtils.MirrorDirection.LEFT_TO_RIGHT,
                                             mirror_blend_falloff: float = None,
                                             tolerance: float = mayaUtils.DEFAULT_MIRROR_TOLERANCE,
-                                            mapping=mayaUtils.MirrorMapping.GEOMETRIC,
+                                            mapping=mayaUtils.MirrorMapping.SURFACE,
                                             symmetry_edge=None) -> np.ndarray:
         """Mirror or flip the weight map of a shape in the split map edit node.
 
@@ -5994,8 +6002,11 @@ class BlueSteelEditor(object):
                 Defaults to :data:`mayaUtils.DEFAULT_MIRROR_TOLERANCE`
                 (``0.001``); only used by ``MirrorMapping.GEOMETRIC``.
             mapping (MirrorMapping | str): Source of the vertex pairing,
-                ``MirrorMapping.GEOMETRIC`` (default) or
-                ``MirrorMapping.TOPOLOGICAL``.
+                ``MirrorMapping.SURFACE`` (default, samples the
+                mirrored position through a temporary skinCluster
+                transfer: fast and interpolated),
+                ``MirrorMapping.GEOMETRIC`` (exact vertex pairing
+                within ``tolerance``) or ``MirrorMapping.TOPOLOGICAL``.
             symmetry_edge (None | int | str | tuple | list): Edge lying on the
                 symmetry line, required by ``MirrorMapping.TOPOLOGICAL``.
 

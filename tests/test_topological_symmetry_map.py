@@ -258,6 +258,22 @@ class TopologicalSymmetryMapTests(unittest.TestCase):
         self._assert_mirrored_columns(mapping, columns=4, rows=3)
         self._assert_involution(mapping)
 
+    def test_progress_reports_every_level(self):
+        """The mapping reports its breadth-first levels on the way."""
+        num_vertices, counts, vertices = _grid(4, 3)
+        reports = []
+        mayaUtils.compute_topological_symmetry_map(
+            counts, vertices, num_vertices, _grid_seed_edge(4),
+            progress=lambda done, total: reports.append((done, total)))
+
+        self.assertTrue(reports)
+        self.assertEqual(reports[0], (0, num_vertices))
+        self.assertTrue(all(total == num_vertices for _done, total in reports))
+        dones = [done for done, _total in reports]
+        self.assertEqual(dones, sorted(dones))
+        self.assertLessEqual(dones[-1], num_vertices)
+        self.assertGreater(dones[-1], 0)
+
     def test_grid_middle_line_vertices_map_to_themselves(self):
         """Vertices sitting on the symmetry line keep their own index."""
         num_vertices, counts, vertices = _grid(4, 3)

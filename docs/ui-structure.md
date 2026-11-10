@@ -751,6 +751,14 @@ enabled)` / `_hint_text(topological, flip)`
 - Being a tool window the dialog does not block Maya, so an edge can be
 selected in the viewport and picked with **Pick Selected Edge**; leaving the
 edge empty makes the editor API fall back to the selected edge.
+- The mirror itself reports through Maya's main progress bar
+(`mayaUtils.main_progress_bar`, `MirrorCancelled`); cancelling it leaves the
+weight map untouched and the mixin shows "Mirror cancelled: '<weight>' was not
+changed." (`mirror_edit_split_weight_map_values` returns `None`).
+- A sculpt/paint context (`sculptMeshCacheContext`, `artAttrBlendShapeContext`,
+`artAttrCtx`) is parked by `mayaUtils.non_sculpting_context()` around the mirror
+(select tool first, previous context restored afterwards), so the paint tool never
+sits between the weight reader and the weight writer.
 - **Pick Selected Edge** grabs an edge that is already selected; when the
 selection holds no edge it switches Maya to component/edge selection mode
 (`_arm_edge_selection`) and the hint asks for a second press. The previous
@@ -758,8 +766,14 @@ selection mode and component mask are restored after a successful pick and
 from `closeEvent`.
 - Greying: **Direction** and **Falloff** are disabled for the flip action
 (flip swaps both sides with a hard edge), the tolerance only applies to the
-object-space mapping and the edge row only to the topological one. The row
-labels are greyed out with their fields.
+exact object-space pairing (**Surface Sample** and **Topological Symmetry**
+disable it) and the edge row only to the topological one. The row labels are
+greyed out with their fields.
+- Mapping entries: **Surface Sample (interpolated, fast)** (default) mirrors by
+sampling the surface with `blendshape_transfer_tools.sample_mirrored_weight_maps`
+through `mode="surface"`, **Object Space (Exact Vertex Pairing)** is the
+`compute_geometric_symmetry_map` path with `tolerance`, and **Topological
+Symmetry** uses the symmetry edge.
 - Leaving the topological mapping clears the picked symmetry edge, because it
 belongs to the topology of one mesh; `_previous_mapping` tracks the change.
 - The falloff is shown as a percentage (`0`–`100`, one decimal) and converted

@@ -5,7 +5,7 @@ from ctypes import c_float, c_double, c_int, c_uint
 from . import attrUtils
 from enum import Enum
 from functools import wraps
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import time
 
 """
@@ -45,6 +45,173 @@ def undoable(func):
         finally:
             cmds.undoInfo(closeChunk=True)
     return wrapper
+
+
+class MirrorCancelled(RuntimeError):
+    """Raised when a mirror is cancelled from Maya's main progress bar.
+
+    The mirror entry points poll the progress bar through
+    :func:`main_progress_bar`; cancelling it raises this error, which
+    :func:`mirror_blendshape_weight_map` turns into a warning after discarding
+    the weight maps it had not written yet.
+    """
+
+
+def _noop_progress_update(status: str = None,
+                          step: int = 1,
+                          progress: int = None,
+                          poll: bool = True) -> None:
+    """Ignore a progress bar update.
+
+    Parameters:
+        status (str, optional): Message that would have been shown.
+        step (int): Steps that would have been added.
+        progress (int, optional): Value that would have been set.
+        poll (bool): Whether the cancel state would have been polled.
+
+    Returns:
+        None
+    """
+
+
+@contextmanager
+def main_progress_bar(status: str,
+                      maximum: int,
+                      interruptable: bool = True):
+    """Show Maya's main progress bar and yield its update callback.
+
+    This is the progress bar of the Maya main window (bottom left), created
+    exactly like the other Blue Steel operations do it: the MEL global
+    ``$gMainProgressBar`` edited through ``cmds.progressBar``.
+
+    The bar degrades gracefully: when Maya's progress bar cannot be created
+    (headless session, unit-test stubs) the context still yields a callable, so
+    callers need no special casing.
+
+    Parameters:
+        status (str): Message shown above the bar while it runs.
+        maximum (int): Number of steps the bar covers.
+        interruptable (bool): Whether Maya shows the cancel button.
+
+    Yields:
+        callable: ``update(status=None, step=1, progress=None, poll=True)``
+        that advances the bar. It raises :class:`MirrorCancelled` when the
+        user pressed cancel, unless ``poll`` is ``False`` (used for the final
+        writes, which must not be interrupted halfway through).
+
+    Raises:
+        MirrorCancelled: From the yielded callback when the bar was cancelled.
+
+    Example:
+        >>> with main_progress_bar("Mirroring weights", 10) as update:
+        ...     for index in range(10):
+        ...         update(status=f"Vertex {index}")
+    """
+    maximum = max(int(maximum), 1)
+    try:
+        from maya import mel
+        progress_bar = mel.eval("$tmp = $gMainProgressBar")
+        cmds.progressBar(progress_bar,
+                         edit=True,
+                         beginProgress=True,
+                         isInterruptable=interruptable,
+                         status=status,
+                         maxValue=maximum)
+    except Exception:
+        # No progress bar available: the mirror still runs, it just reports
+        # nothing.
+        yield _noop_progress_update
+        return
+
+    def update(status: str = None,
+               step: int = 1,
+               progress: int = None,
+               poll: bool = True) -> None:
+        """Advance the bar and abort when the user cancelled it."""
+        if poll and interruptable and cmds.progressBar(progress_bar,
+                                                       query=True,
+                                                       isCancelled=True):
+            raise MirrorCancelled("Mirror cancelled from the progress bar.")
+        attributes = {}
+        if status is not None:
+            attributes["status"] = status
+        if progress is not None:
+            attributes["progress"] = int(progress)
+        elif step:
+            attributes["step"] = int(step)
+        if attributes:
+            cmds.progressBar(progress_bar, edit=True, **attributes)
+
+    try:
+        yield update
+    finally:
+        try:
+            cmds.progressBar(progress_bar, edit=True, endProgress=True)
+        except Exception:
+            pass
+
+
+SCULPTING_CONTEXTS = (
+    "sculptMeshCacheContext",
+    "artAttrBlendShapeContext",
+    "artAttrCtx",
+    "artAttrContext",
+)
+"""Context tools that paint or sculpt geometry instead of editing attributes.
+
+Weight maps cannot be written safely while one of them is active, because the
+paint context keeps the target in sculpt mode and owns the mesh under the
+cursor.
+"""
+
+
+@contextmanager
+def non_sculpting_context():
+    """Leave a sculpt or paint context for the duration of a weight map edit.
+
+    When the current context tool is one of :data:`SCULPTING_CONTEXTS`, the
+    select tool is activated so the operation does not run inside the paint
+    context, and the previous context is reinstated afterwards - also when the
+    block raises, is cancelled or the context no longer exists.
+
+    Any other context is left untouched, in which case the context manager is
+    only a passthrough.
+
+    Yields:
+        str | None: The context tool that was active, ``None`` when Maya did
+        not report one.
+
+    Example:
+        >>> with non_sculpting_context():
+        ...     cmds.setAttr(attribute, *values, size=len(values))
+    """
+
+    try:
+        current_context = cmds.currentCtx()
+    except Exception:
+        current_context = None
+
+    if current_context not in SCULPTING_CONTEXTS:
+        yield current_context
+        return
+
+    switched = False
+    try:
+        cmds.setToolTo("selectSuperContext")
+        switched = True
+    except Exception:
+        # Without a way out of the paint context the operation still runs; it
+        # just loses the protection against the sculpt tool.
+        pass
+
+    try:
+        yield current_context
+    finally:
+        if switched:
+            try:
+                cmds.setToolTo(current_context)
+            except Exception:
+                pass
 
 
 def assign_default_material(meshes):
@@ -381,7 +548,8 @@ def compute_topological_symmetry_map(polygon_counts,
                                      polygon_vertices,
                                      num_vertices: int,
                                      seed_edge,
-                                     stats: dict = None) -> list:
+                                     stats: dict = None,
+                                     progress=None) -> list:
     """Map every vertex of a mesh to its topological mirror across a seam edge.
 
     The mapping is purely topological, so the mesh does not need to be
@@ -406,6 +574,9 @@ def compute_topological_symmetry_map(polygon_counts,
         seed_edge (tuple): Two vertex ids of an edge on the symmetry line.
         stats (dict, optional): When given, filled with the ``"unmapped"`` and
             ``"conflicts"`` counters.
+        progress (callable, optional): Called as ``progress(mapped, total)``
+            once per breadth-first level, so a caller can drive a progress
+            bar. The function itself performs no Maya calls.
 
     Returns:
         list: One entry per vertex. The entry is the opposite vertex id, the
@@ -458,6 +629,12 @@ def compute_topological_symmetry_map(polygon_counts,
     level_px = [seed_b, seed_a]
     level_py = [seed_b, seed_a]
 
+    # The breadth-first walk pairs two vertices per ring step, so the counts
+    # are exact without rescanning the map.
+    mapped_count = 2
+    if progress is not None:
+        progress(0, num_vertices)
+
     while level_x:
         columns_x = _lookup_ring_columns(
             np.asarray(level_x, dtype=np.int64),
@@ -497,6 +674,9 @@ def compute_topological_symmetry_map(polygon_counts,
                     conflicts += 1
 
         level_x, level_y, level_px, level_py = next_x, next_y, next_px, next_py
+        mapped_count += 2 * len(next_x)
+        if progress is not None:
+            progress(min(mapped_count, num_vertices), num_vertices)
 
     mapped = opposite.tolist()
     result = [None if vertex_id < 0 else vertex_id for vertex_id in mapped]
@@ -645,7 +825,10 @@ def _resolve_mesh_shape_name(mesh_name: str) -> str:
     raise ValueError(f"Node '{mesh_name}' owns no mesh shape.")
 
 
-def get_mesh_topological_symmetry_map(mesh_name: str, edge=None) -> list:
+def get_mesh_topological_symmetry_map(mesh_name: str,
+                                      edge=None,
+                                      progress=None,
+                                      show_progress: bool = True) -> list:
     """Map the vertices of a mesh to their topological mirror across an edge.
 
     The edge must lie on the symmetry line of the mesh (both endpoints on the
@@ -660,10 +843,18 @@ def get_mesh_topological_symmetry_map(mesh_name: str, edge=None) -> list:
         edge (int | str | tuple | list, optional): Edge id, edge component name
             such as ``"pCube1.e[12]"`` or ``(vertex_a, vertex_b)``. When
             ``None``, the first selected edge is used.
+        progress (callable, optional): Called as ``progress(mapped, total)``
+            once per breadth-first level. When given, no progress bar is
+            opened here and the caller drives it.
+        show_progress (bool): Whether Maya's main progress bar is shown when
+            no ``progress`` callback is given. Defaults to ``True``.
 
     Returns:
         list: One entry per vertex: the opposite vertex id, the same index for
         vertices on the symmetry line and ``None`` for unmapped vertices.
+
+    Raises:
+        MirrorCancelled: When the shown progress bar is cancelled.
 
     Example:
         >>> mapping = get_mesh_topological_symmetry_map("head", "head.e[128]")
@@ -686,11 +877,31 @@ def get_mesh_topological_symmetry_map(mesh_name: str, edge=None) -> list:
 
     seed_edge = _resolve_seed_edge(mfn_mesh, mesh_name, edge, num_vertices)
     stats = {}
-    mapping = compute_topological_symmetry_map(list(polygon_counts),
-                                               list(polygon_vertices),
-                                               num_vertices,
-                                               seed_edge,
-                                               stats=stats)
+    polygon_counts = list(polygon_counts)
+    polygon_vertices = list(polygon_vertices)
+    if progress is not None:
+        mapping = compute_topological_symmetry_map(polygon_counts,
+                                                   polygon_vertices,
+                                                   num_vertices,
+                                                   seed_edge,
+                                                   stats=stats,
+                                                   progress=progress)
+    elif show_progress:
+        with main_progress_bar(f"Topological symmetry of '{mesh_name}'...",
+                              num_vertices) as update:
+            mapping = compute_topological_symmetry_map(
+                polygon_counts,
+                polygon_vertices,
+                num_vertices,
+                seed_edge,
+                stats=stats,
+                progress=lambda mapped, total: update(progress=mapped))
+    else:
+        mapping = compute_topological_symmetry_map(polygon_counts,
+                                                   polygon_vertices,
+                                                   num_vertices,
+                                                   seed_edge,
+                                                   stats=stats)
 
     unmapped = stats.get("unmapped", 0)
     conflicts = stats.get("conflicts", 0)
@@ -753,7 +964,10 @@ class MirrorMapping(str, Enum):
     position and therefore only needs the mesh to be symmetric in shape.
     ``TOPOLOGICAL`` pairs the vertices through the topological symmetry map of
     a seam edge, like Maya's *Topological Symmetry*, so it also works on
-    meshes that are only symmetric in topology.
+    meshes that are only symmetric in topology. ``SURFACE`` samples the weight
+    maps at the mirrored vertex positions on the surface through a temporary
+    skinCluster transfer, which is fast on dense meshes and interpolates
+    instead of copying a single vertex.
     """
 
     GEOMETRIC = "geometric"
@@ -761,6 +975,9 @@ class MirrorMapping(str, Enum):
 
     TOPOLOGICAL = "topological"
     """Topological symmetry map grown from a seam edge."""
+
+    SURFACE = "surface"
+    """Surface sample of the mirrored position (interpolated bulk transfer)."""
 
     def __str__(self) -> str:
         return self.value
@@ -921,7 +1138,8 @@ def _resolve_mirror_direction(mirror_direction=MirrorDirection.LEFT_TO_RIGHT) ->
 def compute_geometric_symmetry_map(points,
                                    axis=MirrorAxis.X,
                                    tolerance: float = DEFAULT_MIRROR_TOLERANCE,
-                                   symmetry_centre: float = None) -> np.ndarray:
+                                   symmetry_centre: float = None,
+                                   progress=None) -> np.ndarray:
     """Pair every vertex of a mesh with its geometric mirror counterpart.
 
     The pairing happens in object space: each vertex is reflected across the
@@ -949,6 +1167,9 @@ def compute_geometric_symmetry_map(points,
             smaller value for meshes modelled at a much smaller scale.
         symmetry_centre (float, optional): Axis coordinate of the mirror
             plane. Defaults to the centre of the bounding box along ``axis``.
+        progress (callable, optional): Called as ``progress(done, total)``
+            once per processed vertex block, so a caller can drive a progress
+            bar. The function itself performs no Maya calls.
 
     Returns:
         numpy.ndarray: One int64 vertex id per vertex, the source vertex id
@@ -1008,8 +1229,11 @@ def compute_geometric_symmetry_map(points,
     block_size = 1024
     # Upper bound of candidate pairs evaluated in one array operation.
     pair_budget = 1 << 21
+    total_blocks = (num_vertices + block_size - 1) // block_size
 
-    for block_start in range(0, num_vertices, block_size):
+    for block_index, block_start in enumerate(range(0, num_vertices, block_size)):
+        if progress is not None:
+            progress(block_index, total_blocks)
         block_stop = min(block_start + block_size, num_vertices)
         block_mirrored = mirrored_coordinates[block_start:block_stop]
         window_low = np.searchsorted(sorted_coordinates,
@@ -1057,6 +1281,8 @@ def compute_geometric_symmetry_map(points,
             chunk_opposite = opposite[chunk_start:chunk_stop]
             chunk_opposite[found] = candidates[found, best[found]]
 
+    if progress is not None:
+        progress(total_blocks, total_blocks)
     return opposite
 
 
@@ -1223,6 +1449,8 @@ def mirror_weight_map_values(values,
     ``mapping`` comes from :func:`compute_geometric_symmetry_map` or from
     :func:`get_mesh_topological_symmetry_map`: entry ``i`` is the vertex whose
     value vertex ``i`` receives. Vertices mapped to ``-1`` keep their value.
+    For already sampled mirror values use
+    :func:`blend_mirrored_weight_map_values` instead.
 
     ``MirrorAction.MIRROR`` copies the source side onto the destination side
     and leaves the source side untouched, blending the two inside the falloff
@@ -1279,6 +1507,67 @@ def mirror_weight_map_values(values,
     swappable = np.zeros(num_vertices, dtype=np.int64)
     swappable[in_range] = mapping[in_range]
     mirrored = np.where(in_range, values[swappable], values)
+
+    return blend_mirrored_weight_map_values(values, mirrored, falloff, action)
+
+
+def blend_mirrored_weight_map_values(values,
+                                    mirrored_values,
+                                    falloff=None,
+                                    action=MirrorAction.MIRROR) -> np.ndarray:
+    """Blend already sampled mirror values into a per-vertex weight map.
+
+    This is the second half of :func:`mirror_weight_map_values` for callers
+    that do not have a vertex pairing: the mirrored value of every vertex is
+    given directly, for example the surface sampled weights of
+    :meth:`blue_steel.api.editor.BlueSteelEditor.mirror_split_weight_map_values`.
+
+    ``MirrorAction.MIRROR`` keeps the current value where the falloff is ``0``
+    and takes the mirrored value where it is ``1``. ``MirrorAction.FLIP`` swaps
+    both sides, so the falloff band fades to a half/half mix on the mirror
+    plane instead of fading to nothing.
+
+    This function performs no Maya calls and never mutates its arguments.
+
+    Parameters:
+        values (sequence | numpy.ndarray): One weight per mesh vertex.
+        mirrored_values (sequence | numpy.ndarray): The value every vertex
+            would receive from its counterpart, one entry per vertex.
+        falloff (sequence | numpy.ndarray, optional): One blend factor between
+            ``0`` (keep the current value) and ``1`` (take the mirrored value)
+            per vertex. Defaults to ``1`` for every vertex, i.e. a full copy.
+        action (MirrorAction | str): ``MirrorAction.MIRROR`` to copy one side
+            onto the other, ``MirrorAction.FLIP`` to swap both sides.
+
+    Returns:
+        numpy.ndarray: The new weight map as float64.
+
+    Raises:
+        ValueError: If the action is unknown or if the arrays have different
+            lengths.
+
+    Example:
+        >>> blend_mirrored_weight_map_values([0.0, 1.0], [1.0, 0.0],
+        ...                                  [0.0, 1.0])
+        array([0., 0.])
+    """
+    action = _coerce_action(action)
+
+    values = np.array(values, dtype=np.float64, copy=True).ravel()
+    mirrored = np.asarray(mirrored_values, dtype=np.float64).ravel()
+    num_vertices = values.size
+    if mirrored.size != num_vertices:
+        raise ValueError(f"mirrored_values has {mirrored.size} entries but the "
+                         f"weight map has {num_vertices}.")
+
+    if falloff is None:
+        falloff = np.ones(num_vertices, dtype=np.float64)
+    else:
+        falloff = np.asarray(falloff, dtype=np.float64).ravel()
+        if falloff.size != num_vertices:
+            raise ValueError(f"falloff has {falloff.size} entries but the "
+                             f"weight map has {num_vertices}.")
+        falloff = np.clip(falloff, 0.0, 1.0)
 
     if action == MirrorAction.FLIP:
         # Swap on both sides: the band blends to a half/half mix on the seam
@@ -1449,7 +1738,9 @@ def mirror_blendshape_weight_map(mesh_name: str,
                                  tolerance: float = DEFAULT_MIRROR_TOLERANCE,
                                  symmetry_centre: float = None,
                                  mapping=MirrorMapping.GEOMETRIC,
-                                 symmetry_edge=None) -> dict:
+                                 symmetry_edge=None,
+                                 show_progress: bool = True,
+                                 sampler=None) -> dict:
     """Mirror or flip the weight map of a blendShape target in object space.
 
     Every vertex of ``mesh_name`` is paired with its counterpart across the
@@ -1505,23 +1796,47 @@ def mirror_blendshape_weight_map(mesh_name: str,
             Defaults to the centre of the bounding box along the axis. The
             falloff band is always centred on the bounding box centre.
         mapping (MirrorMapping | str): Source of the vertex pairing,
-            ``MirrorMapping.GEOMETRIC`` (default) or
-            ``MirrorMapping.TOPOLOGICAL``. The ``"geometric"``/
-            ``"topological"`` strings are accepted too.
+            ``MirrorMapping.GEOMETRIC`` (default),
+            ``MirrorMapping.TOPOLOGICAL`` or ``MirrorMapping.SURFACE``. The
+            ``"geometric"``/``"topological"``/``"surface"`` strings are
+            accepted too.
         symmetry_edge (None | int | str | tuple | list): Edge lying on the
             symmetry line, given as edge id, edge component name
             (``"head.e[128]"``) or ``(vertex_a, vertex_b)``. Only used by
             ``MirrorMapping.TOPOLOGICAL``; ``None`` falls back to the first
             selected edge.
+        show_progress (bool): Whether Maya's main progress bar reports the
+            pairing and the weight maps. Defaults to ``True``; pass ``False``
+            when the caller drives its own bar. Cancelling the bar raises
+            :class:`MirrorCancelled` internally, which aborts the operation
+            before any weight map is written and returns ``{}``.
+        sampler (callable, optional): Bulk surface sampler used by
+            ``MirrorMapping.SURFACE``. It is called once with ``mesh_name``,
+            ``blendshape_name``, ``weight_ids``, ``mirror_axis``,
+            ``symmetry_centre`` and ``progress`` and must return
+            ``{weight_id: values}`` with one value per base-mesh vertex, which
+            is what
+            :func:`blue_steel.mmtools.blendshape_transfer_tools.sample_mirrored_weight_maps`
+            provides. ``api.editor`` injects it; the surface mapping raises
+            when it is missing.
 
     Returns:
         dict: ``{weight_id: numpy.ndarray}`` with the weight map written for
-        every processed target.
+        every processed target, empty when the mirror was cancelled.
+
+    Note:
+        Every weight map is read and mirrored before the first write, so a
+        cancel leaves the blendShape untouched. The mapped values are held in
+        memory until the write phase. When the current context tool is a
+        sculpt or paint context (:data:`SCULPTING_CONTEXTS`), the select tool is
+        activated for the operation and the previous context is reinstated
+        afterwards.
 
     Raises:
         ValueError: If the action, axis, direction, mapping or ``weight_id``
-            is invalid, if ``symmetry_edge`` is passed for the geometric
-            mapping, if the topological mapping pairs no vertex, if
+            is invalid, if ``symmetry_edge`` is passed for the geometric or
+            surface mapping, if ``MirrorMapping.SURFACE`` is used without a
+            ``sampler``, if the topological mapping pairs no vertex, if
             ``blendshape_name`` is not a blendShape node, if the mesh is not
             the base mesh of the blendShape or if a weight map is connected
             and therefore cannot be overwritten.
@@ -1570,64 +1885,144 @@ def mirror_blendshape_weight_map(mesh_name: str,
 
     axis_index = _mirror_axis_index(mirror_axis)
     coordinates = points[:, axis_index]
-
-    if mapping is MirrorMapping.TOPOLOGICAL:
-        topological_mapping = get_mesh_topological_symmetry_map(mesh_shape,
-                                                                symmetry_edge)
-        vertex_mapping = np.array([-1 if vertex_id is None else int(vertex_id)
-                                   for vertex_id in topological_mapping],
-                                  dtype=np.int64)
-        if vertex_mapping.size != num_vertices:
-            raise ValueError(f"Topological symmetry of '{mesh_shape}' mapped "
-                             f"{vertex_mapping.size} vertices but the mesh "
-                             f"has {num_vertices}.")
-        if not np.any(vertex_mapping >= 0):
-            raise ValueError(f"Topological symmetry of '{mesh_shape}' paired "
-                             f"no vertex: check that symmetry_edge lies on "
-                             f"the symmetry line of the mesh.")
-        # A topological pairing makes no assumption about the shape of the
-        # mesh, so the falloff is read from the symmetrized positions of the
-        # pairs; unpaired vertices are filtered out and keep their values.
-        falloff_coordinates = compute_symmetrized_mirror_coordinates(
-            coordinates, vertex_mapping, symmetry_centre)
-    else:
-        if symmetry_edge is not None:
-            raise ValueError("symmetry_edge is only used by the topological "
-                             "mapping: pass mapping='topological' together "
-                             "with the edge, or drop the edge.")
-        vertex_mapping = compute_geometric_symmetry_map(
-            points,
-            mirror_axis,
-            tolerance=tolerance,
-            symmetry_centre=symmetry_centre)
-        falloff_coordinates = coordinates
-
-    falloff = compute_mirror_falloff_weights(falloff_coordinates,
-                                             float(coordinates.min()),
-                                             float(coordinates.max()),
-                                             mirror_direction,
-                                             mirror_blend_falloff)
-
     weight_ids = _resolve_weight_ids(blendshape_name, weight_id)
 
-    # Maya refuses to edit the weight map of the target being sculpted.
-    sculpt_ids = _get_sculpt_target_ids(blendshape_name)
-    active_sculpt_id = next((i for i in sculpt_ids if i >= 0), None)
-    if active_sculpt_id is not None:
-        cmds.sculptTarget(blendshape_name, edit=True, t=-1)
+    # One step per mirrored weight map plus one per write, preceded by a slice
+    # of ``num_vertices`` steps the pairing fills in.
+    total_steps = num_vertices + 2 * len(weight_ids)
+    status = (f"Mirroring '{blendshape_name}' on the "
+              f"{MIRROR_AXES[axis_index].upper()} axis...")
+    progress_context = (main_progress_bar(status, total_steps)
+                        if show_progress
+                        else nullcontext(_noop_progress_update))
 
-    mirrored_maps = {}
+    def pairing_progress(done, total):
+        """Project the pairing steps onto the first slice of the bar."""
+        total = max(int(total), 1)
+        update(progress=min(num_vertices, int(done) * num_vertices // total))
+
+    staged_maps = {}
+    sampled_maps = {}
+    vertex_mapping = None
+    # Weight maps cannot be written while a sculpt or paint context owns the
+    # mesh, so that context is parked for the duration of the mirror.
     try:
-        for target_id in weight_ids:
-            values = _get_weight_map_values(blendshape_name, target_id,
-                                            num_vertices)
-            mirrored = mirror_weight_map_values(values, vertex_mapping,
-                                               falloff, action)
-            _set_weight_map_values(blendshape_name, target_id, mirrored)
-            mirrored_maps[target_id] = mirrored
-    finally:
-        if active_sculpt_id is not None:
-            cmds.sculptTarget(blendshape_name, edit=True, t=active_sculpt_id)
+        with non_sculpting_context(), progress_context as update:
+            if mapping is MirrorMapping.SURFACE:
+                if symmetry_edge is not None:
+                    raise ValueError("symmetry_edge is only used by the "
+                                     "topological mapping: pass "
+                                     "mapping='topological' together with "
+                                     "the edge, or drop the edge.")
+                if sampler is None:
+                    raise ValueError(
+                        "The surface mapping samples the mirrored weights "
+                        "through a temporary skinCluster transfer: pass "
+                        "sampler=blendshape_transfer_tools."
+                        "sample_mirrored_weight_maps (the editor does this "
+                        "automatically) or use "
+                        "mapping='geometric'.")
+                sampled_maps = sampler(mesh_name=mesh_shape,
+                                       blendshape_name=blendshape_name,
+                                       weight_ids=weight_ids,
+                                       mirror_axis=MIRROR_AXES[axis_index],
+                                       symmetry_centre=symmetry_centre,
+                                       progress=pairing_progress)
+                falloff_coordinates = coordinates
+            elif mapping is MirrorMapping.TOPOLOGICAL:
+                topological_mapping = get_mesh_topological_symmetry_map(
+                    mesh_shape,
+                    symmetry_edge,
+                    progress=pairing_progress,
+                    show_progress=False)
+                vertex_mapping = np.array(
+                    [-1 if vertex_id is None else int(vertex_id)
+                     for vertex_id in topological_mapping],
+                    dtype=np.int64)
+                if vertex_mapping.size != num_vertices:
+                    raise ValueError(f"Topological symmetry of "
+                                     f"'{mesh_shape}' mapped "
+                                     f"{vertex_mapping.size} vertices but the "
+                                     f"mesh has {num_vertices}.")
+                if not np.any(vertex_mapping >= 0):
+                    raise ValueError(f"Topological symmetry of '{mesh_shape}' "
+                                     f"paired no vertex: check that "
+                                     f"symmetry_edge lies on the symmetry "
+                                     f"line of the mesh.")
+                # A topological pairing makes no assumption about the shape of
+                # the mesh, so the falloff is read from the symmetrized
+                # positions of the pairs; unpaired vertices are filtered out
+                # and keep their values.
+                falloff_coordinates = compute_symmetrized_mirror_coordinates(
+                    coordinates, vertex_mapping, symmetry_centre)
+            else:
+                if symmetry_edge is not None:
+                    raise ValueError("symmetry_edge is only used by the "
+                                     "topological mapping: pass "
+                                     "mapping='topological' together with the "
+                                     "edge, or drop the edge.")
+                vertex_mapping = compute_geometric_symmetry_map(
+                    points,
+                    mirror_axis,
+                    tolerance=tolerance,
+                    symmetry_centre=symmetry_centre,
+                    progress=pairing_progress)
+                falloff_coordinates = coordinates
+
+            falloff = compute_mirror_falloff_weights(falloff_coordinates,
+                                                     float(coordinates.min()),
+                                                     float(coordinates.max()),
+                                                     mirror_direction,
+                                                     mirror_blend_falloff)
+
+            # Maya refuses to edit the weight map of the target being sculpted.
+            sculpt_ids = _get_sculpt_target_ids(blendshape_name)
+            active_sculpt_id = next((i for i in sculpt_ids if i >= 0), None)
+            if active_sculpt_id is not None:
+                cmds.sculptTarget(blendshape_name, edit=True, t=-1)
+
+            # Read and mirror every map first: cancelling the bar therefore
+            # never leaves a half mirrored blendshape behind.
+            try:
+                for staged, target_id in enumerate(weight_ids, start=1):
+                    update(status=f"Mirroring weight map {target_id} of "
+                                  f"'{blendshape_name}'...")
+                    values = _get_weight_map_values(blendshape_name, target_id,
+                                                    num_vertices)
+                    if mapping is MirrorMapping.SURFACE:
+                        staged_maps[target_id] = blend_mirrored_weight_map_values(
+                            values,
+                            sampled_maps.get(target_id, values),
+                            falloff,
+                            action)
+                    else:
+                        staged_maps[target_id] = mirror_weight_map_values(
+                            values, vertex_mapping, falloff, action)
+                    update(progress=num_vertices + staged)
+            finally:
+                if active_sculpt_id is not None:
+                    cmds.sculptTarget(blendshape_name, edit=True,
+                                      t=active_sculpt_id)
+
+            for written, (target_id, values) in enumerate(
+                    staged_maps.items(), start=1):
+                # The writes are not interruptable: every map is already
+                # mirrored, so stopping between two of them would only leave
+                # an inconsistent result behind.
+                update(status=f"Writing weight map {target_id} of "
+                              f"'{blendshape_name}'...",
+                       progress=num_vertices + len(staged_maps) + written,
+                       poll=False)
+                _set_weight_map_values(blendshape_name, target_id, values)
+    except MirrorCancelled:
+        cmds.warning(f"Mirroring '{blendshape_name}' was cancelled: no weight "
+                     f"map was changed.")
+        return {}
+
+    mirrored_maps = staged_maps
+
+    if vertex_mapping is None:
+        return mirrored_maps
 
     unmapped = int(np.count_nonzero(vertex_mapping < 0))
     # The topological helper already reports its unmapped vertices and

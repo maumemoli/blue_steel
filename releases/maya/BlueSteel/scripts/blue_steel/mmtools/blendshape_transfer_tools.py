@@ -16,10 +16,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence
+from contextlib import nullcontext
 import enum
 from maya import cmds
 from maya.api import OpenMaya as om
+from maya.api import OpenMayaAnim as oma
 
+import numpy as np
+
+from ..api import mayaUtils
 from ..api.blendshape import Blendshape
 from ..api.mayaUtils import undoable
 from ..api.skinCluster import SkinCluster
@@ -786,6 +791,295 @@ def _read_skin_weight_maps(
     return weight_maps
 
 
+def _mesh_dag_path(mesh_name: str) -> "om.MDagPath":
+    """Return the mesh shape DAG path of a transform or shape name.
+
+    Parameters:
+        mesh_name (str): Mesh transform or mesh shape name.
+
+    Returns:
+        om.MDagPath: DAG path of the mesh shape.
+
+    Raises:
+        ValueError: If the node is not a mesh.
+    """
+
+    selection = om.MSelectionList()
+    selection.add(mesh_name)
+    dag_path = selection.getDagPath(0)
+    if dag_path.apiType() == om.MFn.kTransform:
+        dag_path.extendToShape()
+    if dag_path.apiType() != om.MFn.kMesh:
+        raise ValueError(f"Node '{mesh_name}' is not a mesh.")
+    return dag_path
+
+
+def _skin_cluster_fn(skin_cluster: str) -> "oma.MFnSkinCluster":
+    """Return an API 2.0 ``MFnSkinCluster`` for a skinCluster node.
+
+    Parameters:
+        skin_cluster (str): SkinCluster node name.
+
+    Returns:
+        oma.MFnSkinCluster: Function set bound to the node.
+    """
+
+    selection = om.MSelectionList()
+    selection.add(skin_cluster)
+    return oma.MFnSkinCluster(selection.getDependNode(0))
+
+
+def _skin_influence_names(skin_cluster: str) -> list[str]:
+    """Return the influence names of a skinCluster in its own order.
+
+    Parameters:
+        skin_cluster (str): SkinCluster node name.
+
+    Returns:
+        list[str]: Influence names, aligned with the weight lists of the
+        cluster and with the order ``MFnSkinCluster.setWeights`` expects.
+    """
+
+    influence_paths = _skin_cluster_fn(skin_cluster).influenceObjects()
+    return [path.partialPathName() for path in influence_paths]
+
+
+def _full_vertex_component(vertex_count: int) -> "om.MObject":
+    """Build a single indexed component covering every vertex of a mesh.
+
+    Parameters:
+        vertex_count (int): Number of vertices to cover.
+
+    Returns:
+        om.MObject: Mesh vertex component holding ``0 .. vertex_count - 1``.
+    """
+
+    component_fn = om.MFnSingleIndexedComponent()
+    component = component_fn.create(om.MFn.kMeshVertComponent)
+    vertex_count = int(vertex_count)
+    if vertex_count > 0:
+        # ``addElements`` expects an MIntArray; a Python range/list is silently
+        # bound to something else on some Maya versions, which leaves the
+        # component covering only a couple of vertices.
+        elements = om.MIntArray()
+        for vertex_id in range(vertex_count):
+            elements.append(vertex_id)
+        component_fn.addElements(elements)
+    return component
+
+
+def _skin_weights_flat(
+    skin_cluster: str,
+    vertex_count: int,
+    influence_count: int,
+) -> np.ndarray:
+    """Read a skinCluster weight list as a flat ``(vertex, influence)`` array.
+
+    One ``getAttr`` of the whole ``weightList`` range is used instead of
+    ``MFnSkinCluster.getWeights``: it needs no component object and therefore
+    cannot silently return the weights of only a couple of vertices.
+
+    Parameters:
+        skin_cluster (str): SkinCluster to read.
+        vertex_count (int): Number of vertices to read.
+        influence_count (int): Number of influences per vertex.
+
+    Returns:
+        numpy.ndarray: ``vertex_count * influence_count`` weights, vertex major.
+
+    Raises:
+        RuntimeError: If the skinCluster returns a different number of weights.
+    """
+
+    attribute = (f"{skin_cluster}.weightList[0:{int(vertex_count) - 1}]"
+                 f".weights[0:{int(influence_count) - 1}]")
+    values = cmds.getAttr(attribute) or []
+    weights = np.asarray(values, dtype=np.float64).ravel()
+    expected = int(vertex_count) * int(influence_count)
+    if weights.size != expected:
+        # A skinCluster keeps weight lists for removed vertices, so the range
+        # can be longer than the mesh; only a shorter result is an error.
+        if influence_count and weights.size % influence_count == 0 \
+                and weights.size > expected:
+            cmds.warning(
+                f"SkinCluster '{skin_cluster}' holds "
+                f"{weights.size // influence_count} weight lists for "
+                f"{vertex_count} vertices: using the first ones."
+            )
+            weights = weights[:expected]
+        else:
+            raise RuntimeError(
+                f"SkinCluster '{skin_cluster}' returned {weights.size} "
+                f"weights but {expected} were expected for {vertex_count} "
+                f"vertices and {influence_count} influences."
+            )
+    return weights
+
+
+def _joint_influence_indices(
+    skin_cluster: str,
+    joints: Sequence[str],
+) -> list[int]:
+    """Map joints to skinCluster influence indices, in the given order.
+
+    The indices follow ``MFnSkinCluster.influenceObjects()``, which is the
+    order ``MFnSkinCluster.getWeights``/``setWeights`` use.
+
+    Parameters:
+        skin_cluster (str): SkinCluster node name.
+        joints (Sequence[str]): Joints in the wanted order.
+
+    Returns:
+        list[int]: Influence index per joint.
+
+    Raises:
+        RuntimeError: If a joint is not an influence of the skinCluster.
+    """
+
+    influence_lookup: dict[str, int] = {}
+    for index, influence_name in enumerate(_skin_influence_names(skin_cluster)):
+        influence_lookup.setdefault(_name_key(influence_name), index)
+
+    skin_fn = _skin_cluster_fn(skin_cluster)
+    indices: list[int] = []
+    for joint in joints:
+        key = _name_key(joint)
+        if key not in influence_lookup:
+            raise RuntimeError(
+                f"Joint '{joint}' is not an influence of '{skin_cluster}'."
+            )
+        # Prefer the index the cluster reports for the influence object: the
+        # name lookup above only orders the joints, this is what the weight
+        # arrays are laid out with.
+        try:
+            selection = om.MSelectionList()
+            selection.add(joint)
+            indices.append(int(skin_fn.indexForInfluenceObject(
+                selection.getDagPath(0)
+            )))
+        except (RuntimeError, ValueError):
+            indices.append(influence_lookup[key])
+    return indices
+
+
+def _assign_weight_maps_bulk(
+    skin_cluster: str,
+    mesh_name: str,
+    joints: Sequence[str],
+    weight_maps: Sequence[Sequence[float]],
+) -> None:
+    """Write per-target weight maps into a skinCluster in one API call.
+
+    This is the bulk twin of :func:`_assign_weight_maps`, which loops over the
+    vertices with one ``cmds.setAttr`` each. Both leave every influence that is
+    not part of ``joints`` at zero.
+
+    Parameters:
+        skin_cluster (str): SkinCluster to write.
+        mesh_name (str): Mesh the skinCluster deforms.
+        joints (Sequence[str]): Joints aligned with ``weight_maps``.
+        weight_maps (Sequence[Sequence[float]]): Per-target weight maps.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If the map count or map lengths are inconsistent.
+    """
+
+    if len(joints) != len(weight_maps):
+        raise ValueError(
+            "The number of temporary joints and weight maps must match."
+        )
+
+    vertex_count = len(weight_maps[0]) if weight_maps else 0
+    for weight_map in weight_maps:
+        if len(weight_map) != vertex_count:
+            raise ValueError("All source weight maps must have the same length.")
+    if vertex_count == 0:
+        return
+
+    influence_count = len(_skin_influence_names(skin_cluster))
+    if influence_count == 0:
+        raise RuntimeError(f"SkinCluster '{skin_cluster}' has no influences.")
+
+    matrix = np.zeros((vertex_count, influence_count), dtype=np.float64)
+    for influence_index, weight_map in zip(
+        _joint_influence_indices(skin_cluster, joints), weight_maps
+    ):
+        matrix[:, influence_index] = np.asarray(weight_map, dtype=np.float64)
+
+    # ``MFnSkinCluster.setWeights`` wants MIntArray/MDoubleArray arguments; a
+    # plain list is bound as an integer by the API 2.0 wrapper and fails with
+    # "'list' object cannot be interpreted as an integer".
+    influence_indices = om.MIntArray()
+    for influence_index in range(influence_count):
+        influence_indices.append(influence_index)
+
+    try:
+        _skin_cluster_fn(skin_cluster).setWeights(
+            _mesh_dag_path(mesh_name),
+            _full_vertex_component(vertex_count),
+            influence_indices,
+            om.MDoubleArray(matrix.reshape(-1).tolist()),
+            normalize=False,
+        )
+        written = _skin_weights_flat(skin_cluster, vertex_count, influence_count)
+        if np.allclose(written, matrix.reshape(-1), atol=1e-6):
+            return
+        cmds.warning(
+            f"Bulk weight write to '{skin_cluster}' did not match the input: "
+            f"falling back to a per-vertex write."
+        )
+    except RuntimeError as exc:
+        cmds.warning(
+            f"Bulk weight write to '{skin_cluster}' failed ({exc}): falling "
+            f"back to a per-vertex write."
+        )
+
+    # The API path can be unavailable or lossy depending on the Maya version;
+    # the per-vertex write is slower but always correct.
+    _assign_weight_maps(skin_cluster, joints, weight_maps)
+
+
+def _read_skin_weight_maps_bulk(
+    skin_cluster: str,
+    mesh_name: str,
+    joints: Sequence[str],
+    vertex_count: int,
+) -> list[np.ndarray]:
+    """Read per-target weight maps from a skinCluster in one API call.
+
+    This is the bulk twin of :func:`_read_skin_weight_maps`.
+
+    Parameters:
+        skin_cluster (str): SkinCluster to read.
+        mesh_name (str): Mesh the skinCluster deforms.
+        joints (Sequence[str]): Joints in the wanted order.
+        vertex_count (int): Mesh vertex count.
+
+    Returns:
+        list[numpy.ndarray]: ``float64`` weight maps aligned with ``joints``.
+
+    Raises:
+        RuntimeError: If a joint is not an influence of the skinCluster.
+    """
+
+    if vertex_count <= 0:
+        return [np.empty(0, dtype=np.float64) for _ in joints]
+
+    influence_count = len(_skin_influence_names(skin_cluster))
+    if influence_count == 0:
+        raise RuntimeError(f"SkinCluster '{skin_cluster}' has no influences.")
+
+    weights = _skin_weights_flat(skin_cluster, vertex_count, influence_count)
+    matrix = weights.reshape(vertex_count, influence_count)
+    return [
+        matrix[:, influence_index].copy()
+        for influence_index in _joint_influence_indices(skin_cluster, joints)
+    ]
+
+
 def _get_uv_set(mesh_name: str, requested_uv_set: Optional[str]) -> str:
     """Resolve and validate a mesh UV set.
 
@@ -1286,4 +1580,256 @@ def transfer_blendshape_weight_maps(
         _restore_selection(original_selection)
 
 
-__all__ = ["transfer_blendshape_weight_maps"]
+def _resolve_sampled_weight_ids(
+    blendshape_name: str,
+    weight_ids: Optional[Sequence[int]] = None,
+) -> list[int]:
+    """Resolve the target ids a sampling run works on.
+
+    Parameters:
+        blendshape_name (str): BlendShape node name.
+        weight_ids (Sequence[int], optional): Target logical indices to keep.
+            ``None`` selects every ``inputTargetGroup`` of the node.
+
+    Returns:
+        list[int]: One target id per weight map to sample.
+
+    Raises:
+        ValueError: If the node has no weight map or an id is unknown.
+    """
+
+    existing = [int(group) for group in
+                cmds.getAttr(
+                    f"{blendshape_name}.inputTarget[0].inputTargetGroup",
+                    multiIndices=True) or []]
+    if weight_ids is None:
+        if not existing:
+            raise ValueError(f"Blendshape '{blendshape_name}' has no target "
+                             f"weight maps to sample.")
+        return existing
+
+    resolved: list[int] = []
+    for weight_id in weight_ids:
+        resolved_id = int(weight_id)
+        if resolved_id not in existing:
+            raise ValueError(
+                f"Weight id {resolved_id} of '{blendshape_name}' has no weight "
+                f"map (existing weight maps: {existing or 'none'})."
+            )
+        resolved.append(resolved_id)
+    if not resolved:
+        raise ValueError("No weight map selected to sample.")
+    return resolved
+
+
+def _mirror_mesh_points(
+    mesh_name: str,
+    axis_index: int,
+    symmetry_centre: Optional[float] = None,
+) -> None:
+    """Mirror the points of a mesh in place across one object-space axis.
+
+    Parameters:
+        mesh_name (str): Mesh transform or shape to mirror.
+        axis_index (int): ``0`` for X, ``1`` for Y, ``2`` for Z.
+        symmetry_centre (float, optional): Axis coordinate of the mirror plane.
+            Defaults to the centre of the bounding box along the axis.
+
+    Returns:
+        None
+    """
+
+    mesh_fn = om.MFnMesh(_mesh_dag_path(mesh_name))
+    points = mesh_fn.getPoints(om.MSpace.kObject)
+    if len(points) == 0:
+        return
+    coordinates = [point[axis_index] for point in points]
+    centre = (float(symmetry_centre) if symmetry_centre is not None
+              else (min(coordinates) + max(coordinates)) / 2.0)
+
+    # Build a fresh MPointArray instead of editing the MPoint objects in place:
+    # MPoint's item assignment is not available on every Maya version this
+    # package supports, while the constructor always is.
+    mirrored_points = om.MPointArray()
+    for point in points:
+        components = [point[0], point[1], point[2]]
+        components[axis_index] = 2.0 * centre - components[axis_index]
+        mirrored_points.append(
+            om.MPoint(components[0], components[1], components[2])
+        )
+    mesh_fn.setPoints(mirrored_points, om.MSpace.kObject)
+
+
+def sample_mirrored_weight_maps(
+    mesh_name: str,
+    blendshape_name: str,
+    weight_ids: Optional[Sequence[int]] = None,
+    mirror_axis: str = "x",
+    symmetry_centre: Optional[float] = None,
+    progress=None,
+    show_progress: bool = True,
+) -> dict[int, np.ndarray]:
+    """Sample the weight maps of a blendShape at their mirrored positions.
+
+    Every vertex of ``mesh_name`` is reflected across the plane perpendicular to
+    ``mirror_axis`` and the weight maps are read back from the surface at those
+    reflected positions, so an asymmetric mesh still receives the weights of its
+    opposite side. The sampling is done by Maya itself: two history-free
+    duplicates get a temporary skinCluster whose joints stand for the
+    blendShape targets, the source maps are written into the source cluster and
+    one ``copySkinWeights`` call (``surfaceAssociation="closestPoint"``)
+    transfers all of them onto the mirrored duplicate at once.
+
+    This is the sampled twin of the vertex pairing in
+    ``mayaUtils.mirror_blendshape_weight_map``: instead of pairing vertex ids it
+    interpolates the weights of the triangle the reflected position lands on,
+    which is both faster on dense meshes and smooth on meshes that are not
+    exactly symmetric.
+
+    Parameters:
+        mesh_name (str): Mesh transform or shape that owns the weight maps. It
+            has to be the base mesh of ``blendshape_name``.
+        blendshape_name (str): BlendShape node owning the weight maps.
+        weight_ids (Sequence[int], optional): Target logical indices to sample.
+            ``None`` samples every ``inputTargetGroup`` weight map of the node.
+        mirror_axis (str): Object-space axis of the mirror, ``"x"`` (default),
+            ``"y"`` or ``"z"``.
+        symmetry_centre (float, optional): Axis coordinate of the mirror plane.
+            Defaults to the centre of the bounding box along the axis.
+        progress (callable, optional): Called as ``progress(done, total)`` while
+            the transfer runs, so a caller can drive a progress bar.
+        show_progress (bool): Whether Maya's main progress bar is shown when no
+            ``progress`` callback is given. Defaults to ``True``.
+
+    Returns:
+        dict[int, numpy.ndarray]: ``{weight_id: sampled values}`` with one
+        ``float64`` value per vertex of ``mesh_name``.
+
+    Raises:
+        ValueError: If the mesh, the blendShape or a weight id is invalid, or if
+            ``mesh_name`` is not the base mesh of ``blendshape_name``.
+        RuntimeError: If the temporary skinCluster transfer fails.
+        mayaUtils.MirrorCancelled: When the shown progress bar is cancelled.
+
+    Example:
+        >>> sampled = sample_mirrored_weight_maps("head_geo", "head_blendShapes",
+        ...                                       weight_ids=[3])
+        >>> sampled[3].shape
+        (41281,)
+    """
+
+    axis_index = mayaUtils._mirror_axis_index(mirror_axis)
+    source_transform, source_shape = _get_mesh_transform_and_shape(mesh_name)
+    vertex_count = _vertex_count(source_shape)
+    if vertex_count == 0:
+        raise ValueError(f"Mesh '{mesh_name}' has no vertices to sample.")
+
+    if not cmds.objExists(blendshape_name):
+        raise ValueError(f"Blendshape node '{blendshape_name}' does not exist.")
+    if cmds.nodeType(blendshape_name) != "blendShape":
+        raise ValueError(f"'{blendshape_name}' is not a blendShape node.")
+
+    base_nodes = cmds.blendShape(blendshape_name, query=True, geometry=True) or []
+    if not base_nodes:
+        raise ValueError(f"Blendshape '{blendshape_name}' has no base mesh.")
+    if not _base_matches_source(base_nodes, source_transform, source_shape):
+        raise ValueError(
+            f"Mesh '{mesh_name}' is not the base mesh of "
+            f"'{blendshape_name}': its weight maps belong to "
+            f"'{base_nodes[0]}'."
+        )
+
+    resolved_ids = _resolve_sampled_weight_ids(blendshape_name, weight_ids)
+    target_names = [_get_target_name(blendshape_name, target_id)
+                    for target_id in resolved_ids]
+    blendshape = Blendshape(blendshape_name)
+    source_weight_maps = [
+        _get_source_weight_map(blendshape, target_id, vertex_count)
+        for target_id in resolved_ids
+    ]
+    original_selection = cmds.ls(selection=True) or []
+
+    total_steps = 4 + len(resolved_ids)
+    if progress is not None:
+        progress_context = nullcontext(mayaUtils._noop_progress_update)
+    elif show_progress:
+        progress_context = mayaUtils.main_progress_bar(
+            f"Sampling mirrored weights of '{blendshape_name}'...",
+            total_steps,
+        )
+    else:
+        progress_context = nullcontext(mayaUtils._noop_progress_update)
+
+    source_duplicate: Optional[str] = None
+    destination_duplicate: Optional[str] = None
+    source_skin: Optional[str] = None
+    destination_skin: Optional[str] = None
+    source_joints: list[str] = []
+    destination_joints: list[str] = []
+    source_namespace: Optional[str] = None
+    destination_namespace: Optional[str] = None
+
+    with progress_context as update:
+        def report(step, status):
+            """Advance the bar, or the caller's own progress callback."""
+            if progress is not None:
+                progress(step, total_steps)
+            else:
+                update(status=status, progress=step)
+
+        try:
+            report(0, "Preparing the transfer...")
+            (source_duplicate, source_skin, source_joints,
+             source_namespace) = _create_temp_side(
+                source_transform, vertex_count, target_names, "mirS"
+            )
+            report(1, "Preparing the source weights...")
+            _assign_weight_maps_bulk(
+                source_skin, source_duplicate, source_joints,
+                source_weight_maps
+            )
+
+            report(2, "Preparing the mirrored mesh...")
+            (destination_duplicate, destination_skin, destination_joints,
+             destination_namespace) = _create_temp_side(
+                source_transform, vertex_count, target_names, "mirD"
+            )
+            _mirror_mesh_points(destination_duplicate, axis_index,
+                                symmetry_centre)
+
+            report(3, "Sampling the mirrored weights...")
+            _copy_skin_weights(
+                source_skin,
+                destination_skin,
+                "map1",
+                "map1",
+                WeightsTransferMethod.CLOSEST_POINT,
+            )
+
+            report(4, "Reading the sampled weights...")
+            sampled_maps = _read_skin_weight_maps_bulk(
+                destination_skin, destination_duplicate, destination_joints,
+                vertex_count
+            )
+        finally:
+            _cleanup_temp_side(
+                source_skin, source_joints, source_duplicate, source_namespace
+            )
+            _cleanup_temp_side(
+                destination_skin,
+                destination_joints,
+                destination_duplicate,
+                destination_namespace,
+            )
+            _restore_selection(original_selection)
+
+    for weight_id, values in zip(resolved_ids, sampled_maps):
+        if values.size != vertex_count:
+            raise RuntimeError(
+                f"Sampled weight map {weight_id} of '{blendshape_name}' has "
+                f"{values.size} values but the mesh has {vertex_count}."
+            )
+    return dict(zip(resolved_ids, sampled_maps))
+
+
+__all__ = ["sample_mirrored_weight_maps", "transfer_blendshape_weight_maps"]

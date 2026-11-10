@@ -168,9 +168,10 @@ class MirrorMappingTests(unittest.TestCase):
     def test_mapping_enum(self):
         """Mapping members are strings and default to the geometric map."""
         self.assertEqual(mayaUtils.MIRROR_MAPPINGS,
-                         ("geometric", "topological"))
+                         ("geometric", "topological", "surface"))
         self.assertEqual(str(mayaUtils.MirrorMapping.TOPOLOGICAL),
                          "topological")
+        self.assertEqual(str(mayaUtils.MirrorMapping.SURFACE), "surface")
         self.assertEqual(mayaUtils.MirrorMapping.GEOMETRIC, "geometric")
         self.assertEqual(mayaUtils._coerce_mapping(),
                          mayaUtils.MirrorMapping.GEOMETRIC)
@@ -179,6 +180,8 @@ class MirrorMappingTests(unittest.TestCase):
             mayaUtils.MirrorMapping.TOPOLOGICAL)
         self.assertEqual(mayaUtils._coerce_mapping(" TOPOLOGICAL "),
                          mayaUtils.MirrorMapping.TOPOLOGICAL)
+        self.assertEqual(mayaUtils._coerce_mapping("surface"),
+                         mayaUtils.MirrorMapping.SURFACE)
 
     def test_invalid_mapping(self):
         """Unknown mappings raise a ValueError listing the accepted ones."""
@@ -189,6 +192,33 @@ class MirrorMappingTests(unittest.TestCase):
         for mapping in ("", None, 2, False):
             with self.assertRaises(ValueError):
                 mayaUtils._coerce_mapping(mapping)
+
+
+class MainProgressBarTests(unittest.TestCase):
+    """Tests for ``main_progress_bar`` and the cancellation plumbing."""
+
+    def test_noop_without_maya_progress_bar(self):
+        """The bar degrades to a no-op when Maya cannot provide it."""
+        with mayaUtils.main_progress_bar("Mirroring", 10) as update:
+            # The Maya stubs of this module have no ``mel`` module, so the
+            # callback must neither raise nor report anything.
+            self.assertIsNone(update(status="step", step=1))
+            self.assertIsNone(update(progress=4, poll=False))
+
+    def test_geometric_progress_is_monotonic(self):
+        """The geometric pairing reports every block and ends at the total."""
+        points = _plane(5, 3)
+        reports = []
+        mayaUtils.compute_geometric_symmetry_map(
+            points, "x", progress=lambda done, total: reports.append((done, total)))
+
+        self.assertTrue(reports)
+        total = reports[0][1]
+        self.assertTrue(all(report[1] == total for report in reports))
+        dones = [done for done, _total in reports]
+        self.assertEqual(dones, sorted(dones))
+        self.assertEqual(dones[0], 0)
+        self.assertEqual(dones[-1], total)
 
 
 class GeometricSymmetryMapTests(unittest.TestCase):
@@ -421,6 +451,55 @@ class SymmetrizedCoordinateTests(unittest.TestCase):
             mayaUtils.compute_symmetrized_mirror_coordinates([0.0, 1.0], [2, 0])
 
 
+class BlendMirroredValuesTests(unittest.TestCase):
+    """Tests for ``blend_mirrored_weight_map_values``."""
+
+    def test_mirror_blends_by_falloff(self):
+        """A zero falloff keeps the value, a full falloff takes the mirror."""
+        result = mayaUtils.blend_mirrored_weight_map_values(
+            [0.2, 0.8], [0.9, 0.1], [0.0, 1.0])
+        np.testing.assert_allclose(result, [0.2, 0.1])
+
+        half = mayaUtils.blend_mirrored_weight_map_values(
+            [0.2, 0.8], [0.9, 0.1], [0.5, 0.5])
+        np.testing.assert_allclose(half, [0.55, 0.45])
+
+    def test_missing_falloff_takes_the_mirror(self):
+        """Without a falloff the sampled value fully replaces the old one."""
+        result = mayaUtils.blend_mirrored_weight_map_values(
+            [0.25, 0.75], [0.75, 0.25])
+        np.testing.assert_allclose(result, [0.75, 0.25])
+
+    def test_flip_swaps_both_sides(self):
+        """Flip swaps the values and half mixes them on the band."""
+        swapped = mayaUtils.blend_mirrored_weight_map_values(
+            [0.2, 0.8], [0.8, 0.2], [1.0, 1.0], "flip")
+        np.testing.assert_allclose(swapped, [0.8, 0.2])
+
+        mixed = mayaUtils.blend_mirrored_weight_map_values(
+            [0.2, 0.8], [0.8, 0.2], [0.5, 0.5], "flip")
+        np.testing.assert_allclose(mixed, [0.5, 0.5])
+
+    def test_does_not_mutate_its_arguments(self):
+        """The input lists are left untouched."""
+        values = [0.2, 0.8]
+        mirrored = [0.8, 0.2]
+        mayaUtils.blend_mirrored_weight_map_values(values, mirrored, [1.0, 1.0])
+        self.assertEqual(values, [0.2, 0.8])
+        self.assertEqual(mirrored, [0.8, 0.2])
+
+    def test_invalid_input(self):
+        """Mismatched lengths and unknown actions raise a ValueError."""
+        with self.assertRaises(ValueError):
+            mayaUtils.blend_mirrored_weight_map_values([0.0, 1.0], [0.0])
+        with self.assertRaises(ValueError):
+            mayaUtils.blend_mirrored_weight_map_values(
+                [0.0, 1.0], [1.0, 0.0], [0.0])
+        with self.assertRaises(ValueError):
+            mayaUtils.blend_mirrored_weight_map_values(
+                [0.0, 1.0], [1.0, 0.0], [1.0, 1.0], "swap")
+
+
 class MirrorWeightMapTests(unittest.TestCase):
     """Tests for ``mirror_weight_map_values``."""
 
@@ -478,6 +557,60 @@ class MirrorWeightMapTests(unittest.TestCase):
             mayaUtils.mirror_weight_map_values([0.0], [3])
 
 
+class SculptingContextTests(unittest.TestCase):
+    """Tests for ``non_sculpting_context``."""
+
+    def setUp(self):
+        from unittest import mock
+
+        self.cmds = _FakeCmds()
+        self._patcher = mock.patch.object(mayaUtils, "cmds", self.cmds)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
+    def test_sculpt_context_is_parked_and_restored(self):
+        """A sculpt context is left for the block and reinstated after it."""
+        self.cmds.current_context = "sculptMeshCacheContext"
+        with mayaUtils.non_sculpting_context() as context:
+            self.assertEqual(context, "sculptMeshCacheContext")
+            self.assertEqual(self.cmds.current_context, "selectSuperContext")
+
+        self.assertEqual(self.cmds.current_context, "sculptMeshCacheContext")
+        self.assertEqual(self.cmds.tool_history,
+                         ["selectSuperContext", "sculptMeshCacheContext"])
+
+    def test_blendshape_paint_context_is_parked(self):
+        """The blendShape paint context is handled like the sculpt one."""
+        self.cmds.current_context = "artAttrBlendShapeContext"
+        with mayaUtils.non_sculpting_context():
+            self.assertEqual(self.cmds.current_context, "selectSuperContext")
+        self.assertEqual(self.cmds.current_context, "artAttrBlendShapeContext")
+
+    def test_other_contexts_are_untouched(self):
+        """A non sculpt context is passed through without switching tools."""
+        self.cmds.current_context = "moveSuperContext"
+        with mayaUtils.non_sculpting_context() as context:
+            self.assertEqual(context, "moveSuperContext")
+        self.assertEqual(self.cmds.tool_history, [])
+
+    def test_context_is_restored_after_a_failure(self):
+        """The previous context comes back even when the block raises."""
+        self.cmds.current_context = "sculptMeshCacheContext"
+        with self.assertRaises(RuntimeError):
+            with mayaUtils.non_sculpting_context():
+                raise RuntimeError("boom")
+        self.assertEqual(self.cmds.current_context, "sculptMeshCacheContext")
+
+    def test_unknown_context_is_safe(self):
+        """A missing context query does not break the context manager."""
+        self.cmds.currentCtx = None
+        with mayaUtils.non_sculpting_context() as context:
+            self.assertIsNone(context)
+        self.assertEqual(self.cmds.tool_history, [])
+
+
 class _FakePlug:
     """Minimal stand-in for ``OpenMaya.MPlug`` with no elements."""
 
@@ -500,9 +633,18 @@ class _FakeCmds:
         self.connections = {}
         self.sculpt_targets = {}
         self.set_calls = []
+        self.current_context = "selectSuperContext"
+        self.tool_history = []
 
     def warning(self, message):
         self.warnings.append(message)
+
+    def currentCtx(self):
+        return self.current_context
+
+    def setToolTo(self, tool_name):
+        self.tool_history.append(tool_name)
+        self.current_context = tool_name
 
     def undoInfo(self, **kwargs):
         pass
@@ -706,7 +848,8 @@ class MirrorBlendshapeWeightMapTests(unittest.TestCase):
         topological = self._topological_mapping()
         calls = []
 
-        def fake_topological_map(mesh_name, edge=None):
+        def fake_topological_map(mesh_name, edge=None, progress=None,
+                                 show_progress=True):
             calls.append((mesh_name, edge))
             return list(topological)
 
@@ -743,7 +886,8 @@ class MirrorBlendshapeWeightMapTests(unittest.TestCase):
                                lambda name: points.copy()), \
                 mock.patch.object(mayaUtils,
                                   "get_mesh_topological_symmetry_map",
-                                  lambda name, edge=None: list(topological)):
+                                  lambda name, edge=None, progress=None,
+                                  show_progress=True: list(topological)):
             result = mayaUtils.mirror_blendshape_weight_map(
                 self.mesh, self.blendshape, weight_id=0,
                 mapping=mayaUtils.MirrorMapping.TOPOLOGICAL,
@@ -782,13 +926,119 @@ class MirrorBlendshapeWeightMapTests(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.object(mayaUtils, "get_mesh_topological_symmetry_map",
-                               lambda name, edge=None:
+                               lambda name, edge=None, progress=None,
+                               show_progress=True:
                                [None] * self.num_vertices):
             with self.assertRaises(ValueError) as raised:
                 mayaUtils.mirror_blendshape_weight_map(
                     self.mesh, self.blendshape, weight_id=0,
                     mapping="topological")
         self.assertIn("paired no vertex", str(raised.exception))
+        self.assertEqual(self.cmds.set_calls, [])
+
+    def test_cancel_leaves_the_weight_maps_untouched(self):
+        """Cancelling the progress bar writes nothing and returns {}."""
+        from unittest import mock
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_progress_bar(*_args, **_kwargs):
+            def update(**_update_kwargs):
+                raise mayaUtils.MirrorCancelled("cancelled")
+            yield update
+
+        with mock.patch.object(mayaUtils, "main_progress_bar",
+                               fake_progress_bar):
+            result = mayaUtils.mirror_blendshape_weight_map(
+                self.mesh, self.blendshape, weight_id=0)
+
+        self.assertEqual(result, {})
+        self.assertEqual(self.cmds.set_calls, [])
+        self.assertTrue(any("cancelled" in warning
+                            for warning in self.cmds.warnings))
+
+    def test_surface_mapping_needs_a_sampler(self):
+        """The sampled mapping explains that it needs the surface sampler."""
+        with self.assertRaises(ValueError) as raised:
+            mayaUtils.mirror_blendshape_weight_map(
+                self.mesh, self.blendshape, weight_id=0, mapping="surface")
+        self.assertIn("sampler", str(raised.exception))
+        self.assertEqual(self.cmds.set_calls, [])
+
+    def test_surface_mapping_blends_the_sampled_values(self):
+        """A sampler's values are blended like a mirrored weight map."""
+        from unittest import mock
+
+        sampled = np.full(self.num_vertices, 0.25, dtype=np.float64)
+        calls = {}
+
+        def fake_sampler(**kwargs):
+            calls.update(kwargs)
+            return {0: sampled}
+
+        before = list(self.cmds.weight_maps[(self.blendshape, 0)])
+        with mock.patch.object(mayaUtils, "compute_geometric_symmetry_map",
+                               side_effect=AssertionError("no pairing")):
+            result = mayaUtils.mirror_blendshape_weight_map(
+                self.mesh, self.blendshape, weight_id=0,
+                mapping="surface", sampler=fake_sampler)
+
+        self.assertEqual(calls["mesh_name"], self.mesh)
+        self.assertEqual(calls["blendshape_name"], self.blendshape)
+        self.assertEqual(calls["weight_ids"], [0])
+        self.assertEqual(calls["mirror_axis"], "x")
+        self.assertTrue(callable(calls["progress"]))
+
+        coordinates = self.points[:, 0]
+        falloff = mayaUtils.compute_mirror_falloff_weights(
+            coordinates, float(coordinates.min()), float(coordinates.max()))
+        expected = mayaUtils.blend_mirrored_weight_map_values(
+            before, sampled, falloff)
+        self.assertTrue(np.allclose(result[0], expected))
+        self.assertTrue(np.allclose(
+            self.cmds.weight_maps[(self.blendshape, 0)], expected))
+
+    def test_surface_mapping_rejects_the_symmetry_edge(self):
+        """The sampled mapping does not use a symmetry edge."""
+        with self.assertRaises(ValueError) as raised:
+            mayaUtils.mirror_blendshape_weight_map(
+                self.mesh, self.blendshape, weight_id=0, mapping="surface",
+                symmetry_edge="head.e[12]",
+                sampler=lambda **_kwargs: {0: np.zeros(self.num_vertices)})
+        self.assertIn("symmetry_edge", str(raised.exception))
+        self.assertEqual(self.cmds.set_calls, [])
+
+    def test_sculpt_context_is_restored_around_the_mirror(self):
+        """A sculpt context is parked for the mirror and restored after it."""
+        self.cmds.current_context = "artAttrBlendShapeContext"
+
+        mayaUtils.mirror_blendshape_weight_map(
+            self.mesh, self.blendshape, weight_id=0)
+
+        self.assertEqual(self.cmds.current_context, "artAttrBlendShapeContext")
+        self.assertEqual(self.cmds.tool_history,
+                         ["selectSuperContext", "artAttrBlendShapeContext"])
+        self.assertEqual(len(self.cmds.set_calls), 1)
+
+    def test_sculpt_context_is_restored_after_a_cancel(self):
+        """Cancelling the mirror still reinstates the paint context."""
+        from unittest import mock
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_progress_bar(*_args, **_kwargs):
+            def update(**_update_kwargs):
+                raise mayaUtils.MirrorCancelled("cancelled")
+            yield update
+
+        self.cmds.current_context = "sculptMeshCacheContext"
+        with mock.patch.object(mayaUtils, "main_progress_bar",
+                               fake_progress_bar):
+            result = mayaUtils.mirror_blendshape_weight_map(
+                self.mesh, self.blendshape, weight_id=0)
+
+        self.assertEqual(result, {})
+        self.assertEqual(self.cmds.current_context, "sculptMeshCacheContext")
         self.assertEqual(self.cmds.set_calls, [])
 
     def test_connected_weight_map_raises(self):
