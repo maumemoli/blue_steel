@@ -32,6 +32,7 @@ from .models import (
 )
 from .qt import (
     QAction,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QIcon,
@@ -230,6 +231,9 @@ class MainWindow(
         self._split_map_weight_buttons_expanded_width = 0
         self._split_map_weight_operation_buttons: List[QPushButton] = []
         self._split_map_weight_paste_operation_buttons: List[QPushButton] = []
+        self._mirror_weights_dialog: Optional[QDialog] = None
+        self._mirror_weights_settings: Optional[dict] = None
+        self._mirror_weight_target: Optional[str] = None
 
         self.destroyed.connect(self._on_window_destroyed)
 

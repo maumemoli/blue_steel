@@ -119,6 +119,7 @@ All files live in `blue_steel/ui/editor/`.
 | `workShapesFeatureMixin.py` | Work-shapes panel behavior. |
 | `editorOpsMixin.py` | Menu-bar actions and import/export operations. |
 | `importSplitDataDialog.py` | Split data import dialog (path, transfer method, payload). |
+| `mirrorWeightsDialog.py` | Non-modal Split Map Editor mirror options dialog (action, axis, direction, falloff, mapping, tolerance, symmetry edge). |
 
 ---
 
@@ -647,7 +648,8 @@ Shared base and utilities for all feature mixins.
 - `_on_split_group_map_selected(split_map_name)` / `_on_split_group_selection_changed(group_name)` / `_on_split_map_selection_changed(split_map_name)`
 - `_check_split_maps_normalization(split_map_name=None)`
 - `_show_split_maps_context_menu(pos)` / `_show_split_map_weights_context_menu(pos)`
-- `_run_split_weight_map_operation(method_name, status_verb, weight_name="")`
+- `_run_split_weight_map_operation(method_name, status_verb, weight_name="")` / `_split_map_weight_name()`
+- `_on_mirror_split_weight_map_clicked()` / `_ensure_mirror_weights_dialog()` / `_on_mirror_weights_accepted()` / `_close_mirror_weights_dialog()` / `_clear_mirror_weights_dialog_ref()` — the **Mirror Weight Map** button and context-menu entry of the split-map weight operations row; the button sits after the paste buttons, uses `MIRROR_WEIGHTS_ICON`, follows the edit-mode + weight-selection enable rule, and keeps a single non-modal `MirrorWeightsDialog` alive while remembering its last accepted `state()`.
 - `_on_normalize_split_map_weights_requested()`
 - `_on_create_split_group_clicked()` / `_on_remove_split_group_clicked()` / `_on_rename_split_group_clicked()`
 - `_on_split_group_maps_changed(split_groups)` / `_on_split_group_map_dragged_out(group_name, map_name)`
@@ -703,6 +705,65 @@ Shared base and utilities for all feature mixins.
 - `_toggle_exploded_container_action_state(collapsed)` / `_toggle_node_editor_container_view()`
 - `_on_connect_simplex_controller_requested()` / `_on_simplex_converter_requested()` / `_on_prepare_for_publishing_requested()`
 - `show_about()`
+
+---
+
+### `mirrorWeightsDialog.py`
+
+Non-modal tool window (`Qt.Tool`) that collects the options of a split weight
+map mirror and hands them to
+`BlueSteelEditor.mirror_edit_split_weight_map_values()`. It is kept as one
+instance by `SplitSettingsUiMixin` and only collects settings; the mixin runs
+the mirror when the dialog is accepted.
+
+**Module-level API**
+
+- `MIRROR_ACTION_ITEMS` / `MIRROR_AXIS_ITEMS` / `MIRROR_DIRECTION_ITEMS` /
+`MIRROR_MAPPING_ITEMS` — ordered `(enum member, label)` tuples for the combos.
+- `DEFAULT_MIRROR_SETTINGS` — Mirror / X / Left → Right / 20 % falloff /
+`DEFAULT_MIRROR_TOLERANCE` / object-space mapping / no edge.
+- `_set_combo_value(combo, value)` / `_fill_combo(combo, items)` — combo
+helpers that select by item data.
+
+**Classes**
+
+- `MirrorWeightsDialog(QDialog)`
+  - `__init__(parent=None, settings=None)`
+  - `state()` — raw dialog options, including the falloff percentage even for
+flip (used to remember them between openings).
+  - `settings()` — editor API keyword arguments (`action`, `mirror_axis`,
+`mirror_direction`, `mirror_blend_falloff` as a `0..1` fraction, `tolerance`,
+`mapping`, `symmetry_edge`); the falloff is forced to `0.0` for flip.
+  - `set_settings(settings)` / `set_target_shape(shape_name)` /
+`target_shape()`
+  - `selected_edge()` / `pick_edge_from_selection()` — the picked edge (a
+`"mesh.e[12]"` component) and a non-raising reader of the current Maya edge
+selection.
+  - `_build_ui()` / `_refresh_state()` / `_set_row_enabled(field, label,
+enabled)` / `_hint_text(topological, flip)`
+  - `_on_pick_edge_clicked()` / `_on_clear_edge_clicked()` /
+`_on_mapping_changed(_index)`
+  - `_arm_edge_selection()` / `_remember_selection_mode()` /
+`_restore_selection_mode()` / `closeEvent(event)`
+
+**Behaviour**
+
+- Being a tool window the dialog does not block Maya, so an edge can be
+selected in the viewport and picked with **Pick Selected Edge**; leaving the
+edge empty makes the editor API fall back to the selected edge.
+- **Pick Selected Edge** grabs an edge that is already selected; when the
+selection holds no edge it switches Maya to component/edge selection mode
+(`_arm_edge_selection`) and the hint asks for a second press. The previous
+selection mode and component mask are restored after a successful pick and
+from `closeEvent`.
+- Greying: **Direction** and **Falloff** are disabled for the flip action
+(flip swaps both sides with a hard edge), the tolerance only applies to the
+object-space mapping and the edge row only to the topological one. The row
+labels are greyed out with their fields.
+- Leaving the topological mapping clears the picked symmetry edge, because it
+belongs to the topology of one mesh; `_previous_mapping` tracks the change.
+- The falloff is shown as a percentage (`0`–`100`, one decimal) and converted
+back to the `0..1` fraction the API expects.
 
 ---
 
@@ -859,6 +920,7 @@ to the selected work shapes.
 | Sliders Drop Box | `views.py::PrimaryDropTreeWidget`, `shapesFeatureMixin.py::_rebuild_primary_drop_tree` / `_apply_primary_drop_tree_filter` |
 | Work shapes | `views.py::WorkShapesListView` (item-based tree), `workShapesFeatureMixin.py`, `api/treeViewOrderingManager.py` |
 | Split maps/groups/weights | `splitSettingsUiMixin.py`, `widgets.py::SplitMapsTree/SplitGroupsTree` |
+| Mirror a split weight map | `splitSettingsUiMixin.py::_on_mirror_split_weight_map_clicked`, `mirrorWeightsDialog.py`, `api/editor.py::mirror_edit_split_weight_map_values` |
 | Controller layout designer | `controllerLayoutWindow.py` |
 | Scene/editor lifecycle & trackers | `editorSessionMixin.py`, `api/trackers.py` |
 | Status bar / window title | `mainWindow.py::_set_status`, `editorSessionMixin.py::_update_window_title` |

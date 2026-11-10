@@ -32,6 +32,7 @@ from ..common.icons import (
     PASTE_ADD_WEIGHTS_ICON,
     PASTE_MINUS_WEIGHTS_ICON,
     PASTE_MULTIPLY_WEIGHTS_ICON,
+    MIRROR_WEIGHTS_ICON,
     SOFT_MOD_ICON,
     SPLIT_ICON,
 )
@@ -39,6 +40,7 @@ from .constants import (
     SPLITTER_HANDLE_WIDTH,
 )
 from .mainWindowMixin import MainWindowMixin
+from .mirrorWeightsDialog import MirrorWeightsDialog
 from .delegates import SliderItemDelegate, SplitMapWeightSliderDelegate
 from .models import (
     ShapeItemsModel,
@@ -352,6 +354,18 @@ class SplitSettingsUiMixin(MainWindowMixin):
             if requires_copy:
                 self._split_map_weight_paste_operation_buttons.append(button)
             split_map_weight_operations.addWidget(button)
+        self.split_map_weight_mirror_button = QPushButton()
+        self.split_map_weight_mirror_button.setIcon(MIRROR_WEIGHTS_ICON)
+        self.split_map_weight_mirror_button.setIconSize(self._tools_panel_expanded_icon_size)
+        self.split_map_weight_mirror_button.setFixedSize(26, 26)
+        self.split_map_weight_mirror_button.setToolTip("Mirror Weight Map (chooses the mirror options)")
+        self.split_map_weight_mirror_button.clicked.connect(
+            lambda _checked=False: self._on_mirror_split_weight_map_clicked()
+        )
+        # Mirrors the weight map in place, so it follows the edit-mode and
+        # weight-selection enable rule of the other in-place operations.
+        self._split_map_weight_operation_buttons.append(self.split_map_weight_mirror_button)
+        split_map_weight_operations.addWidget(self.split_map_weight_mirror_button)
         split_map_weight_operations.addStretch(1)
         split_map_weights_column.addLayout(split_map_weight_operations)
         split_map_weights_column.addWidget(self.split_map_weights_list, 1)
@@ -415,6 +429,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
             return
         self._split_settings_refresh_pending = False
         if self.current_editor is None:
+            self._close_mirror_weights_dialog()
             self._refresh_split_primary_assignments()
             self._refresh_split_groups()
             self._refresh_split_maps()
@@ -746,6 +761,12 @@ class SplitSettingsUiMixin(MainWindowMixin):
             button.setEnabled(editing and has_weight)
         for button in self._split_map_weight_paste_operation_buttons:
             button.setEnabled(editing and has_weight and can_paste)
+        # Keep the mirror dialog in sync with the weight selection while it is
+        # open, so its target label always names the row that will be mirrored.
+        if self._mirror_weights_dialog is not None and self._mirror_weights_dialog.isVisible():
+            target = self._split_map_weight_name()
+            self._mirror_weight_target = target
+            self._mirror_weights_dialog.set_target_shape(target or "")
 
 
     def _on_split_primary_search_changed(self, terms) -> None:
@@ -1081,10 +1102,15 @@ class SplitSettingsUiMixin(MainWindowMixin):
         add_action = menu.addAction("Add Copied Weights")
         subtract_action = menu.addAction("Subtract Copied Weights")
         multiply_action = menu.addAction("Multiply by Copied Weights")
+        menu.addSeparator()
+        mirror_action = menu.addAction("Mirror Weight Map...")
         can_paste = self.current_editor.copied_weight_map_values is not None
         for action in [paste_action, paste_inverted_action, add_action, subtract_action, multiply_action]:
             action.setEnabled(can_paste)
         selected_action = menu.exec(self.split_map_weights_list.viewport().mapToGlobal(pos)) if hasattr(menu, "exec") else menu.exec_(self.split_map_weights_list.viewport().mapToGlobal(pos))
+        if selected_action == mirror_action:
+            self._on_mirror_split_weight_map_clicked()
+            return
         operations = {
             convert_soft_selection_action: ("convert_soft_selection_to_edit_split_weight_map", "Converted soft selection to"),
             copy_action: ("copy_edit_split_weight_map_values", "Copied"),
@@ -1097,6 +1123,23 @@ class SplitSettingsUiMixin(MainWindowMixin):
         operation = operations.get(selected_action)
         if operation is not None:
             self._run_split_weight_map_operation(*operation)
+
+
+    def _split_map_weight_name(self) -> Optional[str]:
+        """Resolve the weight name of the selected split-map weight.
+
+        Returns:
+            Optional[str]: ``"<split_map>_<area>"``, or ``None`` when no split
+            map is in edit mode or no weight row is selected.
+        """
+        split_map_name = self._current_edit_split_map_name()
+        if not split_map_name:
+            return None
+        weight_area = self._selected_split_map_weight_area()
+        if not weight_area:
+            return None
+        prefix = f"{split_map_name}_"
+        return weight_area if weight_area.startswith(prefix) else f"{split_map_name}_{weight_area}"
 
 
     def _run_split_weight_map_operation(self, method_name: str, status_verb: str, weight_name: str = "") -> None:
@@ -1112,15 +1155,9 @@ class SplitSettingsUiMixin(MainWindowMixin):
         """
         if self.current_editor is None:
             return
-        split_map_name = self._current_edit_split_map_name()
-        if not split_map_name:
-            return
+        weight_name = weight_name or self._split_map_weight_name()
         if not weight_name:
-            weight_area = self._selected_split_map_weight_area()
-            if not weight_area:
-                return
-            prefix = f"{split_map_name}_"
-            weight_name = weight_area if weight_area.startswith(prefix) else f"{split_map_name}_{weight_area}"
+            return
         try:
             getattr(self.current_editor, method_name)(weight_name)
         except Exception as exc:
@@ -1129,6 +1166,110 @@ class SplitSettingsUiMixin(MainWindowMixin):
         self._sync_split_map_weight_slider_values()
         self._update_split_map_weight_operation_buttons()
         self._set_status(f"{status_verb} weight map '{weight_name}'.")
+
+
+    def _on_mirror_split_weight_map_clicked(self) -> None:
+        """Open the mirror options dialog for the selected split weight map.
+
+        The dialog is a single non-modal tool window: it stays open while the
+        user picks a symmetry edge in the viewport, remembers its options for
+        the next opening, and mirrors the weight map when it is accepted.
+
+        Returns:
+            None
+        """
+        if self.current_editor is None:
+            return
+        weight_name = self._split_map_weight_name()
+        if not weight_name:
+            self._set_status("Select a split-map weight to mirror.", warning=True)
+            return
+        dialog = self._ensure_mirror_weights_dialog()
+        if dialog is None:
+            return
+        self._mirror_weight_target = weight_name
+        dialog.set_target_shape(weight_name)
+        dialog.set_settings(self._mirror_weights_settings)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+
+    def _ensure_mirror_weights_dialog(self) -> Optional[MirrorWeightsDialog]:
+        """Create the mirror options dialog once and keep the instance.
+
+        Returns:
+            Optional[MirrorWeightsDialog]: The dialog, or ``None`` when it
+            could not be created.
+        """
+        if self._mirror_weights_dialog is not None:
+            return self._mirror_weights_dialog
+        try:
+            dialog = MirrorWeightsDialog(self, self._mirror_weights_settings)
+        except Exception as exc:
+            self._set_status(f"Could not open the mirror options: {exc}", error=True)
+            return None
+        dialog.accepted.connect(self._on_mirror_weights_accepted)
+        dialog.destroyed.connect(lambda *_args: self._clear_mirror_weights_dialog_ref())
+        self._mirror_weights_dialog = dialog
+        return dialog
+
+
+    def _clear_mirror_weights_dialog_ref(self) -> None:
+        """Drop the reference to a destroyed mirror options dialog.
+
+        Returns:
+            None
+        """
+        self._mirror_weights_dialog = None
+
+
+    def _close_mirror_weights_dialog(self) -> None:
+        """Close the mirror options dialog when the editor context is lost.
+
+        Returns:
+            None
+        """
+        dialog = self._mirror_weights_dialog
+        self._mirror_weights_dialog = None
+        self._mirror_weight_target = None
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+            dialog.deleteLater()
+        except RuntimeError:
+            pass
+
+
+    def _on_mirror_weights_accepted(self) -> None:
+        """Mirror the remembered split weight map with the dialog options.
+
+        Returns:
+            None
+        """
+        dialog = self._mirror_weights_dialog
+        if self.current_editor is None or dialog is None:
+            return
+        weight_name = self._mirror_weight_target or dialog.target_shape()
+        if not weight_name:
+            self._set_status("Select a split-map weight to mirror.", warning=True)
+            return
+        # Remember the raw dialog state so a flip run does not lose the
+        # falloff percentage a later mirror would use.
+        self._mirror_weights_settings = dialog.state()
+        settings = dialog.settings()
+        try:
+            self.current_editor.mirror_edit_split_weight_map_values(weight_name, **settings)
+        except Exception as exc:
+            self._set_status(f"Error mirroring weight map: {exc}", error=True)
+            return
+        self._sync_split_map_weight_slider_values()
+        self._update_split_map_weight_operation_buttons()
+        self._set_status(
+            f"Mirrored weight map '{weight_name}' "
+            f"({settings['action']} on {str(settings['mirror_axis']).upper()}, "
+            f"{settings['mapping']}).")
 
 
     def _on_normalize_split_map_weights_requested(self) -> None:

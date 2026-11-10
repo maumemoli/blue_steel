@@ -5834,6 +5834,198 @@ class BlueSteelEditor(object):
         split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
         self.convert_soft_selection_to_weight_map(split_map_edit_blendshape, shape_name)
 
+    def _mirror_shape_weight_map_values(self,
+                                        blendshape: Blendshape,
+                                        shape_name: str,
+                                        action,
+                                        mirror_axis,
+                                        mirror_direction,
+                                        mirror_blend_falloff: float,
+                                        tolerance: float,
+                                        mapping,
+                                        symmetry_edge) -> np.ndarray:
+        """Mirror or flip the weight map of one shape through ``mayaUtils``.
+
+        The base mesh of ``blendshape`` is used as the mesh whose vertex order
+        defines the weight map, so callers only have to name the shape.
+
+        Parameters:
+            blendshape (Blendshape): Blendshape node owning the weight map.
+            shape_name (str): Weight alias of the shape to mirror.
+            action: ``MirrorAction`` member or its string value.
+            mirror_axis: ``MirrorAxis`` member or its string value.
+            mirror_direction: ``MirrorDirection`` member or its string value.
+            mirror_blend_falloff (float): Falloff band width, ``None`` for the
+                :data:`mayaUtils.DEFAULT_MIRROR_BLEND_FALLOFF` default.
+            tolerance (float): Geometric match tolerance in object units.
+            mapping: ``MirrorMapping`` member or its string value.
+            symmetry_edge: Seed edge of the topological mapping.
+
+        Returns:
+            numpy.ndarray: The weight map written for ``shape_name``.
+
+        Raises:
+            ValueError: If the blendshape, the shape or its base mesh is
+                missing, or if ``mayaUtils.mirror_blendshape_weight_map``
+                rejects the arguments.
+        """
+        if blendshape is None or not cmds.objExists(blendshape.name):
+            raise ValueError("Cannot mirror a weight map without a "
+                             "blendshape node.")
+        weight = blendshape.get_weight_by_name(shape_name)
+        if weight is None:
+            raise ValueError(f"Shape '{shape_name}' not found in {blendshape.name}.")
+        base_meshes = blendshape.get_base() or []
+        if not base_meshes:
+            raise ValueError(f"Blendshape '{blendshape.name}' has no base mesh "
+                             f"whose vertex order could define the weight map.")
+
+        mirrored_maps = mayaUtils.mirror_blendshape_weight_map(
+            mesh_name=base_meshes[0],
+            blendshape_name=blendshape.name,
+            weight_id=weight.id,
+            action=action,
+            mirror_axis=mirror_axis,
+            mirror_direction=mirror_direction,
+            mirror_blend_falloff=mirror_blend_falloff,
+            tolerance=tolerance,
+            mapping=mapping,
+            symmetry_edge=symmetry_edge)
+        return mirrored_maps[weight.id]
+
+    def mirror_split_weight_map_values(self,
+                                       shape_name: str,
+                                       action=mayaUtils.MirrorAction.MIRROR,
+                                       mirror_axis=mayaUtils.MirrorAxis.X,
+                                       mirror_direction=mayaUtils.MirrorDirection.LEFT_TO_RIGHT,
+                                       mirror_blend_falloff: float = None,
+                                       tolerance: float = mayaUtils.DEFAULT_MIRROR_TOLERANCE,
+                                       mapping=mayaUtils.MirrorMapping.GEOMETRIC,
+                                       symmetry_edge=None) -> np.ndarray:
+        """Mirror or flip the weight map of a split shape on the base mesh.
+
+        The split shapes live on the split blendshape (one shape per split map
+        area) and their weight maps are painted in object space, so they can be
+        mirrored across an axis like any other weight map. The base mesh of the
+        split blendshape is used as the mesh whose vertex order defines the
+        map, which means ``shape_name`` is the only required argument.
+
+        Parameters:
+            shape_name (str): Weight alias of the split shape to mirror, e.g.
+                ``"mouth_left"`` for split map ``mouth`` and area ``left``.
+            action (MirrorAction | str): ``MirrorAction.MIRROR`` (default)
+                copies the source side onto the other one,
+                ``MirrorAction.FLIP`` swaps both sides.
+            mirror_axis (MirrorAxis | str): Object-space axis of the mirror,
+                ``MirrorAxis.X`` (default), ``"y"`` or ``"z"``.
+            mirror_direction (MirrorDirection | str): Side the values are
+                copied from. ``LEFT_TO_RIGHT`` (default) keeps the negative
+                side of the axis, ``RIGHT_TO_LEFT`` the positive one.
+            mirror_blend_falloff (float, optional): Width of the transition
+                band as a fraction of the bounding box along the axis, clamped
+                to ``0..1``. Defaults to
+                :data:`mayaUtils.DEFAULT_MIRROR_BLEND_FALLOFF` (``0.2``).
+            tolerance (float, optional): Maximum distance between a vertex and
+                the reflected position of its counterpart, in object units.
+                Defaults to :data:`mayaUtils.DEFAULT_MIRROR_TOLERANCE`
+                (``0.001``); only used by ``MirrorMapping.GEOMETRIC``.
+            mapping (MirrorMapping | str): Source of the vertex pairing,
+                ``MirrorMapping.GEOMETRIC`` (default) or
+                ``MirrorMapping.TOPOLOGICAL``.
+            symmetry_edge (None | int | str | tuple | list): Edge lying on the
+                symmetry line, required by ``MirrorMapping.TOPOLOGICAL``.
+                ``None`` falls back to the first selected edge.
+
+        Returns:
+            numpy.ndarray: The mirrored weight map of ``shape_name``.
+
+        Raises:
+            ValueError: If there is no split blendshape, if ``shape_name`` is
+                not a weight of it, or if the mirror arguments are invalid.
+
+        Example:
+            >>> blue_steel = BlueSteelEditor("myRig")
+            >>> values = blue_steel.mirror_split_weight_map_values(
+            ...     "mouth_left", action="flip", mirror_axis="x")
+        """
+        return self._mirror_shape_weight_map_values(self.split_blendshape,
+                                                   shape_name,
+                                                   action=action,
+                                                   mirror_axis=mirror_axis,
+                                                   mirror_direction=mirror_direction,
+                                                   mirror_blend_falloff=mirror_blend_falloff,
+                                                   tolerance=tolerance,
+                                                   mapping=mapping,
+                                                   symmetry_edge=symmetry_edge)
+
+    def mirror_edit_split_weight_map_values(self,
+                                            shape_name: str,
+                                            action=mayaUtils.MirrorAction.MIRROR,
+                                            mirror_axis=mayaUtils.MirrorAxis.X,
+                                            mirror_direction=mayaUtils.MirrorDirection.LEFT_TO_RIGHT,
+                                            mirror_blend_falloff: float = None,
+                                            tolerance: float = mayaUtils.DEFAULT_MIRROR_TOLERANCE,
+                                            mapping=mayaUtils.MirrorMapping.GEOMETRIC,
+                                            symmetry_edge=None) -> np.ndarray:
+        """Mirror or flip the weight map of a shape in the split map edit node.
+
+        This is the edit mode twin of
+        :meth:`mirror_split_weight_map_values`: it works on the temporary split
+        map edit blendshape the split map edit mesh is painted on, so a split
+        map can be mirrored before :meth:`apply_current_edit_split_map` copies
+        it back onto the split blendshape.
+
+        Parameters:
+            shape_name (str): Weight alias of the area to mirror in the split
+                map edit blendshape.
+            action (MirrorAction | str): ``MirrorAction.MIRROR`` (default) or
+                ``MirrorAction.FLIP``.
+            mirror_axis (MirrorAxis | str): Object-space axis of the mirror,
+                ``MirrorAxis.X`` (default), ``"y"`` or ``"z"``.
+            mirror_direction (MirrorDirection | str): Side the values are
+                copied from, ``LEFT_TO_RIGHT`` (default) or
+                ``RIGHT_TO_LEFT``.
+            mirror_blend_falloff (float, optional): Width of the transition
+                band as a fraction of the bounding box along the axis, clamped
+                to ``0..1``. Defaults to
+                :data:`mayaUtils.DEFAULT_MIRROR_BLEND_FALLOFF` (``0.2``).
+            tolerance (float, optional): Maximum distance between a vertex and
+                the reflected position of its counterpart, in object units.
+                Defaults to :data:`mayaUtils.DEFAULT_MIRROR_TOLERANCE`
+                (``0.001``); only used by ``MirrorMapping.GEOMETRIC``.
+            mapping (MirrorMapping | str): Source of the vertex pairing,
+                ``MirrorMapping.GEOMETRIC`` (default) or
+                ``MirrorMapping.TOPOLOGICAL``.
+            symmetry_edge (None | int | str | tuple | list): Edge lying on the
+                symmetry line, required by ``MirrorMapping.TOPOLOGICAL``.
+
+        Returns:
+            numpy.ndarray: The mirrored weight map of ``shape_name``.
+
+        Raises:
+            ValueError: If the split map edit blendshape does not exist, if
+                ``shape_name`` is not one of its weights, or if the mirror
+                arguments are invalid.
+
+        Example:
+            >>> blue_steel = BlueSteelEditor("myRig")
+            >>> values = blue_steel.mirror_edit_split_weight_map_values(
+            ...     "mouth_left", mirror_direction="r<<l")
+        """
+        split_map_edit_blendshape = self.split_map_edit_blendshape
+        if not split_map_edit_blendshape or not cmds.objExists(split_map_edit_blendshape):
+            raise ValueError("Split map edit blendshape does not exist")
+        split_map_edit_blendshape = Blendshape(split_map_edit_blendshape)
+        return self._mirror_shape_weight_map_values(split_map_edit_blendshape,
+                                                   shape_name,
+                                                   action=action,
+                                                   mirror_axis=mirror_axis,
+                                                   mirror_direction=mirror_direction,
+                                                   mirror_blend_falloff=mirror_blend_falloff,
+                                                   tolerance=tolerance,
+                                                   mapping=mapping,
+                                                   symmetry_edge=symmetry_edge)
+
     # debug function to compare shapes. This will be removed on release
     def compare_shapes_debug(self):
         """DEBUG FUNCTION TO COMPARE SHAPES"""

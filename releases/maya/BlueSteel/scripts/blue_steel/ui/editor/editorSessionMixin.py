@@ -674,6 +674,7 @@ class EditorSessionMixin(MainWindowMixin):
             self._controller_layout_window.close()
             self._controller_layout_window.deleteLater()
             self._controller_layout_window = None
+        self._close_mirror_weights_dialog()
         self._dispose_trackers()
 
 
