@@ -24,6 +24,9 @@ SHAPE_CUSTOM_COLORS = {
     "Purple": "#9b59b6",
 }
 
+# Accent used by the self-painted drag/drop insertion indicators (trees).
+DROP_INDICATOR_COLOR = "#5aa0f0"
+
 # Custom MIME types used for editor drag-and-drop.
 SHAPE_NAMES_MIME_TYPE = "application/x-blue-steel-shape-names"
 PRIMARY_TREE_MIME_TYPE = "application/x-qabstractitemmodeldatalist"

@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 from ... import env
 
 from .constants import (
+    DROP_INDICATOR_COLOR,
     PRIMARY_ORDER_MIME_TYPE,
     PRIMARY_TREE_FOLDER_ROLE,
     PRIMARY_TREE_INDENT,
@@ -837,7 +838,7 @@ class ReorderableTreeWidgetMixin:
             return
         painter = QPainter(self.viewport())
         try:
-            accent = QColor(90, 160, 240)
+            accent = QColor(DROP_INDICATOR_COLOR)
             if self._drop_position == "inside":
                 highlight = QColor(accent)
                 highlight.setAlpha(55)

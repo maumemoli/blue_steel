@@ -141,6 +141,7 @@ Re-exports from `mainWindow.py`:
 
 **Constants**
 - `SHAPE_CUSTOM_COLORS` — `dict[str, hex]` for the color filter row.
+- `DROP_INDICATOR_COLOR` — accent hex shared by the self-painted drag/drop insertion indicators (`SplitGroupsTree`, `ReorderableTreeWidgetMixin`).
 - `SHAPE_NAMES_MIME_TYPE`, `PRIMARY_TREE_MIME_TYPE`, `PRIMARY_ORDER_MIME_TYPE`, `SPLIT_MAP_MIME_TYPE` — drag & drop MIME types.
 - `PRIMARY_TREE_NAME_ROLE`, `PRIMARY_TREE_FOLDER_ROLE`, `PRIMARY_TREE_SORT_VALUE_ROLE` — Qt user roles for the primaries tree.
 - `TYPE_GROUP_ORDER` — ordering for shape-type groups in the Shapes tree.
@@ -416,13 +417,17 @@ Standalone reusable widgets.
   - `paint(painter, option, index)`
 
 - `SplitGroupsTree(QTreeWidget)` — tree of split groups → maps. Signals: `mapSelected(str)`, `mapsChanged(dict)`, `mapDraggedOut(str, str)`, `groupSelected(str)`.
-  - `__init__(parent=None)`
+  - `__init__(parent=None)` — the built-in Qt drop indicator is disabled (`setDropIndicatorShown(False)`) because drag & drop is fully custom; `paintEvent` previews the drop instead.
   - `set_groups(split_groups, selected_group="")`
   - `selected_group_name()` / `select_group(group_name)`
   - `_group_name(item)` / `_map_names(group_item)` / `groups()`
   - `_on_current_item_changed(current, previous)`
-  - `_event_position(event)` (staticmethod)
-  - `dragEnterEvent` / `dragMoveEvent` / `dropEvent` / `startDrag`
+  - `_event_position(event)` / `_dragged_map_name(event)` (staticmethods)
+  - `_drop_target_at(pos)` — resolves `(group_item, insert_index)`; a map row's top/bottom half inserts before/after it, a group header appends at the end of that group. Shared by the preview and `dropEvent`, so the painted line always matches the drop.
+  - `_is_valid_drop(event, group_item, insert_index)` — rejects unknown payloads, a map already in another group, and no-op internal moves (dropping a map back onto its own slot).
+  - `_set_drop_target(target)` / `_clear_drop_indicator()` / `_insertion_line_rect(group_item, insert_index)` — indicator state and its geometry.
+  - `dragEnterEvent` / `dragMoveEvent` / `dragLeaveEvent` / `dropEvent` / `startDrag`
+  - `paintEvent(event)` — draws the preview: a 3 px accent line (with a small end cap) at the resolved insertion boundary, or a highlighted group row when the map is appended to a collapsed/empty group whose children are not visible.
 
 - `InlineWorkshapeRenameEditor(QLineEdit)` — inline rename field. Signals: `submitted()`, `canceled()`.
   - `keyPressEvent(event)` / `focusOutEvent(event)`

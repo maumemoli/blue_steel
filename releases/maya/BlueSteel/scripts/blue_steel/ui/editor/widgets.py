@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
-from .constants import SPLIT_MAP_MIME_TYPE
+from .constants import DROP_INDICATOR_COLOR, SPLIT_MAP_MIME_TYPE
 from .qt import (
     QAbstractItemView,
     QColor,
@@ -22,6 +22,7 @@ from .qt import (
     QLabel,
     QLineEdit,
     QMimeData,
+    QPainter,
     QPushButton,
     QRect,
     QSizePolicy,
@@ -294,7 +295,17 @@ class SplitMapStatusDelegate(QStyledItemDelegate):
 
 
 class SplitGroupsTree(QTreeWidget):
-    """Split groups with ordered split maps as draggable child items."""
+    """Split groups with ordered split maps as draggable child items.
+
+    Drag/drop is fully custom, so the view paints its own insertion preview:
+    a horizontal line at the exact boundary where the dragged map will be
+    inserted, or a highlighted group row when the map is appended to a group
+    whose children are not visible.
+
+    Example:
+        >>> tree = SplitGroupsTree()
+        >>> tree.set_groups({"LeftRight": ["side"]})
+    """
 
     GROUP_NAME_ROLE = Qt.UserRole + 1
     MAP_NAME_ROLE = Qt.UserRole + 2
@@ -314,7 +325,10 @@ class SplitGroupsTree(QTreeWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
-        self.setDropIndicatorShown(True)
+        # The built-in indicator is never updated because the drag/drop events
+        # are overridden; ``paintEvent`` draws the preview instead.
+        self.setDropIndicatorShown(False)
+        self._drop_target = None
         self.currentItemChanged.connect(self._on_current_item_changed)
 
     def set_groups(self, split_groups: Dict[str, Sequence[str]], selected_group: str = "") -> None:
@@ -327,6 +341,7 @@ class SplitGroupsTree(QTreeWidget):
             for row in range(self.topLevelItemCount())
             if self.topLevelItem(row).isExpanded()
         }
+        self._clear_drop_indicator()
         self.blockSignals(True)
         try:
             self.clear()
@@ -398,52 +413,150 @@ class SplitGroupsTree(QTreeWidget):
             return event.position().toPoint()
         return event.pos()
 
+    @staticmethod
+    def _dragged_map_name(event) -> str:
+        """Return the split map name carried by ``event``, empty when absent."""
+        mime_data = event.mimeData()
+        if not mime_data.hasFormat(SplitMapsTree.MIME_TYPE):
+            return ""
+        return bytes(mime_data.data(SplitMapsTree.MIME_TYPE)).decode("utf-8", errors="ignore")
+
+    def _drop_target_at(self, pos):
+        """Resolve where a drop at ``pos`` would insert a split map.
+
+        This is the single source of truth shared by the drag preview and the
+        drop itself, so the painted line always matches the real result.
+
+        Parameters:
+            pos (QPoint): The drag position in viewport coordinates.
+
+        Returns:
+            tuple: ``(group_item, insert_index)`` for a resolvable target, or
+                ``None`` when the pointer is not over a group or map row.
+        """
+        item = self.itemAt(pos)
+        if item is None:
+            return None
+        parent_item = item.parent()
+        if parent_item is None:
+            # Whole group header appends the map at the end of that group.
+            return item, item.childCount()
+        insert_index = parent_item.indexOfChild(item)
+        if pos.y() >= self.visualItemRect(item).center().y():
+            insert_index += 1
+        return parent_item, insert_index
+
+    def _is_valid_drop(self, event, group_item, insert_index: int) -> bool:
+        """Return whether dropping the dragged map on ``group_item`` is allowed.
+
+        Parameters:
+            event (QDropEvent): The drag/drop event carrying the map name.
+            group_item (QTreeWidgetItem): The split group receiving the map.
+            insert_index (int): The resolved insertion index in ``group_item``.
+
+        Returns:
+            bool: ``True`` when the drop changes the group's map order or
+                membership.
+        """
+        map_name = self._dragged_map_name(event)
+        if not map_name:
+            return False
+        source_item = self.currentItem() if event.source() is self else None
+        source_group = source_item.parent() if source_item is not None else None
+        if source_group is not group_item and map_name in self._map_names(group_item):
+            return False
+        if source_group is group_item and source_item is not None:
+            source_row = source_group.indexOfChild(source_item)
+            if insert_index in (source_row, source_row + 1):
+                return False
+        return True
+
+    def _set_drop_target(self, target) -> None:
+        """Store the previewed drop target and repaint when it changed."""
+        if target == self._drop_target:
+            return
+        self._drop_target = target
+        self.viewport().update()
+
+    def _clear_drop_indicator(self) -> None:
+        """Forget the previewed drop target and repaint when it was set."""
+        if self._drop_target is None:
+            return
+        self._drop_target = None
+        self.viewport().update()
+
+    def _insertion_line_rect(self, group_item, insert_index: int):
+        """Return the line rect previewing ``insert_index`` inside ``group_item``.
+
+        Returns:
+            QRect: The insertion line in viewport coordinates, or ``None`` when
+                the group's rows are not visible (collapsed or empty group), in
+                which case the group row itself is highlighted instead.
+        """
+        child_count = group_item.childCount()
+        if child_count <= 0 or not group_item.isExpanded():
+            return None
+        insert_index = min(max(int(insert_index), 0), child_count)
+        if insert_index >= child_count:
+            boundaries = [(child_count - 1, False)]
+        else:
+            boundaries = [(insert_index, True), (insert_index - 1, False)]
+        for row, above in boundaries:
+            if row < 0:
+                continue
+            item_rect = self.visualItemRect(group_item.child(row))
+            if not item_rect.isValid() or item_rect.height() <= 0:
+                continue
+            line_y = item_rect.top() if above else item_rect.bottom()
+            line_left = item_rect.left() + 2
+            line_width = max(1, self.viewport().width() - line_left - 4)
+            return QRect(line_left, line_y - 1, line_width, 3)
+        return None
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if event.source() is self or event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
+            self._clear_drop_indicator()
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
-        if event.source() is self or event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
-            event.acceptProposedAction()
+        if not (event.source() is self or event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE)):
+            self._clear_drop_indicator()
+            event.ignore()
             return
-        event.ignore()
+        target = self._drop_target_at(self._event_position(event))
+        if target is None or not self._is_valid_drop(event, *target):
+            self._clear_drop_indicator()
+            event.ignore()
+            return
+        self._set_drop_target(target)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
-        if not event.mimeData().hasFormat(SplitMapsTree.MIME_TYPE):
-            event.ignore()
-            return
-        map_name = bytes(event.mimeData().data(SplitMapsTree.MIME_TYPE)).decode("utf-8")
-        event_position = self._event_position(event)
-        target_item = self.itemAt(event_position)
-        target_group = target_item.parent() if target_item is not None and target_item.parent() is not None else target_item
-        if not map_name or target_group is None:
+        map_name = self._dragged_map_name(event)
+        target = self._drop_target_at(self._event_position(event)) if map_name else None
+        valid = target is not None and self._is_valid_drop(event, *target)
+        self._clear_drop_indicator()
+        if not valid:
             event.ignore()
             return
 
+        target_group, new_row = target
         source_item = self.currentItem() if event.source() is self else None
         source_group = source_item.parent() if source_item is not None else None
-        if source_item is target_item:
-            event.ignore()
-            return
-        if map_name in self._map_names(target_group) and source_group is not target_group:
-            event.ignore()
-            return
-
-        new_row = target_group.childCount()
-        if target_item is not None and target_item.parent() is target_group:
-            new_row = target_group.indexOfChild(target_item)
-            if event_position.y() >= self.visualItemRect(target_item).center().y():
-                new_row += 1
         source_row = source_group.indexOfChild(source_item) if source_group is not None else -1
+        map_item = source_item or QTreeWidgetItem([map_name])
         if source_group is not None:
             source_group.takeChild(source_row)
+            if source_group is target_group and source_row < new_row:
+                new_row -= 1
 
-        if source_group is target_group and source_row < new_row:
-            new_row -= 1
-        new_row = min(new_row, target_group.childCount())
-        map_item = source_item or QTreeWidgetItem([map_name])
+        new_row = min(max(new_row, 0), target_group.childCount())
         map_item.setData(0, self.GROUP_NAME_ROLE, self._group_name(target_group))
         map_item.setData(0, self.MAP_NAME_ROLE, map_name)
         map_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
@@ -453,7 +566,35 @@ class SplitGroupsTree(QTreeWidget):
         self.mapsChanged.emit(self.groups())
         event.setDropAction(Qt.MoveAction if source_group is not None else Qt.CopyAction)
         event.accept()
-        return
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._drop_target is None:
+            return
+        accent = QColor(DROP_INDICATOR_COLOR)
+        group_item, insert_index = self._drop_target
+        painter = QPainter(self.viewport())
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            line_rect = self._insertion_line_rect(group_item, insert_index)
+            if line_rect is None:
+                # Children are hidden: highlight the group row the map joins.
+                group_rect = self.visualItemRect(group_item)
+                if not group_rect.isValid():
+                    return
+                highlight = QColor(accent)
+                highlight.setAlpha(55)
+                painter.fillRect(group_rect, highlight)
+                painter.setPen(accent)
+                painter.drawRect(group_rect.adjusted(0, 0, -1, -1))
+                return
+            painter.fillRect(line_rect, accent)
+            painter.fillRect(
+                QRect(line_rect.left() - 1, line_rect.top() - 2, 5, line_rect.height() + 4),
+                accent,
+            )
+        finally:
+            painter.end()
 
     def startDrag(self, supported_actions) -> None:  # noqa: N802
         item = self.currentItem()
