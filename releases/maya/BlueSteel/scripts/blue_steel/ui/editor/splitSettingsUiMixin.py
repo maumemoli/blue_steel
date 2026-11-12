@@ -46,7 +46,9 @@ from .models import (
     ShapeItemsModel,
 )
 from .qt import (
+    is_valid_qt_object,
     QAbstractItemView,
+    QDialog,
     QGroupBox,
     QGuiApplication,
     QHBoxLayout,
@@ -763,10 +765,16 @@ class SplitSettingsUiMixin(MainWindowMixin):
             button.setEnabled(editing and has_weight and can_paste)
         # Keep the mirror dialog in sync with the weight selection while it is
         # open, so its target label always names the row that will be mirrored.
-        if self._mirror_weights_dialog is not None and self._mirror_weights_dialog.isVisible():
+        dialog = self._mirror_weights_dialog
+        if is_valid_qt_object(dialog) and dialog.isVisible():
             target = self._split_map_weight_name()
             self._mirror_weight_target = target
-            self._mirror_weights_dialog.set_target_shape(target or "")
+            dialog.set_target_shape(target or "")
+        elif dialog is not None:
+            # The cached dialog outlived its C++ object (Maya closed the tool
+            # window or the binding destroyed it); forget it so that the next
+            # click builds a fresh one instead of touching a dead wrapper.
+            self._clear_mirror_weights_dialog_ref()
 
 
     def _on_split_primary_search_changed(self, terms) -> None:
@@ -1175,6 +1183,11 @@ class SplitSettingsUiMixin(MainWindowMixin):
         user picks a symmetry edge in the viewport, remembers its options for
         the next opening, and mirrors the weight map when it is accepted.
 
+        A cached dialog can lose its C++ object between two openings (Maya can
+        delete a tool window on its own, and the binding destroys widgets whose
+        wrapper it owns), so a ``RuntimeError`` from a stale dialog rebuilds it
+        once instead of surfacing as a traceback.
+
         Returns:
             None
         """
@@ -1184,15 +1197,23 @@ class SplitSettingsUiMixin(MainWindowMixin):
         if not weight_name:
             self._set_status("Select a split-map weight to mirror.", warning=True)
             return
-        dialog = self._ensure_mirror_weights_dialog()
-        if dialog is None:
-            return
         self._mirror_weight_target = weight_name
-        dialog.set_target_shape(weight_name)
-        dialog.set_settings(self._mirror_weights_settings)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        for attempt in range(2):
+            dialog = self._ensure_mirror_weights_dialog()
+            if dialog is None:
+                return
+            try:
+                dialog.set_target_shape(weight_name)
+                dialog.set_settings(self._mirror_weights_settings)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._clear_mirror_weights_dialog_ref()
+                if attempt:
+                    self._set_status("Could not open the mirror options.", error=True)
+                    return
 
 
     def _ensure_mirror_weights_dialog(self) -> Optional[MirrorWeightsDialog]:
@@ -1203,29 +1224,45 @@ class SplitSettingsUiMixin(MainWindowMixin):
             could not be created.
         """
         if self._mirror_weights_dialog is not None:
-            return self._mirror_weights_dialog
+            if is_valid_qt_object(self._mirror_weights_dialog):
+                return self._mirror_weights_dialog
+            # The wrapper is still referenced but its C++ object is gone, so it
+            # can never be shown again. Drop it and build a fresh dialog.
+            self._mirror_weights_dialog = None
         try:
             dialog = MirrorWeightsDialog(self, self._mirror_weights_settings)
         except Exception as exc:
             self._set_status(f"Could not open the mirror options: {exc}", error=True)
             return None
         dialog.accepted.connect(self._on_mirror_weights_accepted)
-        dialog.destroyed.connect(lambda *_args: self._clear_mirror_weights_dialog_ref())
+        dialog.destroyed.connect(
+            lambda *_args, destroyed=dialog: self._clear_mirror_weights_dialog_ref(destroyed)
+        )
         self._mirror_weights_dialog = dialog
         return dialog
 
 
-    def _clear_mirror_weights_dialog_ref(self) -> None:
+    def _clear_mirror_weights_dialog_ref(self, dialog: Optional[QDialog] = None) -> None:
         """Drop the reference to a destroyed mirror options dialog.
+
+        Parameters:
+            dialog (Optional[QDialog]): The destroyed dialog. When given, the
+                reference is only cleared if it still points at that instance,
+                so a late ``destroyed`` signal cannot drop the reference of a
+                dialog that was created afterwards.
 
         Returns:
             None
         """
+        if dialog is not None and self._mirror_weights_dialog is not dialog:
+            return
         self._mirror_weights_dialog = None
 
 
     def _close_mirror_weights_dialog(self) -> None:
         """Close the mirror options dialog when the editor context is lost.
+
+        A dialog whose C++ object is already gone is simply forgotten.
 
         Returns:
             None
@@ -1233,7 +1270,7 @@ class SplitSettingsUiMixin(MainWindowMixin):
         dialog = self._mirror_weights_dialog
         self._mirror_weights_dialog = None
         self._mirror_weight_target = None
-        if dialog is None:
+        if not is_valid_qt_object(dialog):
             return
         try:
             dialog.close()
@@ -1249,7 +1286,10 @@ class SplitSettingsUiMixin(MainWindowMixin):
             None
         """
         dialog = self._mirror_weights_dialog
-        if self.current_editor is None or dialog is None:
+        if self.current_editor is None:
+            return
+        if not is_valid_qt_object(dialog):
+            self._clear_mirror_weights_dialog_ref()
             return
         weight_name = self._mirror_weight_target or dialog.target_shape()
         if not weight_name:

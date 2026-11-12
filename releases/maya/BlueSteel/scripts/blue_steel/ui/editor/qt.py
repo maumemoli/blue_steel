@@ -5,8 +5,8 @@ chosen. The rest of the editor imports Qt names from here instead of repeating
 the ``if env.ENVIRONMENT.MAYA_VERSION > 2024`` block in every file.
 
 It also hosts small helpers that remove the PySide2/PySide6 API differences
-(``exec`` vs ``exec_``) and tiny geometry/color utilities shared across views
-and models.
+(``exec`` vs ``exec_``, live-C++-object checks) and tiny geometry/color
+utilities shared across views and models.
 
 Example:
     >>> from blue_steel.ui.editor import qt
@@ -92,7 +92,7 @@ if env.ENVIRONMENT.MAYA_VERSION > 2024:
         QVBoxLayout,
         QWidget,
     )
-    from shiboken6 import wrapInstance
+    from shiboken6 import isValid, wrapInstance
 else:
     from PySide2.QtCore import (
         QAbstractListModel,
@@ -162,7 +162,7 @@ else:
         QVBoxLayout,
         QWidget,
     )
-    from shiboken2 import wrapInstance
+    from shiboken2 import isValid, wrapInstance
 
 
 class OptionRect:
@@ -195,6 +195,34 @@ def get_maya_main_window() -> Optional[QWidget]:
     if main_window_ptr is None:
         return None
     return wrapInstance(int(main_window_ptr), QWidget)
+
+
+def is_valid_qt_object(obj) -> bool:
+    """Return whether a Qt wrapper still owns a live C++ object.
+
+    A wrapper can outlive its C++ object, for example when a widget owned by a
+    long-lived dialog is destroyed by the binding, by ``deleteLater()`` or by a
+    parent teardown. Touching such a wrapper raises ``RuntimeError: Internal
+    C++ object already deleted``, so callers use this check before they reuse a
+    cached widget or dialog reference.
+
+    Parameters:
+        obj: Any object; ``None`` and non-Qt objects return ``False``.
+
+    Returns:
+        bool: ``True`` when the wrapper still points at a live C++ object.
+
+    Example:
+        >>> is_valid_qt_object(self._mirror_weights_dialog)
+        True
+    """
+
+    if obj is None:
+        return False
+    try:
+        return bool(isValid(obj))
+    except Exception:
+        return False
 
 
 def exec_menu(menu: QMenu, global_pos: QPoint):

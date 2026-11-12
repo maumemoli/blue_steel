@@ -135,7 +135,10 @@ class MirrorWeightsDialog(QDialog):
         _pick_edge_button (QPushButton): Reads the current edge selection.
         _clear_edge_button (QPushButton): Forgets the picked edge.
         _hint_label (QLabel): Mode dependent help text.
+        _button_box (QDialogButtonBox): Box holding the accept and close button;
+            kept on the dialog so its wrapper cannot be collected.
         _mirror_button (QPushButton): Accept button of the button box.
+        _close_button (QPushButton): Cancel button of the button box.
         _form (QFormLayout): Form holding the option rows, used to grey out
             the label of a disabled field.
         _edge (Optional[str]): Picked symmetry edge component name.
@@ -300,10 +303,15 @@ class MirrorWeightsDialog(QDialog):
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
             parent=self,
         )
+        # Keep the box (and its standard buttons) referenced from the dialog:
+        # the button box is created for a long-lived tool window, and the
+        # binding destroys a widget whose Python wrapper it owns as soon as
+        # that wrapper is collected, which left ``_mirror_button`` dangling.
+        self._button_box = buttons
         self._mirror_button = buttons.button(QDialogButtonBox.Ok)
         self._mirror_button.setText("Mirror")
-        close_button = buttons.button(QDialogButtonBox.Cancel)
-        close_button.setText("Close")
+        self._close_button = buttons.button(QDialogButtonBox.Cancel)
+        self._close_button.setText("Close")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

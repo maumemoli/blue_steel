@@ -1267,12 +1267,12 @@ class ControllerLayoutWindow(QWidget):
         sidebar_layout.setSpacing(8)
         body.addWidget(self.sidebar)
 
-        palette_group = QGroupBox("Controllers")
-        palette_layout = QVBoxLayout(palette_group)
+        self.palette_group = QGroupBox("Controllers")
+        palette_layout = QVBoxLayout(self.palette_group)
         palette_layout.addWidget(DraggablePaletteButton("Horizontal Slider", "horizontal_slider"))
         palette_layout.addWidget(DraggablePaletteButton("Vertical Slider", "vertical_slider"))
         palette_layout.addWidget(DraggablePaletteButton("Quad Controller", "quad_controller"))
-        sidebar_layout.addWidget(palette_group)
+        sidebar_layout.addWidget(self.palette_group)
 
         self.primary_group = QGroupBox("Primaries")
         primary_layout = QVBoxLayout(self.primary_group)
@@ -1314,13 +1314,13 @@ class ControllerLayoutWindow(QWidget):
         quad_layout.addLayout(quad_label_form)
         sidebar_layout.addWidget(self.quad_group)
 
-        io_group = QGroupBox("Layout")
-        io_layout = QVBoxLayout(io_group)
+        self.io_group = QGroupBox("Layout")
+        io_layout = QVBoxLayout(self.io_group)
         self.save_file_button = QPushButton("Save JSON")
         self.load_file_button = QPushButton("Load JSON")
         io_layout.addWidget(self.save_file_button)
         io_layout.addWidget(self.load_file_button)
-        sidebar_layout.addWidget(io_group)
+        sidebar_layout.addWidget(self.io_group)
         sidebar_layout.addStretch(1)
 
         self.edit_button.toggled.connect(self._on_edit_toggled)

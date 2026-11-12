@@ -30,6 +30,7 @@ from .importSplitDataDialog import (
 from .mainWindowMixin import MainWindowMixin
 from .controllerLayoutWindow import ControllerLayoutWindow
 from .qt import (
+    is_valid_qt_object,
     QAction,
     QDialog,
     QGuiApplication,
@@ -145,14 +146,20 @@ class EditorOpsMixin(MainWindowMixin):
         Returns:
             None
         """
+        if not is_valid_qt_object(self._controller_layout_window):
+            # A wrapper that outlived its C++ object can never be shown again.
+            self._controller_layout_window = None
         if self._controller_layout_window is None:
             maya_parent = get_maya_main_window() or self
-            self._controller_layout_window = ControllerLayoutWindow(
+            window = ControllerLayoutWindow(
                 self._editor_for_controller_layout,
                 lambda msg: self._set_status(msg),
                 maya_parent,
             )
-            self._controller_layout_window.destroyed.connect(lambda *_args: self._clear_controller_layout_window_ref())
+            window.destroyed.connect(
+                lambda *_args, destroyed=window: self._clear_controller_layout_window_ref(destroyed)
+            )
+            self._controller_layout_window = window
         self._controller_layout_window.set_current_editor(self.current_editor)
         self._controller_layout_window.show()
         self._controller_layout_window.raise_()
@@ -168,12 +175,20 @@ class EditorOpsMixin(MainWindowMixin):
         return self.current_editor
 
 
-    def _clear_controller_layout_window_ref(self) -> None:
+    def _clear_controller_layout_window_ref(self, window: Optional[QWidget] = None) -> None:
         """Clear the cached controller layout window reference.
+
+        Parameters:
+            window (Optional[QWidget]): The destroyed window. When given, the
+                reference is only cleared if it still points at that instance,
+                so a late ``destroyed`` signal cannot drop the reference of a
+                window that was created afterwards.
 
         Returns:
             None
         """
+        if window is not None and self._controller_layout_window is not window:
+            return
         self._controller_layout_window = None
 
 
