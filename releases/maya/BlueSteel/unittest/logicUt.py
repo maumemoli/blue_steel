@@ -6,10 +6,8 @@ import os
 import unittest
 from importlib import reload
 import blue_steel.logic.shape as sh
-import blue_steel.logic.splitMap as sm
 import blue_steel.logic.network as net
 reload(sh)
-reload(sm)
 reload(net)
 
 
@@ -80,43 +78,6 @@ class TestShape(unittest.TestCase):
         self.assertEqual(sh.Shape.create("a_b").type, "ComboShape")
         return True
 
-    # def test_split_map(self):
-    #     split_maps = self.create_split_maps()
-    #     shape = sh.Shape("lipCornerPuller_jawOpen_lipDimpler50_lipFunneler", split_maps)
-    #     result = ['jawOpen_lipCornerPullerL_lipDimplerL50_lipFunnelerTL',
-    #               'jawOpen_lipCornerPullerL_lipDimplerL50_lipFunnelerTR',
-    #               'jawOpen_lipCornerPullerL_lipDimplerL50_lipFunnelerBL',
-    #               'jawOpen_lipCornerPullerL_lipDimplerL50_lipFunnelerBR',
-    #               'jawOpen_lipCornerPullerR_lipDimplerR50_lipFunnelerTL',
-    #               'jawOpen_lipCornerPullerR_lipDimplerR50_lipFunnelerTR',
-    #               'jawOpen_lipCornerPullerR_lipDimplerR50_lipFunnelerBL',
-    #               'jawOpen_lipCornerPullerR_lipDimplerR50_lipFunnelerBR']
-    #     self.assertEqual(shape.split_names, result)
-    #     split_maps[1].clear_shapes()
-    #     self.assertEqual(split_maps[1].shapes, [])
-
-        return True
-
-    @staticmethod
-    def create_split_map(name, long_suffixes, short_suffixes, shapes):
-        return sm.SplitMap(name, {k: v for k, v in zip(long_suffixes, short_suffixes)}, shapes)
-
-    @classmethod
-    def create_split_maps(cls):
-        split_maps = list()
-
-        split_map = sm.SplitMap.create_default(shapes={"jawOpen", "lipsTogether", "lipsPart"})
-        split_maps.append(split_map)
-        split_map = sm.SplitMap.create_left_right(shapes={"lipCornerPuller",
-                                                          "lipDimpler",
-                                                          "noseWrinkler",
-                                                          "lipFunneler",
-                                                          "lipPucker",
-                                                          "lipsPressor"})
-        split_maps.append(split_map)
-        split_map = sm.SplitMap.create_top_bottom(shapes={"lipFunneler", "lipPucker", "lipsPressor"})
-        split_maps.append(split_map)
-        return split_maps
 
 class TestNetwork(unittest.TestCase):
 
@@ -124,32 +85,6 @@ class TestNetwork(unittest.TestCase):
         network = net.Network("shapesSystem")
         self.assertEqual(network.name, "shapesSystem")
         return True
-
-    def test_add_split_map(self):
-        split_maps = TestShape.create_split_maps()
-        for split_map in split_maps:
-            split_map.clear_shapes()
-        network = net.Network("shapesSystem")
-        for split_map in split_maps:
-            network.add_split_map(split_map)
-        self.assertEqual(network.split_map_names, ["DEFAULT", "LEFT_RIGHT", "TOP_BOTTOM"])
-        network.add_shape("lipCornerPuller", ["LEFT_RIGHT"])
-        network.add_shape("lipFunneler", ["TOP_BOTTOM", "LEFT_RIGHT"])
-        network.add_shape("jawOpen", ["DEFAULT"])
-        network.add_shape("lipCornerPuller50")
-        network.add_shape("lipCornerPuller_lipFunneler")
-        network.add_shape("lipCornerPuller_lipFunneler_jawOpen")
-        network.add_shape("lipCornerPuller50_lipFunneler")
-        # for split_map in split_maps:
-        #     print(split_map.name)
-        #     print(split_map.shapes)
-        # jaw_open = network.get_shape("lipCornerPuller50_lipFunneler").split_names
-        # print(jaw_open)
-        print(network.primaries)
-        print(network.inbetweens)
-        print(network.combo)
-        print(network.combo_inbetween)
-        # print(jaw_open.split_maps[0].shapes)
 
 
 if __name__ == "__main__":

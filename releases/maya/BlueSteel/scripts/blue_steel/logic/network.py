@@ -1,11 +1,8 @@
-from turtle import shape
 from .shape import Shape, PrimaryShape, ComboShape, ComboInbetweenShape, InbetweenShape, InvalidShape
 from .shapeList import ShapeList
 from ..api.blendshape import Blendshape, Weight
-from .splitMap import SplitMap
 from . import utilities
 from .. import env
-from itertools import product
 
 SEPARATOR = env.ENVIRONMENT.SEPARATOR
 
@@ -22,10 +19,7 @@ class Network(object):
         self.name = "Unnamed_Network"
         # list of Shapes
         self._shapes = ShapeList([], self.separator)
-        self.split_maps = [SplitMap.create_default()]
         self.muted_shapes = set()
-        # this is a dictionary that holds the split maps associated with each shape
-        self.shape_split_maps_association = dict()
         if isinstance(shapes_list, ShapeList):
             if shapes_list.separator != self.separator:
                 raise ValueError("The separator of the shapes list does not match the network separator.")
@@ -49,18 +43,6 @@ class Network(object):
     def __getitem__(self, index):
         return self._shapes[index]
 
-    def get_split_map(self, name: str):
-        """
-        Returns the split map by name
-        :param name: the name of the split map
-        :return: the split map
-        """
-        for split_map in self.split_maps:
-            if split_map.name == name:
-                return split_map
-        return None
-
-    
     def get_weight_muted_state(self, weight: Weight) -> bool:
         """
         Returns the muted state of the weight in the blendshape
@@ -121,8 +103,6 @@ class Network(object):
             raise ValueError(f"Can't remove shape \"{shape_name}\" because it has children:"
                               f" {', '.join(self._shapes.get_affected(shape_name))}")
         self._shapes.remove(shape_name)
-        if shape_name in self.shape_split_maps_association:
-            del self.shape_split_maps_association[shape_name]
 
     def get_related_shapes(self, shape_names: list)-> ShapeList:
         """
@@ -177,29 +157,6 @@ class Network(object):
         return possible_shapes
 
 
-    def add_split_map(self, split_map: SplitMap):
-        """
-        Add a split map to the network
-        """
-        if split_map.name not in self.split_map_names:
-            self.split_maps.append(split_map)
-
-    def add_split_map_to_shape(self, shape_name: str, split_map: SplitMap):
-        """
-        Add a split map to a shape
-        :param shape_name: the name of the shape to add
-        :param split_map: the split maps to associate with the shape
-        """
-        if not utilities.is_primary(shape_name, self.separator):
-            raise NameError(f"\"{shape_name}\" is not a primary shape, split maps can only"
-                            "be associated with primary shapes.")
-        if shape_name not in self._shapes:
-            raise NameError(f"Shape \"{shape_name}\" is not defined in the network.")
-        shape_split_maps = self.shape_split_maps_association.get(shape_name, [])
-        if split_map.name not in [s for s in shape_split_maps]:
-            shape_split_maps.append(split_map)
-        self.shape_split_maps_association[shape_name] = shape_split_maps
-
     def get_shapes_by_level(self, level: int):
         """
         Returns a list of shapes by their level
@@ -237,17 +194,6 @@ class Network(object):
         :return: a list of inbetween shapes that are siblings of the given inbetween shape
         """
         return self._shapes.get_adjacent_inbetweens(shape)
-
-    @property
-    def split_map_names(self):
-        """
-        Returns the split map names
-        """
-        split_map_names = list()
-        for split_map in self.split_maps:
-            split_map_names.append(split_map.name)
-
-        return split_map_names
 
     def create_shape(self, shape_name: str) -> Shape:
         """
@@ -305,52 +251,6 @@ class Network(object):
         """
         return self._shapes.invalid_shapes
 
-    def split_shape(self, shape: Shape):
-        """
-        Generate the split names for the given shape according to the split maps associated with it.
-        Example:
-        for shape "a" and split maps [{"LEFT": "L", "RIGHT": "R"}], the split names will be:
-        ["aL", "aR"]
-        for shape "b" and split maps [{"TOP": "T", "BOTTOM": "B"}, {"LEFT": "L", "RIGHT": "R"}], the split names will be:
-        ["bTL", "bTR", "bBL", "bBR"]
-        for a combo shape "a_b" the split maps will follow the primary shapes,
-        so if "a" has split maps [{"LEFT": "L", "RIGHT": "R"}] and
-        "b" has split maps [{"TOP": "T", "BOTTOM": "B"},{"LEFT": "L", "RIGHT": "R"}], the split names will be:
-        ["aL_bTL", "aL_bBL", "aR_bTR", "aR_bBR",]
-
-        :param shape: the shape to split
-        :return: a list of split names
-        """
-        # doing the primary shapes first
-        if not isinstance(shape, PrimaryShape):
-            return []
-
-        split_names = [shape]
-        for split_map in self.shape_split_maps_association[shape]:
-            split_names = [
-                f"{split_name}{short_suffix}"
-                for split_name in split_names
-                for long_suffix, short_suffix in split_map.suffixes.items()
-            ]
-        return split_names
-
-    def _split_base_level_shape(self, shape: Shape)-> list:
-        """
-        Generate the split names for the given base level shape according to the split maps associated with it.
-        :param shape: the shape to split
-        :return: a list of split names
-        """
-        value = ""
-        shape_name = shape
-        if isinstance(shape, InbetweenShape):
-            value = shape[-2:]
-            shape_name = shape[:-2]
-        split_names = [shape_name]
-        for split_map in self.shape_split_maps_association[shape_name]:
-            suffixes = list(split_map.suffixes.values())
-            split_names = [f"{split_name}{s}{value}" for split_name in split_names for s in suffixes]
-        return split_names
-
     def info(self):
         """
         Print the network information
@@ -362,14 +262,10 @@ class Network(object):
         print(f"Combo Shapes:           {len(self.get_combo_shapes())}")
         print(f"Combo Inbetween Shapes: {len(self.get_combo_inbetween_shapes())}")
         print(f"Invalid Shapes:         {len(self.get_invalid_shapes())}")
-        print(f"Number of Split Maps: {len(self.split_maps)}")
-        print(f"Split Maps:")
-        for split_map in self.split_maps:
-            print(f"  - {split_map}")
 
 
     def __repr__(self):
-        return f"Shapes Network: {self.name}, Number of Shapes: {len(self._shapes)}, Number of Split Maps: {len(self.split_maps)}"
+        return f"Shapes Network: {self.name}, Number of Shapes: {len(self._shapes)}"
 
     def __str__(self):
         return self.name

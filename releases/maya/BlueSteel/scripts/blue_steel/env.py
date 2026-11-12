@@ -63,7 +63,6 @@ class Environment:
     HEAT_MAP_BLENDSHAPE_STRING_IDENTIFIER: str = "heatMapBlendShape"
     SPLIT_ATTR_GRP_STRING_IDENTIFIER: str = "splitAttrGrp"
     SPLIT_GRP_ATTR_STRING_IDENTIFIER: str = "splitGroups"
-    SPLIT_MAPS_AREA_ORDER_ATTR_STRING_IDENTIFIER: str = "splitMapsOrder"
     SPLIT_MAP_EDIT_MESH_ATTR_STRING_IDENTIFIER: str = "splitMapEditMesh"
     SPLIT_MAP_EDIT_BLENDSHAPE_ATTR_STRING_IDENTIFIER: str = "splitMapEditBlendshape"
     SPLIT_MAP_EDIT_CURRENT_ATTR_STRING_IDENTIFIER: str = "splitMapEditCurrent"
