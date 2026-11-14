@@ -433,6 +433,47 @@ class TestPluginHud(unittest.TestCase):
         self.assertFalse(cmds.optionVar(exists=hudManager.OV_HIDDEN_HUDS))
 
 
+class TestWeightOrdering(unittest.TestCase):
+    """Both HUD back-ends list non-zero weights highest value first."""
+
+    # Weight-index order deliberately differs from the value order.
+    TARGET_VALUES = (0.25, 0.9, 0.5, -0.3, 0.5, 0.0)
+    # 0.9 first, then the two 0.5 ties in weight-index order, then 0.25 and the
+    # negative weight; the zero target is filtered out entirely.
+    EXPECTED_NAMES = ["orderUtTarget1", "orderUtTarget2", "orderUtTarget4",
+                      "orderUtTarget0", "orderUtTarget3"]
+    EXPECTED_VALUES = [0.9, 0.5, 0.5, 0.25, -0.3]
+
+    def setUp(self):
+        cmds.file(new=True, force=True)
+        _load_plugin()
+        import bsShapesHUD
+        self.plugin = bsShapesHUD
+        from blue_steel.api import blendshapeHUD
+        self.native = blendshapeHUD
+        base = cmds.polyCube(name="orderUtBase")[0]
+        targets = [cmds.polyCube(name="orderUtTarget{0}".format(i))[0]
+                   for i in range(len(self.TARGET_VALUES))]
+        self.blend = cmds.blendShape(*(targets + [base]), name="orderUtBlend")[0]
+        for target, value in zip(targets, self.TARGET_VALUES):
+            cmds.setAttr("{0}.{1}".format(self.blend, target), value)
+
+    def test_plugin_lines_are_sorted_by_value(self):
+        selection = om.MSelectionList()
+        selection.add(self.blend)
+        lines = self.plugin._collect_lines(selection.getDependNode(0), True)
+        pairs = [line.rsplit(": ", 1) for line in lines]
+        self.assertEqual([name for name, _ in pairs], self.EXPECTED_NAMES)
+        for (_, value), expected in zip(pairs, self.EXPECTED_VALUES):
+            self.assertAlmostEqual(float(value), expected, places=4)
+
+    def test_native_fallback_is_sorted_by_value(self):
+        pairs = self.native.collect_active_weights(self.blend)
+        self.assertEqual([name for name, _ in pairs], self.EXPECTED_NAMES)
+        for (_, value), expected in zip(pairs, self.EXPECTED_VALUES):
+            self.assertAlmostEqual(value, expected, places=4)
+
+
 @unittest.skipIf(cmds.about(batch=True), "Interactive HUD resizing requires a GUI")
 class TestHudGizmo(unittest.TestCase):
     """Exercise the production gesture handlers with deterministic mouse events."""

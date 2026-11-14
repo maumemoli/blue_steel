@@ -84,6 +84,27 @@ def get_weight_driver(blend_shape, weight_name):
         return connections[0]
     return None
     
+def collect_active_weights(blend_shape, list_combos=False):
+    """Return ``(weight_name, value)`` pairs for the non-zero weights, highest first.
+
+    Ties keep their ``listAttr`` order. Signed values are compared, so a negative
+    weight always sits below a smaller positive one.
+    """
+    entries = list()
+    weights = cmds.listAttr("{0}.weight".format(blend_shape), multi=True) or []
+    for weight_name in weights:
+        if not list_combos:
+            driver = get_weight_driver(blend_shape, weight_name)
+            if driver is not None and cmds.nodeType(driver) == "combinationShape":
+                # print("Skipping combo weight: {0}".format(weight_name))
+                continue
+        weight_value = cmds.getAttr("{0}.{1}".format(blend_shape, weight_name))
+        if not math.isclose(weight_value, 0.0, abs_tol=1e-6):
+            entries.append((weight_name, weight_value))
+    entries.sort(key=lambda entry: -entry[1])
+    return entries
+
+
 def refresh_hud(hud_name,  blend_shape, list_combos = False):
     block_width = get_data_alignment_size()
     section = HUD_BLENDSHAPE_WEIGHTS_SECTION
@@ -96,22 +117,10 @@ def refresh_hud(hud_name,  blend_shape, list_combos = False):
     if not capacity or capacity < 1:
         # No visible model panel (or too small): nothing sensible to lay out.
         capacity = 1
-    weights = cmds.listAttr("{0}.weight".format(blend_shape), multi=True) or []
+    active_weights = collect_active_weights(blend_shape, list_combos)
     block_id =  cmds.headsUpDisplay(nextFreeBlock= section)
-    active_weights_names = list()
-    active_weights_values = list()
-    for weight_name in weights:
-        if not list_combos:
-            driver = get_weight_driver(blend_shape, weight_name)
-            if driver is not None and cmds.nodeType(driver) == "combinationShape":
-                # print("Skipping combo weight: {0}".format(weight_name))
-                continue
-        weight_value = cmds.getAttr("{0}.{1}".format(blend_shape, weight_name))
-        if not math.isclose(weight_value, 0.0, abs_tol=1e-6):
-            active_weights_names.append(weight_name)
-            active_weights_values.append(weight_value)
-            
-    for weight_name, weight_value in zip(active_weights_names, active_weights_values):
+
+    for weight_name, weight_value in active_weights:
         block_id = cmds.headsUpDisplay(nextFreeBlock= section)
         if section == 4 and block_id == capacity:
             cmds.headsUpDisplay(hud_name,e=True, label = "...")

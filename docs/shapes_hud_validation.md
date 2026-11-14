@@ -67,9 +67,29 @@ style, unkerned widths, and rendered gutters for representative long combo names
 `test_not_git/hud_columns_2024` and `test_not_git/hud_columns_2026`.
 Restart Maya to load plugin version 1.3 safely.
 
+## Weight ordering
+
+Both back-ends list the non-zero weights **highest value first**, so the shapes
+doing the most work are always the visible ones and the overflow `...` marker
+only ever hides the lowest values:
+
+- The plugin sorts `(value, name)` pairs collected from the `weight` array in
+  `bsShapesHUD._collect_lines`; the native fallback sorts the same pairs in
+  `blendshapeHUD.collect_active_weights` (shared by `refresh_hud`).
+- Signed values are compared (`1.0, 0.5, -0.3`), not magnitudes, and the sort is
+  stable, so equal values keep their previous order (weight index for the
+  plugin, `listAttr` order for the native blocks).
+- Zero weights and, unless combos are listed, `combinationShape`-driven weights
+  stay filtered out before sorting.
+- Plugin version stays 1.3: the change is content-only (no new node attributes),
+  so an already loaded 1.3 keeps drawing until Maya is restarted.
+
+`TestWeightOrdering` covers both back-ends with weight indices that do not match
+the value order, including a negative value, a tie and a zero weight.
+
 ## Checks performed
 
-`releases/maya/BlueSteel/unittest/shapesHUDUt.py` contains 32 tests, including GUI
+`releases/maya/BlueSteel/unittest/shapesHUDUt.py` contains 34 tests, including GUI
 color-buffer pixel assertions rather than only testing whether a node exists.
 **Run these tests only in disposable scenes: their setup creates new scenes.**
 

@@ -188,10 +188,15 @@ def _connected_node(node_obj, attr_name):
 
 
 def _collect_lines(blend_obj, list_combos):
-    """Collect ``name: value`` lines for every non-zero weight of a blendShape."""
+    """Collect ``name: value`` lines for every non-zero weight, highest first.
+
+    Weights are sorted by their signed value, descending, so the shapes that
+    drive the character most sit at the top of the HUD. Sorting is stable: equal
+    values keep their blendShape weight-index order.
+    """
     fn = om.MFnDependencyNode(blend_obj)
     weight_plug = fn.findPlug("weight", False)
-    lines = []
+    entries = []
     for index in weight_plug.getExistingArrayAttributeIndices():
         elem = weight_plug.elementByLogicalIndex(index)
         try:
@@ -205,8 +210,9 @@ def _collect_lines(blend_obj, list_combos):
             if not src.isNull and om.MFnDependencyNode(src.node()).typeName == "combinationShape":
                 continue
         name = fn.plugsAlias(elem) or "weight[{0}]".format(index)
-        lines.append("{0}: {1}".format(name, round(value, 4)))
-    return lines
+        entries.append((value, name))
+    entries.sort(key=lambda entry: -entry[0])
+    return ["{0}: {1}".format(name, round(value, 4)) for value, name in entries]
 
 
 # ---------------------------------------------------------------------------
