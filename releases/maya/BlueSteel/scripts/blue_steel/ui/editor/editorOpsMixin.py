@@ -29,6 +29,8 @@ from .importSplitDataDialog import (
 )
 from .mainWindowMixin import MainWindowMixin
 from .controllerLayoutWindow import ControllerLayoutWindow
+from .hudTransformGizmo import HudTransformGizmo
+from ...api import hudManager
 from .qt import (
     is_valid_qt_object,
     QAction,
@@ -652,12 +654,88 @@ class EditorOpsMixin(MainWindowMixin):
         if self.current_editor is None:
             self._set_status("No system selected.", warning=True)
             return
+        self._close_hud_transform_gizmo()
         try:
             self.current_editor.toggle_hud_display(state=not self.current_editor.hud_on, list_combos= not alt_pressed)
         except Exception as exc:
+            self._update_transform_hud_button()
             self._set_status(f"Error toggling HUD: {exc}", error=True)
             return
-        self._set_status(f"Toggled HUD for '{self.current_editor.blendshape.name}'.")
+        self._update_transform_hud_button()
+        hidden = hudManager.hidden_huds()
+        extra = f" Temporarily hidden Maya HUDs: {', '.join(hidden)}." if hidden else ""
+        self._set_status(f"Toggled HUD for '{self.current_editor.blendshape.name}'.{extra}")
+
+
+    def _update_transform_hud_button(self) -> None:
+        """Enable the Transform HUD button only when the movable (plugin) HUD is on.
+
+        Returns:
+            None
+        """
+        button = getattr(self, "transform_hud_button", None)
+        if button is None:
+            return
+        editor = self.current_editor
+        enabled = bool(editor is not None and getattr(editor, "hud_on", False)
+                       and getattr(editor, "hud_uses_plugin", False))
+        gizmo = getattr(self, "_hud_transform_gizmo", None)
+        button.blockSignals(True)
+        button.setChecked(is_valid_qt_object(gizmo))
+        button.blockSignals(False)
+        button.setEnabled(enabled)
+
+
+    def _on_transform_hud_clicked(self, checked: bool = False) -> None:
+        """Start or commit the interactive HUD transform.
+
+        Returns:
+            None
+        """
+        gizmo = getattr(self, "_hud_transform_gizmo", None)
+        if is_valid_qt_object(gizmo):
+            gizmo.commit(reason="Transform HUD button")
+            return
+        if self.current_editor is None or not self.current_editor.hud_on:
+            self._set_status("Turn the HUD on before transforming it.", warning=True)
+            self._update_transform_hud_button()
+            return
+        gizmo = HudTransformGizmo.start(get_maya_main_window())
+        if gizmo is None:
+            self._set_status("No viewport or movable HUD available to transform.", warning=True)
+            self._update_transform_hud_button()
+            return
+        # Keep a Python reference: PySide deletes C++ objects behind local-only wrappers.
+        self._hud_transform_gizmo = gizmo
+        gizmo.finished.connect(self._on_hud_transform_finished)
+        self._update_transform_hud_button()
+        self._set_status("HUD: drag to move, corners resize the area, wheel changes the font; Enter to commit, Esc to cancel.")
+
+
+    def _on_hud_transform_finished(self, committed: bool) -> None:
+        self._hud_transform_gizmo = None
+        self._update_transform_hud_button()
+        hidden = hudManager.hidden_huds()
+        extra = f" Temporarily hidden Maya HUDs: {', '.join(hidden)}." if hidden else ""
+        if committed:
+            self._set_status(f"HUD position, area and font size saved.{extra}")
+        else:
+            self._set_status("HUD transform cancelled.")
+
+
+    def _close_hud_transform_gizmo(self, reason: str = "editor closed, switched or HUD toggled") -> None:
+        """Cancel any open HUD transform session.
+
+        Parameters:
+            reason (str): Logged reason for ending the session.
+
+        Returns:
+            None
+        """
+        gizmo = getattr(self, "_hud_transform_gizmo", None)
+        self._hud_transform_gizmo = None
+        if is_valid_qt_object(gizmo):
+            gizmo.cancel(reason=reason)
 
 
     def compare_shapes_debug(self) -> None:

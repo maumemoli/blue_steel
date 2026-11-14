@@ -33,6 +33,7 @@ from ..mmtools.blendshape_transfer_tools import (
 )
 from . import mayaUtils
 from . import blendshapeHUD
+from . import hudManager
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -255,7 +256,11 @@ class BlueSteelEditor(object):
         # setting up the network
         self.build_network()
         self.sync_up_muted_shapes()
-        self.hud_on = blendshapeHUD.hud_exists(self.blendshape.name)
+        self.hud_on = hudManager.hud_exists(self.blendshape.name)
+        self.hud_uses_plugin = hudManager.plugin_hud_exists()
+        if not self.hud_on:
+            # HUDs hidden by a previous session (crash) are restored.
+            hudManager.recover_stale_hidden_huds()
         self._sync_up_split_maps_attributes()
         self.setup_face_ctrl_sorting_attribute()
         self.setup_work_shape_sorting_attribute()
@@ -290,17 +295,27 @@ class BlueSteelEditor(object):
     #-----------------------------
     def toggle_hud_display(self, state: bool, list_combos: bool = True):
         """
-        Setup the HUD for the Blue Steel rig.
+        Show or hide the shapes HUD for the Blue Steel rig.
+
+        When shown, native Maya HUDs that would overlap the shapes HUD are
+        hidden temporarily; they are restored when the HUD is turned off.
+        The Viewport 2.0 ``bsShapesHUD`` plugin is used when available (movable,
+        scalable, visible in playblasts), otherwise native HUD blocks.
+
+        Parameters:
+            state (bool): True to show the HUD, False to hide it.
+            list_combos (bool): Whether combination-driven weights are listed.
         """
         if state:
             if self.blendshape is None:
                 return
-            blendshapeHUD.create_master_hud(self.blendshape.name, list_combos=list_combos)
+            self.hud_uses_plugin = hudManager.show(self.blendshape.name, list_combos=list_combos)
             self.hud_on = True
 
         else:
-            blendshapeHUD.clear_huds()
+            hudManager.hide(restore=True)
             self.hud_on = False
+            self.hud_uses_plugin = False
 
     #-----------------------------
     # Heat map setup creation

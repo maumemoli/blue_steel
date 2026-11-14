@@ -102,6 +102,7 @@ class MainWindow(
         self.split_map_edit_blendshape_tracker: Optional[BlendShapeNodeTracker] = None
         self.split_attr_grp_tracker: Optional[ControllerTracker] = None
         self._split_attr_refresh_pending = False
+        self._hud_transform_gizmo = None
         self._split_attr_full_refresh_pending = False
         self._split_settings_refresh_pending = False
         self._split_map_normalization_cache: Dict[str, bool] = {}

@@ -53,6 +53,7 @@ CONNECTED_MESH_ENABLED_ICON = QIcon(connected_mesh_icon_path)
 CONNECTED_MESH_DISABLED_ICON = desaturate_icon(QIcon(connected_mesh_icon_path))
 COMPARE_MESH_ICON = colorize_icon(QIcon(":/meshCompare.png"))
 HUD_ICON = colorize_icon(QIcon(":/RS_filter_list.png"))
+HUD_TRANSFORM_ICON = colorize_icon(QIcon(":/move_M.png"))
 
 NORMALIZE_ICON = QIcon(":/normalize.png")
 MASK_ICON = QIcon(":/Mask.png")

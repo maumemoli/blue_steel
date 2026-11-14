@@ -556,6 +556,17 @@ class EditorSessionMixin(MainWindowMixin):
         self._clear_blendshape_tracker()
         self._clear_split_attr_grp_tracker()
         self._split_map_normalization_cache.clear()
+        previous_editor = self.current_editor
+        switching = previous_editor is None or previous_editor.container.name != name
+        if switching:
+            self._close_hud_transform_gizmo(reason="system switched")
+        if (previous_editor is not None and getattr(previous_editor, "hud_on", False)
+                and switching):
+            # Switching systems: turn the HUD off so hidden Maya HUDs come back.
+            try:
+                previous_editor.toggle_hud_display(False)
+            except Exception:
+                pass
 
         if not name or not cmds.objExists(name):
             if self.heat_map_switch is not None:
@@ -669,6 +680,7 @@ class EditorSessionMixin(MainWindowMixin):
             None
         """
         if self.current_editor is not None:
+            self._close_hud_transform_gizmo(reason="Blue Steel window closed")
             self.current_editor.toggle_hud_display(False)
         if self._controller_layout_window is not None:
             self._controller_layout_window.close()

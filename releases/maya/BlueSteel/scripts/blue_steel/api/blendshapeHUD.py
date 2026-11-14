@@ -93,6 +93,9 @@ def refresh_hud(hud_name,  blend_shape, list_combos = False):
         return
     clear_child_huds()
     capacity = get_section_capacity()
+    if not capacity or capacity < 1:
+        # No visible model panel (or too small): nothing sensible to lay out.
+        capacity = 1
     weights = cmds.listAttr("{0}.weight".format(blend_shape), multi=True) or []
     block_id =  cmds.headsUpDisplay(nextFreeBlock= section)
     active_weights_names = list()

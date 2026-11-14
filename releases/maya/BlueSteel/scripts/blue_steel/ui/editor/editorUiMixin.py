@@ -40,6 +40,7 @@ from ..common.icons import (
     CONTROLLER_LAYOUT_ICON,
     COMPARE_MESH_ICON,
     HUD_ICON,
+    HUD_TRANSFORM_ICON,
     MASK_ICON,
     FILTER_ACTIVE_VALUES_ICON,
     COPY_VERTICES_ICON,
@@ -1314,6 +1315,20 @@ class EditorUiMixin(MainWindowMixin):
         preview_shapes_frame_layout.addWidget(self.unlock_all_shapes_button)
         self.toggle_hud_button = self._create_tool_button("Toggle HUD", HUD_ICON)
         preview_shapes_frame_layout.addWidget(self.toggle_hud_button)
+        tooltip = ("Set the HUD area and font size independently."
+                   "<br>Drag inside = move, drag a corner = resize area, mouse wheel = font size."
+                   "<br>Shapes fill columns inside the frame; a final ... means more shapes do not fit."
+                   "<br>Arrows = nudge, Enter = commit, Esc = cancel, right-click = reset."
+                   "<br>The HUD is drawn by Viewport 2.0 and shows in playblasts."
+                   " Show &gt; Blue Steel Shapes HUD controls its visibility;"
+                   " it also works with Locators hidden and Isolate Select on.")
+        self.transform_hud_button = self._create_tool_button("Transform HUD",
+                                                             HUD_TRANSFORM_ICON,
+                                                             tooltip,
+                                                             track_enabled=False)
+        self.transform_hud_button.setCheckable(True)
+        self.transform_hud_button.setEnabled(False)
+        preview_shapes_frame_layout.addWidget(self.transform_hud_button)
 
         debug_shapes_frame_layout = FrameLayout("Debug")
         self._tools_panel_sections.append(debug_shapes_frame_layout)
@@ -1464,6 +1479,7 @@ class EditorUiMixin(MainWindowMixin):
         self.copy_vtx_positions_button.clicked.connect(meshTools.copy_selected_mesh_vertex_position)
         self.paste_vtx_positions_button.clicked.connect(meshTools.paste_vertex_positions_to_selected_mesh)
         self.toggle_hud_button.clicked.connect(self._on_toggle_hud_clicked)
+        self.transform_hud_button.clicked.connect(self._on_transform_hud_clicked)
         self._shape_model.primaryValueCommitted.connect(self._on_primary_value_committed)
         self._shape_model.modelReset.connect(self._update_info_labels)
         self._shape_model.dataChanged.connect(self._on_shape_model_data_changed)
@@ -1850,6 +1866,7 @@ class EditorUiMixin(MainWindowMixin):
         activate = self.current_editor is not None
         for button in self.tool_buttons:
             button.setEnabled(activate)
+        self._update_transform_hud_button()
         if self.rename_editor_action is not None:
             self.rename_editor_action.setEnabled(activate)
         if self.explode_container_action is not None:
