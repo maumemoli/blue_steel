@@ -1,0 +1,34 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "toolset": { "value": "v143", "strategy": "set" }
+    },
+    {
+      "name": "maya2026",
+      "displayName": "Maya 2026 (devkit located via MAYA_DEVKIT_2026 env var)",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/build/2026",
+      "cacheVariables": { "MAYA_VERSION": "2026" }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "maya2026-release",
+      "displayName": "Maya 2026 - Release (ships)",
+      "configurePreset": "maya2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "maya2026-relwithdebinfo",
+      "displayName": "Maya 2026 - RelWithDebInfo (debugging)",
+      "configurePreset": "maya2026",
+      "configuration": "RelWithDebInfo"
+    }
+  ]
+}
