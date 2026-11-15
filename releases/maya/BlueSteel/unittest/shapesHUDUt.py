@@ -106,6 +106,10 @@ class TestLayout(unittest.TestCase):
                            call.setFontStretch(omr.MUIDrawManager.kStretchUnstretched),
                            call.setFontIncline(omr.MUIDrawManager.kInclineNormal)):
             self.assertIn(style_call, manager.method_calls[:first_text])
+        anchors = [m[1] for m in manager.method_calls if m[0] == "text2d"]
+        self.assertEqual([(a[1], a[2]) for a in anchors],
+                         [("HUD", omr.MUIDrawManager.kLeft), ("shape:", omr.MUIDrawManager.kLeft),
+                          ("0.5", omr.MUIDrawManager.kRight)])
 
     def test_frame_resize_does_not_change_font(self):
         small = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0, 0, 1.0, .2, .3)
@@ -118,7 +122,8 @@ class TestLayout(unittest.TestCase):
         p = self.plugin
         font = 13
         title_font = int(round(font * p.TITLE_SCALE))
-        column_width = p.text_width("shape: 1", font)
+        column_width = (p.text_width("shape:", font) + p.VALUE_GAP * font
+                        + p.text_width("1", font))
         width = 2 * p.PADDING * font + columns * column_width + (columns - 1) * p.COLUMN_GAP * font
         height = 2 * p.PADDING * font + title_font * p.LINE_SPACING + rows * font * p.LINE_SPACING
         return p.compute_layout("t", ["shape: 1"] * count, 1280, 720, 0, 0, 1.0,
@@ -133,11 +138,12 @@ class TestLayout(unittest.TestCase):
         self.assertTrue(extra["overflow"])
         self.assertEqual(extra["visible_count"], 1)
         self.assertEqual(extra["items"][-1][2], "...")
-        self.assertEqual(len(extra["items"]), len(exact["items"]))
+        self.assertEqual(len({item[1] for item in extra["items"]}),
+                         len({item[1] for item in exact["items"]}))
 
     def test_columns_and_final_marker(self):
         exact = self._fixed_capacity_layout(4, columns=2)
-        self.assertEqual(len({item[0] for item in exact["items"][1:]}), 2)
+        self.assertEqual(len({item[0] for item in exact["items"][1:] if item[4] == "left"}), 2)
         self.assertEqual(exact["visible_count"], 4)
         self.assertFalse(exact["overflow"])
         extra = self._fixed_capacity_layout(5, columns=2)
@@ -159,12 +165,28 @@ class TestLayout(unittest.TestCase):
                                   1280, 720, .85, .8, 1.0, .4, .5)
         x, y, w, h = layout["rect"]
         pad = layout["font"] * p.PADDING
-        for ix, iy, text, font in layout["items"]:
-            self.assertGreaterEqual(ix, max(0, x + pad))
-            self.assertLessEqual(ix + p.text_width(text, font), min(1280, x + w - pad) + 1e-6)
+        for ix, iy, text, font, align in layout["items"]:
+            left_edge = ix - p.text_width(text, font) if align == "right" else ix
+            right_edge = ix if align == "right" else ix + p.text_width(text, font)
+            self.assertGreaterEqual(left_edge, max(0, x + pad) - 1e-6)
+            self.assertLessEqual(right_edge, min(1280, x + w - pad) + 1e-6)
             self.assertLessEqual(iy, min(720, y + h - pad) + 1e-6)
         self.assertEqual(layout["items"][-1][2], "...")
-        self.assertTrue(any(item[2].endswith(": 0.5") for item in layout["items"][1:-1]))
+        self.assertTrue(any(item[2] == "0.5" and item[4] == "right"
+                            for item in layout["items"][1:-1]))
+
+    def test_values_right_aligned_to_column(self):
+        lines = ["a: 1", "muchLongerShapeName: 0.25", "mid: 0.5"]
+        layout = self.plugin.compute_layout("t", lines, 1280, 720, 0, 0, 1.0, .5, .5)
+        cx, _, cw, _ = layout["columns"][0]
+        values = [item for item in layout["items"] if item[4] == "right"]
+        self.assertEqual([item[2] for item in values], ["1", "0.25", "0.5"])
+        for item in values:
+            self.assertAlmostEqual(item[0], cx + cw)
+        labels = [item for item in layout["items"][1:] if item[4] == "left"]
+        self.assertEqual([item[2] for item in labels], ["a:", "muchLongerShapeName:", "mid:"])
+        for item in labels:
+            self.assertAlmostEqual(item[0], cx)
 
     def test_short_frame_shows_only_overflow_marker(self):
         p = self.plugin
@@ -309,7 +331,7 @@ class TestPluginHud(unittest.TestCase):
         self.assertTrue(layout["overflow"])
         self.assertEqual(layout["items"][-1][2], "...")
         fx, fy, fw, fh = layout["rect"]
-        mx, my, text, font = layout["items"][-1]
+        mx, my, text, font, _ = layout["items"][-1]
         marker_width = plugin.text_width(text, font)
         body_pixels = outside_pixels = marker_pixels = 0
         for y in range(image.height()):

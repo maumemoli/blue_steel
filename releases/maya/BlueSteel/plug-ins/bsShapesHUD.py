@@ -57,6 +57,7 @@ BASE_FONT_RATIO = 13.0 / 720.0   # font px per viewport px (height) at scale 1.0
 TITLE_SCALE = 1.25
 LINE_SPACING = 1.45
 COLUMN_GAP = 1.5                  # in font units
+VALUE_GAP = 0.75                  # min label/value gap, in font units
 PADDING = 0.5                     # in font units
 MIN_FONT = 6
 MAX_FONT = 200
@@ -117,6 +118,14 @@ def _elide(text, width, font, preserve_value=False):
     return prefix[:low] + "..." + suffix
 
 
+def _split_line(text):
+    """Split ``name: value`` into (``name:``, ``value``); no value gives ''."""
+    if ": " in text:
+        name, value = text.rsplit(": ", 1)
+        return name + ":", value
+    return text, ""
+
+
 def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
                    frame_width=DEFAULT_FRAME_WIDTH, frame_height=DEFAULT_FRAME_HEIGHT):
     """Lay out columns inside a fixed frame, in physical viewport pixels.
@@ -125,6 +134,10 @@ def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
     font size only. ``rect`` always describes the configured frame, independent
     of its contents. Text uses the intersection of that frame and the viewport.
     Omitted shapes are indicated by a final standalone ``...`` entry.
+
+    Items are ``(x, y_bottom, text, font, align)``. ``align`` is ``"left"``
+    (``x`` is the left edge) or ``"right"`` (``x`` is the right edge); weight
+    values are right-aligned to their column's right edge.
     """
     vp_w, vp_h = max(1.0, float(vp_w)), max(1.0, float(vp_h))
     font = max(MIN_FONT, min(MAX_FONT, int(round(BASE_FONT_RATIO * max(0.05, scale) * vp_h))))
@@ -145,24 +158,39 @@ def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
     # title that would hide the fact that there are undisplayed shapes.
     title_text = _elide(title, right - left, title_font)
     if title_text and top + title_h <= bottom and (not lines or top + title_h + line_h <= bottom):
-        items.append((left, top + title_h, title_text, title_font))
+        items.append((left, top + title_h, title_text, title_font, "left"))
         result["title_drawn"] = True
         top += title_h
     elif lines:
         if top + line_h <= bottom and text_width("...", font) <= right - left:
-            items.append((left, top + line_h, "...", font))
+            items.append((left, top + line_h, "...", font, "left"))
         return result
 
     rows = max(0, int((bottom - top + 1e-6) // line_h))
+    dots = text_width("...", font)
+    gap = font * VALUE_GAP
+    row_starts = []  # index into items of each body row's first item
     cursor, column_x = 0, left
-    while rows and cursor < len(lines) and right - column_x >= text_width("...", font):
+    while rows and cursor < len(lines) and right - column_x >= dots:
         column = lines[cursor:cursor + rows]
-        desired_width = max(text_width(text, font) for text in column)
-        column_width = min(max(desired_width, text_width("...", font)), right - column_x)
+        parts = [_split_line(text) for text in column]
+        label_width = max(text_width(label, font) for label, _ in parts)
+        value_width = max([text_width(value, font) for _, value in parts if value] or [0.0])
+        value_space = gap + value_width if value_width else 0.0
+        column_width = min(max(label_width + value_space, dots), right - column_x)
+        label_space = column_width - value_space
+        column_right = column_x + column_width
         result["columns"].append((column_x, top, column_width, len(column) * line_h))
-        for row, text in enumerate(column):
-            items.append((column_x, top + (row + 1) * line_h,
-                          _elide(text, column_width, font, preserve_value=True), font))
+        for row, (text, (label, value)) in enumerate(zip(column, parts)):
+            y_row = top + (row + 1) * line_h
+            row_starts.append(len(items))
+            if value and label_space >= dots:
+                items.append((column_x, y_row, _elide(label, label_space, font), font, "left"))
+                items.append((column_right, y_row, value, font, "right"))
+            else:
+                # Too narrow for a separate value column: single elided line.
+                items.append((column_x, y_row, _elide(text, column_width, font, preserve_value=True),
+                              font, "left"))
         cursor += len(column)
         column_x += column_width + font * COLUMN_GAP
 
@@ -170,8 +198,10 @@ def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
     result["visible_count"] = cursor
     if result["overflow"] and cursor:
         # Reserve the final available slot for the cue; no count or extra row.
-        last_x, last_y, _, last_font = items[-1]
-        items[-1] = (last_x, last_y, "...", last_font)
+        start = row_starts[-1]
+        last_x, last_y, _, last_font, _ = items[start]
+        del items[start:]
+        items.append((last_x, last_y, "...", last_font, "left"))
         result["visible_count"] -= 1
     return result
 
@@ -462,11 +492,12 @@ class BsShapesHUDDrawOverride(omr.MPxDrawOverride):
             draw_manager.setLineWidth(1.5)
             draw_manager.rect2d(center, up, rw * 0.5, rh * 0.5, False)
 
-        for index, (x, y_bottom, text, font_px) in enumerate(layout["items"]):
+        for index, (x, y_bottom, text, font_px, align) in enumerate(layout["items"]):
             draw_manager.setColor(content["title_color"] if index == 0 and layout["title_drawn"]
                                   else content["text_color"])
             draw_manager.setFontSize(int(font_px))
-            draw_manager.text2d(to_vp(x, y_bottom), text, omr.MUIDrawManager.kLeft)
+            anchor = omr.MUIDrawManager.kRight if align == "right" else omr.MUIDrawManager.kLeft
+            draw_manager.text2d(to_vp(x, y_bottom), text, anchor)
         draw_manager.endDrawable()
 
 
