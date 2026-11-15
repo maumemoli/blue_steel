@@ -74,14 +74,14 @@ class TestLayout(unittest.TestCase):
         cls.plugin = bsShapesHUD
 
     def test_offset(self):
-        layout = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0.5, 0.2, 1.0)
+        layout = self.plugin.compute_layout("t", [("a", "1")], 1000, 500, 0.5, 0.2, 1.0)
         x, y, _, _ = layout["rect"]
         self.assertAlmostEqual(x, 500.0)
         self.assertAlmostEqual(y, 100.0)
 
     def test_font_scale_does_not_resize_frame(self):
-        small = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0, 0, 1.0)
-        big = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0, 0, 2.0)
+        small = self.plugin.compute_layout("t", [("a", "1")], 1000, 500, 0, 0, 1.0)
+        big = self.plugin.compute_layout("t", [("a", "1")], 1000, 500, 0, 0, 2.0)
         self.assertEqual(big["rect"], small["rect"])
         self.assertGreater(big["font"], small["font"])
 
@@ -96,7 +96,7 @@ class TestLayout(unittest.TestCase):
         import maya.api.OpenMayaRender as omr
         manager, context = MagicMock(), MagicMock()
         context.getViewportDimensions.return_value = (0, 0, 1280, 720)
-        content = dict(title="HUD", lines=["shape: 0.5"], offset_x=.01, offset_y=.02,
+        content = dict(title="HUD", rows=[("shape", "0.5")], offset_x=.01, offset_y=.02,
                        scale=1.0, frame_width=.4, frame_height=.5,
                        text_color=om.MColor((1, 1, 1, 1)), title_color=om.MColor((1, 1, 0, 1)),
                        background_opacity=0.0, show_frame=False)
@@ -108,12 +108,12 @@ class TestLayout(unittest.TestCase):
             self.assertIn(style_call, manager.method_calls[:first_text])
         anchors = [m[1] for m in manager.method_calls if m[0] == "text2d"]
         self.assertEqual([(a[1], a[2]) for a in anchors],
-                         [("HUD", omr.MUIDrawManager.kLeft), ("shape:", omr.MUIDrawManager.kLeft),
+                         [("HUD", omr.MUIDrawManager.kLeft), ("shape", omr.MUIDrawManager.kLeft),
                           ("0.5", omr.MUIDrawManager.kRight)])
 
     def test_frame_resize_does_not_change_font(self):
-        small = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0, 0, 1.0, .2, .3)
-        big = self.plugin.compute_layout("t", ["a: 1"] * 20, 1000, 500, 0, 0, 1.0, .8, .7)
+        small = self.plugin.compute_layout("t", [("a", "1")], 1000, 500, 0, 0, 1.0, .2, .3)
+        big = self.plugin.compute_layout("t", [("a", "1")] * 20, 1000, 500, 0, 0, 1.0, .8, .7)
         self.assertEqual(big["font"], small["font"])
         self.assertEqual(small["rect"], (0, 0, 200, 150))
         self.assertEqual(big["rect"], (0, 0, 800, 350))
@@ -122,11 +122,11 @@ class TestLayout(unittest.TestCase):
         p = self.plugin
         font = 13
         title_font = int(round(font * p.TITLE_SCALE))
-        column_width = (p.text_width("shape:", font) + p.VALUE_GAP * font
+        column_width = (p.text_width("shape", font) + p.VALUE_GAP * font
                         + p.text_width("1", font))
         width = 2 * p.PADDING * font + columns * column_width + (columns - 1) * p.COLUMN_GAP * font
         height = 2 * p.PADDING * font + title_font * p.LINE_SPACING + rows * font * p.LINE_SPACING
-        return p.compute_layout("t", ["shape: 1"] * count, 1280, 720, 0, 0, 1.0,
+        return p.compute_layout("t", [("shape", "1")] * count, 1280, 720, 0, 0, 1.0,
                                 width / 1280, height / 720)
 
     def test_exact_fit_and_one_extra_shape(self):
@@ -152,7 +152,7 @@ class TestLayout(unittest.TestCase):
 
     def test_empty_content_does_not_change_frame(self):
         empty = self.plugin.compute_layout("t", [], 1280, 720, .1, .1, 1.0)
-        full = self.plugin.compute_layout("t", ["x: 1"] * 1000, 1280, 720, .1, .1, 1.0)
+        full = self.plugin.compute_layout("t", [("x", "1")] * 1000, 1280, 720, .1, .1, 1.0)
         self.assertEqual(empty["rect"], full["rect"])
         self.assertFalse(empty["overflow"])
         self.assertTrue(full["overflow"])
@@ -161,7 +161,7 @@ class TestLayout(unittest.TestCase):
     def test_long_labels_and_partial_offscreen_frame_stay_bounded(self):
         p = self.plugin
         layout = p.compute_layout("An extremely long title " * 20,
-                                  ["VeryLongShapeName" * 30 + ": 0.5"] * 50,
+                                  [("VeryLongShapeName" * 30, "0.5")] * 50,
                                   1280, 720, .85, .8, 1.0, .4, .5)
         x, y, w, h = layout["rect"]
         pad = layout["font"] * p.PADDING
@@ -176,41 +176,53 @@ class TestLayout(unittest.TestCase):
                             for item in layout["items"][1:-1]))
 
     def test_values_right_aligned_to_column(self):
-        lines = ["a: 1", "muchLongerShapeName: 0.25", "mid: 0.5"]
-        layout = self.plugin.compute_layout("t", lines, 1280, 720, 0, 0, 1.0, .5, .5)
+        rows = [("a", "1"), ("muchLongerShapeName", "0.25"), ("mid", "0.5")]
+        layout = self.plugin.compute_layout("t", rows, 1280, 720, 0, 0, 1.0, .5, .5)
         cx, _, cw, _ = layout["columns"][0]
         values = [item for item in layout["items"] if item[4] == "right"]
         self.assertEqual([item[2] for item in values], ["1", "0.25", "0.5"])
         for item in values:
             self.assertAlmostEqual(item[0], cx + cw)
         labels = [item for item in layout["items"][1:] if item[4] == "left"]
-        self.assertEqual([item[2] for item in labels], ["a:", "muchLongerShapeName:", "mid:"])
+        self.assertEqual([item[2] for item in labels], ["a", "muchLongerShapeName", "mid"])
         for item in labels:
             self.assertAlmostEqual(item[0], cx)
+
+    def test_rows_are_name_value_pairs(self):
+        """Rows arrive as pairs, so names are never re-parsed out of the text."""
+        rows = [("Brow Down L 01", "0.25"), ("weight[3]", "-0.5"), ("jawOpen", "")]
+        layout = self.plugin.compute_layout("t", rows, 1280, 720, 0, 0, 1.0, .5, .5)
+        labels = [item[2] for item in layout["items"][1:] if item[4] == "left"]
+        values = [item[2] for item in layout["items"] if item[4] == "right"]
+        # Names keep spaces, digits and brackets verbatim; no separator parsing.
+        self.assertEqual(labels, ["Brow Down L 01", "weight[3]", "jawOpen"])
+        self.assertEqual(values, ["0.25", "-0.5"])
+        self.assertFalse(hasattr(self.plugin, "_split_line"))
+        self.assertFalse(hasattr(self.plugin, "_is_weight_value"))
 
     def test_short_frame_shows_only_overflow_marker(self):
         p = self.plugin
         height = 13 * (p.LINE_SPACING + 2 * p.PADDING)
-        layout = p.compute_layout("title", ["a: 1"] * 10, 1280, 720, 0, 0, 1.0,
+        layout = p.compute_layout("title", [("a", "1")] * 10, 1280, 720, 0, 0, 1.0,
                                   .2, height / 720)
         self.assertEqual([item[2] for item in layout["items"]], ["..."])
         self.assertFalse(layout["title_drawn"])
         self.assertTrue(layout["overflow"])
 
     def test_impossibly_small_frame_does_not_spill(self):
-        layout = self.plugin.compute_layout("t", ["a: 1"], 1000, 500, 0, 0, 20, .001, .001)
+        layout = self.plugin.compute_layout("t", [("a", "1")], 1000, 500, 0, 0, 20, .001, .001)
         self.assertEqual(layout["items"], [])
         self.assertTrue(layout["overflow"])
 
     def test_proportional_to_viewport(self):
-        a = self.plugin.compute_layout("title", ["x: 1"] * 3, 1000, 500, 0.1, 0.1, 2.0)["rect"]
-        b = self.plugin.compute_layout("title", ["x: 1"] * 3, 2000, 1000, 0.1, 0.1, 2.0)["rect"]
+        a = self.plugin.compute_layout("title", [("x", "1")] * 3, 1000, 500, 0.1, 0.1, 2.0)["rect"]
+        b = self.plugin.compute_layout("title", [("x", "1")] * 3, 2000, 1000, 0.1, 0.1, 2.0)["rect"]
         for va, vb in zip(a, b):
             self.assertAlmostEqual(va * 2.0, vb, delta=4.0)
 
     def test_wraps_into_columns(self):
-        lines = ["shape{0}: 1".format(i) for i in range(200)]
-        layout = self.plugin.compute_layout("t", lines, 1920, 1080, 0, 0, 1.0)
+        rows = [("shape{0}".format(i), "1") for i in range(200)]
+        layout = self.plugin.compute_layout("t", rows, 1920, 1080, 0, 0, 1.0)
         self.assertLessEqual(layout["rect"][3], 1080)
 
 
@@ -312,12 +324,12 @@ class TestPluginHud(unittest.TestCase):
         import bsShapesHUD as plugin
         cmds.hide("hudUtBase", "hudUtTarget")
         blend = cmds.createNode("blendShape", name="overflowUtBlend")
-        lines = []
+        rows = []
         for i in range(80):
             alias = "shape{:02d}".format(i)
             cmds.setAttr(blend + ".weight[{}]".format(i), .5)
             cmds.aliasAttr(alias, blend + ".weight[{}]".format(i))
-            lines.append(alias + ": 0.5")
+            rows.append((alias, "0.5"))
         hudManager.show(blend)
         hudManager.set_transform(.1, .1, 1.0, refresh=False)
         hudManager.set_frame_size(.18, .16, refresh=False)
@@ -326,7 +338,7 @@ class TestPluginHud(unittest.TestCase):
         for i, value in enumerate((0.0, 1.0, 0.0)):
             color_plug.child(i).setFloat(value)
         image = self._capture_buffer()
-        layout = plugin.compute_layout(blend, lines, image.width(), image.height(),
+        layout = plugin.compute_layout(blend, rows, image.width(), image.height(),
                                        .1, .1, 1.0, .18, .16)
         self.assertTrue(layout["overflow"])
         self.assertEqual(layout["items"][-1][2], "...")
@@ -356,12 +368,12 @@ class TestPluginHud(unittest.TestCase):
         blend = cmds.createNode("blendShape", name="columnUtBlend")
         stems = ["mouthLipCornerPuller", "eyesLidTightener_eyesLookDown_eyesLookRight_eyesUpperLidRaiser",
                  "eyesClosedR_eyesLidTightener_eyesLookDown_eyesLookRight", "AVATARToffeeWWWiii"]
-        lines = []
+        rows = []
         for i in range(80):
             alias = stems[i % len(stems)] + "{:02d}".format(i)
             cmds.setAttr(blend + ".weight[{}]".format(i), .5)
             cmds.aliasAttr(alias, blend + ".weight[{}]".format(i))
-            lines.append(alias + ": 0.5")
+            rows.append((alias, "0.5"))
         hudManager.show(blend)
         hudManager.set_frame_size(.94, .35, refresh=False)
         color_plug = hudManager._get_plug(hudManager.get_hud_shape(), "textColor")
@@ -370,7 +382,7 @@ class TestPluginHud(unittest.TestCase):
         for scale in (.65, 1.0, 1.4):
             hudManager.set_transform(.01, .02, scale, refresh=False)
             image = self._capture_buffer()
-            layout = plugin.compute_layout(blend, lines, image.width(), image.height(),
+            layout = plugin.compute_layout(blend, rows, image.width(), image.height(),
                                            .01, .02, scale, .94, .35)
             self.assertGreaterEqual(len(layout["columns"]), 2)
             first = layout["columns"][0]
@@ -480,14 +492,16 @@ class TestWeightOrdering(unittest.TestCase):
         for target, value in zip(targets, self.TARGET_VALUES):
             cmds.setAttr("{0}.{1}".format(self.blend, target), value)
 
-    def test_plugin_lines_are_sorted_by_value(self):
+    def test_plugin_rows_are_name_value_pairs_sorted_by_value(self):
         selection = om.MSelectionList()
         selection.add(self.blend)
-        lines = self.plugin._collect_lines(selection.getDependNode(0), True)
-        pairs = [line.rsplit(": ", 1) for line in lines]
-        self.assertEqual([name for name, _ in pairs], self.EXPECTED_NAMES)
-        for (_, value), expected in zip(pairs, self.EXPECTED_VALUES):
+        rows = self.plugin._collect_weight_rows(selection.getDependNode(0), True)
+        self.assertEqual([name for name, _ in rows], self.EXPECTED_NAMES)
+        for (_, value), expected in zip(rows, self.EXPECTED_VALUES):
+            self.assertIsInstance(value, str)
             self.assertAlmostEqual(float(value), expected, places=4)
+        self.assertTrue(all(isinstance(row, tuple) and len(row) == 2 for row in rows),
+                         "rows must be (name, value) pairs")
 
     def test_native_fallback_is_sorted_by_value(self):
         pairs = self.native.collect_active_weights(self.blend)

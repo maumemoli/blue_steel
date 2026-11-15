@@ -65,7 +65,7 @@ FONT_FACE = "Arial"
 DEFAULT_FRAME_WIDTH = 0.4
 DEFAULT_FRAME_HEIGHT = 0.5
 
-# Last drawn content per node name: {"title": str, "lines": [str], ...}
+# Last drawn content per node name: {"title": str, "rows": [(name, value)], ...}
 _LAST_CONTENT = {}
 
 
@@ -97,17 +97,21 @@ def text_width(text, font_size):
                          metrics.boundingRect(text).width())) + 1.0
 
 
-def _elide(text, width, font, preserve_value=False):
-    """Fit a label without reducing the font; retain its weight when possible."""
-    if text_width(text, font) <= width:
-        return text
+def _elide(label, value, width, font):
+    """Fit one ``(name, value)`` row in ``width``; keep the value if it fits.
+
+    ``label`` and ``value`` arrive as separate pieces, so nothing has to be
+    parsed. When the whole row is too wide the name is shortened with an
+    ellipsis and the value is kept whenever ``"... "+value`` still fits.
+    """
+    full = label + " " + value if value else label
+    if text_width(full, font) <= width:
+        return full
     if text_width("...", font) > width:
         return ""
-    prefix, suffix = text, ""
-    if preserve_value and ": " in text:
-        name, value = text.rsplit(": ", 1)
-        if text_width("...: " + value, font) <= width:
-            prefix, suffix = name, ": " + value
+    prefix, suffix = label, ""
+    if value and text_width("... " + value, font) <= width:
+        suffix = " " + value
     low, high = 0, len(prefix)
     while low < high:
         mid = (low + high + 1) // 2
@@ -118,15 +122,7 @@ def _elide(text, width, font, preserve_value=False):
     return prefix[:low] + "..." + suffix
 
 
-def _split_line(text):
-    """Split ``name: value`` into (``name:``, ``value``); no value gives ''."""
-    if ": " in text:
-        name, value = text.rsplit(": ", 1)
-        return name + ":", value
-    return text, ""
-
-
-def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
+def compute_layout(title, rows, vp_w, vp_h, offset_x, offset_y, scale,
                    frame_width=DEFAULT_FRAME_WIDTH, frame_height=DEFAULT_FRAME_HEIGHT):
     """Lay out columns inside a fixed frame, in physical viewport pixels.
 
@@ -134,6 +130,11 @@ def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
     font size only. ``rect`` always describes the configured frame, independent
     of its contents. Text uses the intersection of that frame and the viewport.
     Omitted shapes are indicated by a final standalone ``...`` entry.
+
+    ``rows`` is a sequence of ``(name, value)`` pairs; ``value`` is the already
+    formatted weight text and may be ``""`` for value-less entries. The two
+    parts are measured and aligned independently, so no label text is ever
+    parsed.
 
     Items are ``(x, y_bottom, text, font, align)``. ``align`` is ``"left"``
     (``x`` is the left edge) or ``"right"`` (``x`` is the right edge); weight
@@ -150,51 +151,50 @@ def compute_layout(title, lines, vp_w, vp_h, offset_x, offset_y, scale,
     items = []
     result = {"rect": (x, y, width, height), "items": items, "columns": [],
               "font": font, "title_font": title_font, "title_drawn": False,
-              "overflow": bool(lines), "visible_count": 0}
+              "overflow": bool(rows), "visible_count": 0}
     if right <= left or bottom <= top:
         return result
 
     # If only one body-height row fits, show the overflow cue rather than a
     # title that would hide the fact that there are undisplayed shapes.
-    title_text = _elide(title, right - left, title_font)
-    if title_text and top + title_h <= bottom and (not lines or top + title_h + line_h <= bottom):
+    title_text = _elide(title, "", right - left, title_font)
+    if title_text and top + title_h <= bottom and (not rows or top + title_h + line_h <= bottom):
         items.append((left, top + title_h, title_text, title_font, "left"))
         result["title_drawn"] = True
         top += title_h
-    elif lines:
+    elif rows:
         if top + line_h <= bottom and text_width("...", font) <= right - left:
             items.append((left, top + line_h, "...", font, "left"))
         return result
 
-    rows = max(0, int((bottom - top + 1e-6) // line_h))
+    row_capacity = max(0, int((bottom - top + 1e-6) // line_h))
     dots = text_width("...", font)
     gap = font * VALUE_GAP
     row_starts = []  # index into items of each body row's first item
     cursor, column_x = 0, left
-    while rows and cursor < len(lines) and right - column_x >= dots:
-        column = lines[cursor:cursor + rows]
-        parts = [_split_line(text) for text in column]
-        label_width = max(text_width(label, font) for label, _ in parts)
-        value_width = max([text_width(value, font) for _, value in parts if value] or [0.0])
+    while row_capacity and cursor < len(rows) and right - column_x >= dots:
+        column = rows[cursor:cursor + row_capacity]
+        label_width = max(text_width(label, font) for label, _ in column)
+        value_width = max([text_width(value, font) for _, value in column if value] or [0.0])
         value_space = gap + value_width if value_width else 0.0
         column_width = min(max(label_width + value_space, dots), right - column_x)
         label_space = column_width - value_space
         column_right = column_x + column_width
         result["columns"].append((column_x, top, column_width, len(column) * line_h))
-        for row, (text, (label, value)) in enumerate(zip(column, parts)):
+        for row, (label, value) in enumerate(column):
             y_row = top + (row + 1) * line_h
             row_starts.append(len(items))
             if value and label_space >= dots:
-                items.append((column_x, y_row, _elide(label, label_space, font), font, "left"))
+                items.append((column_x, y_row, _elide(label, "", label_space, font), font, "left"))
                 items.append((column_right, y_row, value, font, "right"))
             else:
-                # Too narrow for a separate value column: single elided line.
-                items.append((column_x, y_row, _elide(text, column_width, font, preserve_value=True),
+                # Too narrow for a separate value column: single elided row.
+                items.append((column_x, y_row, _elide(label, value, column_width, font),
                               font, "left"))
         cursor += len(column)
         column_x += column_width + font * COLUMN_GAP
 
-    result["overflow"] = cursor < len(lines)
+    result["overflow"] = cursor < len(rows)
     result["visible_count"] = cursor
     if result["overflow"] and cursor:
         # Reserve the final available slot for the cue; no count or extra row.
@@ -217,12 +217,14 @@ def _connected_node(node_obj, attr_name):
     return src.node()
 
 
-def _collect_lines(blend_obj, list_combos):
-    """Collect ``name: value`` lines for every non-zero weight, highest first.
+def _collect_weight_rows(blend_obj, list_combos):
+    """Collect ``(name, value)`` rows for every non-zero weight, highest first.
 
-    Weights are sorted by their signed value, descending, so the shapes that
-    drive the character most sit at the top of the HUD. Sorting is stable: equal
-    values keep their blendShape weight-index order.
+    ``name`` is the weight alias and ``value`` the already formatted weight text,
+    so callers never have to split a label back apart. Weights are sorted by
+    their signed value, descending, so the shapes that drive the character most
+    sit at the top of the HUD. Sorting is stable: equal values keep their
+    blendShape weight-index order.
     """
     fn = om.MFnDependencyNode(blend_obj)
     weight_plug = fn.findPlug("weight", False)
@@ -242,7 +244,7 @@ def _collect_lines(blend_obj, list_combos):
         name = fn.plugsAlias(elem) or "weight[{0}]".format(index)
         entries.append((value, name))
     entries.sort(key=lambda entry: -entry[0])
-    return ["{0}: {1}".format(name, round(value, 4)) for value, name in entries]
+    return [(name, str(round(value, 4))) for value, name in entries]
 
 
 # ---------------------------------------------------------------------------
@@ -396,14 +398,14 @@ def _gather_content(node):
     blend_obj = _connected_node(node, "blendShape")
     if blend_obj is None:
         content["title"] = "Blue Steel HUD: no blendShape connected"
-        content["lines"] = []
+        content["rows"] = []
     else:
         blend_name = om.MFnDependencyNode(blend_obj).name()
         content["title"] = blend_name if list_combos else "{0} (Hidden Combos)".format(blend_name)
         try:
-            content["lines"] = _collect_lines(blend_obj, list_combos)
+            content["rows"] = _collect_weight_rows(blend_obj, list_combos)
         except Exception as exc:  # never break the viewport
-            content["lines"] = ["error: {0}".format(exc)]
+            content["rows"] = [("error", "{0}".format(exc))]
     return content
 
 
@@ -464,7 +466,7 @@ class BsShapesHUDDrawOverride(omr.MPxDrawOverride):
     @staticmethod
     def _draw_content(content, draw_manager, frame_context):
         origin_x, origin_y, vp_w, vp_h = frame_context.getViewportDimensions()
-        layout = compute_layout(content["title"], content["lines"], vp_w, vp_h,
+        layout = compute_layout(content["title"], content["rows"], vp_w, vp_h,
                                 content["offset_x"], content["offset_y"], content["scale"],
                                 content["frame_width"], content["frame_height"])
 
@@ -552,10 +554,10 @@ class BsShapesHUDQueryCmd(om.MPxCommand):
         offset_y = om.MPlug(obj, BsShapesHUDNode.a_offset_y).asFloat()
         scale = om.MPlug(obj, BsShapesHUDNode.a_scale).asFloat()
         title = content["title"] if content else fn.name()
-        lines = content["lines"] if content else []
+        rows = content["rows"] if content else []
         frame_width = om.MPlug(obj, BsShapesHUDNode.a_frame_width).asFloat()
         frame_height = om.MPlug(obj, BsShapesHUDNode.a_frame_height).asFloat()
-        layout = compute_layout(title, lines, width, height, offset_x, offset_y, scale,
+        layout = compute_layout(title, rows, width, height, offset_x, offset_y, scale,
                                 frame_width, frame_height)
         self.clearResult()
         for value in layout["rect"]:

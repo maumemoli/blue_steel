@@ -67,6 +67,24 @@ style, unkerned widths, and rendered gutters for representative long combo names
 `test_not_git/hud_columns_2024` and `test_not_git/hud_columns_2026`.
 Restart Maya to load plugin version 1.3 safely.
 
+## Weight label format
+
+HUD rows are structured data, not formatted text: `bsShapesHUD._collect_weight_rows`
+returns `(name, value)` pairs (`value` is the preformatted weight text) and
+`compute_layout(title, rows, ...)` measures/aligns the two halves independently.
+Nothing parses a label back apart, so names may contain spaces, digits or
+brackets without ambiguity.
+
+- Labels carry no `:` separator (previously `Name:   0.5`); the name is
+  left-aligned and the value right-aligned in the column (`Name    0.5`).
+- The native fallback builds `"{0} {1}".format(weight_name, weight_string)`.
+- `_elide(label, value, width, font)` shortens only the name, keeping the value
+  when `"... "+value` still fits.
+- A draw-time exception becomes the row `("error", str(exc))` instead of a
+  concatenated string.
+- Plugin version stays 1.3: the change is content-only (no new node attributes),
+  so an already loaded 1.3 keeps drawing until Maya is restarted.
+
 ## Weight ordering
 
 Both back-ends list the non-zero weights **highest value first**, so the shapes
@@ -74,15 +92,13 @@ doing the most work are always the visible ones and the overflow `...` marker
 only ever hides the lowest values:
 
 - The plugin sorts `(value, name)` pairs collected from the `weight` array in
-  `bsShapesHUD._collect_lines`; the native fallback sorts the same pairs in
+  `bsShapesHUD._collect_weight_rows`; the native fallback sorts the same pairs in
   `blendshapeHUD.collect_active_weights` (shared by `refresh_hud`).
 - Signed values are compared (`1.0, 0.5, -0.3`), not magnitudes, and the sort is
   stable, so equal values keep their previous order (weight index for the
   plugin, `listAttr` order for the native blocks).
 - Zero weights and, unless combos are listed, `combinationShape`-driven weights
   stay filtered out before sorting.
-- Plugin version stays 1.3: the change is content-only (no new node attributes),
-  so an already loaded 1.3 keeps drawing until Maya is restarted.
 
 `TestWeightOrdering` covers both back-ends with weight indices that do not match
 the value order, including a negative value, a tie and a zero weight.
